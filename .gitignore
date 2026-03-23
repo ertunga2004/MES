@@ -11,6 +11,7 @@ production_completed.csv
 
 # Local scratch files
 _css_dump.txt
+_current_css.txt
 _node_red_current_summary.json
 _ui_nodes_snapshot.json
 

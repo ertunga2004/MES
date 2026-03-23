@@ -1561,8 +1561,8 @@ void runConveyorAndTrack(unsigned long now){
   motorRun();
 }
 
-// Urunu sensörden kola tasima suresi (ms) - runtime ayarlanir:  t 4300
-unsigned long TRAVEL_MS = 4300;
+// Urunu sensörden kola tasima suresi (ms) - runtime ayarlanir:  t 4500
+unsigned long TRAVEL_MS = 4500;
 unsigned long lastStatusMs = 0;
 const unsigned long statusPeriodMs = 1000;
 

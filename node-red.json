@@ -1,0 +1,1924 @@
+[
+    {
+        "id": "bd1f51e98ea227f1",
+        "type": "tab",
+        "label": "Konveyor MES",
+        "disabled": false,
+        "info": ""
+    },
+    {
+        "id": "f6c84e0a2023e4bd",
+        "type": "mqtt in",
+        "z": "bd1f51e98ea227f1",
+        "name": "STATUS IN",
+        "topic": "sau/iot/mega/konveyor/status",
+        "qos": "0",
+        "datatype": "auto",
+        "broker": "mqtt_broker_cfg",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 97.00001525878906,
+        "y": 113.0000057220459,
+        "wires": [
+            [
+                "1d703ba7b01ae868",
+                "cb8c140364f1929f"
+            ]
+        ]
+    },
+    {
+        "id": "1d703ba7b01ae868",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "parse status",
+        "func": "let line = String(msg.payload || '').trim();\nif (!line.startsWith('MEGA|STATUS|')) return null;\n\nconst parts = line.split('|');\nconst obj = {};\nfor (let i = 2; i < parts.length; i++) {\n    const part = parts[i];\n    const eq = part.indexOf('=');\n    if (eq > 0) {\n        const key = part.substring(0, eq);\n        const value = part.substring(eq + 1);\n        obj[key] = value;\n    }\n}\n\nconst stateMap = {\n    SEARCHING: 'Araniyor',\n    PAUSED: 'Duraklatildi',\n    WAIT_ARM: 'Robot Bekliyor',\n    STOPPED: 'Durdu',\n    IDLE: 'Beklemede',\n    RUN: 'Calisiyor',\n    STOP: 'Durdu',\n    ERROR: 'Hata',\n    MEASURING: 'Olcum',\n    BUSY: 'Calisiyor',\n    DONE: 'Tamamlandi'\n};\n\nreturn [\n    { payload: obj.AUTO === '1' ? 'Otomatik' : 'Manuel' },\n    { payload: stateMap[obj.STATE] || obj.STATE || '-' },\n    { payload: stateMap[obj.CONVEYOR] || obj.CONVEYOR || '-' },\n    { payload: stateMap[obj.ROBOT] || obj.ROBOT || '-' },\n    { payload: obj.LAST || '-' },\n    { payload: obj.DIR || '-' },\n    { payload: obj.PWM || '-' },\n    { payload: obj.TRAVEL_MS || '-' },\n    { payload: obj.LIM22 === '1' ? 'Basili' : 'Acik' },\n    { payload: obj.LIM23 === '1' ? 'Basili' : 'Acik' },\n    { payload: obj.STEP === '1' ? 'Calisiyor' : 'Durdu' },\n    { payload: obj.STEP_HOLD === '1' ? 'Aktif' : 'Pasif' },\n    { payload: obj.STEP_US || '-' },\n    { payload: obj.QUEUE || '0' },\n    { payload: obj.STOP_REQ === '1' ? 'Var' : 'Yok' }\n];",
+        "outputs": 15,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 317.00001525878906,
+        "y": 113.0000057220459,
+        "wires": [
+            [
+                "56a9370ac6c516fe"
+            ],
+            [
+                "747aa3c0fc5e4a09"
+            ],
+            [
+                "b1336343b864d7b8"
+            ],
+            [
+                "daf518c6e1008a37"
+            ],
+            [
+                "052cddd7d8647125"
+            ],
+            [
+                "2890982b3ea84af6"
+            ],
+            [
+                "2fd79ef542582573"
+            ],
+            [
+                "bcfa3a4d5027f7e6"
+            ],
+            [
+                "27cec7c96df562e8"
+            ],
+            [
+                "0c7920b6507bd07f"
+            ],
+            [
+                "ad5b6eec3e94e192"
+            ],
+            [
+                "7efd59047e0a4055"
+            ],
+            [
+                "36d7adbf0e3f27e7"
+            ],
+            [
+                "5df745dd4e247688"
+            ],
+            [
+                "c78d0f1c2eb80c29"
+            ]
+        ]
+    },
+    {
+        "id": "56a9370ac6c516fe",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_system",
+        "order": 1,
+        "width": 5,
+        "height": 2,
+        "name": "MOD",
+        "label": "Mod",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 627.0000152587891,
+        "y": 53.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "747aa3c0fc5e4a09",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_system",
+        "order": 2,
+        "width": 5,
+        "height": 2,
+        "name": "SISTEM",
+        "label": "Sistem",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 627.0000152587891,
+        "y": 93.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "b1336343b864d7b8",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_system",
+        "order": 3,
+        "width": 5,
+        "height": 2,
+        "name": "KONVEYOR",
+        "label": "Konveyor",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 637.0000152587891,
+        "y": 133.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "daf518c6e1008a37",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_system",
+        "order": 6,
+        "width": 5,
+        "height": 2,
+        "name": "ROBOT",
+        "label": "Robot",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 617.0000152587891,
+        "y": 173.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "052cddd7d8647125",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_system",
+        "order": 8,
+        "width": 5,
+        "height": 2,
+        "name": "SON RENK",
+        "label": "Son Renk",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 617.0000152587891,
+        "y": 213.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "2890982b3ea84af6",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_hw",
+        "order": 1,
+        "width": 3,
+        "height": 2,
+        "name": "YON",
+        "label": "Yon",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-hw",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 617.0000152587891,
+        "y": 253.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "2fd79ef542582573",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_hw",
+        "order": 2,
+        "width": 3,
+        "height": 2,
+        "name": "PWM",
+        "label": "PWM",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-hw",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 617.0000152587891,
+        "y": 293.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "bcfa3a4d5027f7e6",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_hw",
+        "order": 3,
+        "width": 3,
+        "height": 2,
+        "name": "TRAVEL",
+        "label": "Travel MS",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-hw",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 627.0000152587891,
+        "y": 333.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "27cec7c96df562e8",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_hw",
+        "order": 8,
+        "width": 3,
+        "height": 2,
+        "name": "LIMIT 22",
+        "label": "Limit 22",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-hw",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 617.0000152587891,
+        "y": 373.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "0c7920b6507bd07f",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_hw",
+        "order": 7,
+        "width": 3,
+        "height": 2,
+        "name": "LIMIT 23",
+        "label": "Limit 23",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-hw",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 617.0000152587891,
+        "y": 413.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "ad5b6eec3e94e192",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_system",
+        "order": 7,
+        "width": 5,
+        "height": 2,
+        "name": "STEP",
+        "label": "Step",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 617.0000152587891,
+        "y": 453.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "7efd59047e0a4055",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_hw",
+        "order": 5,
+        "width": 3,
+        "height": 2,
+        "name": "STEP HOLD",
+        "label": "Step Hold",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-hw",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 637.0000152587891,
+        "y": 493.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "36d7adbf0e3f27e7",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_hw",
+        "order": 4,
+        "width": 3,
+        "height": 2,
+        "name": "STEP US",
+        "label": "Step US",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-hw",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 627.0000152587891,
+        "y": 533.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "5df745dd4e247688",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_system",
+        "order": 9,
+        "width": 5,
+        "height": 2,
+        "name": "KUYRUK",
+        "label": "Kuyruk",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 617.0000152587891,
+        "y": 573.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "c78d0f1c2eb80c29",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_system",
+        "order": 10,
+        "width": 5,
+        "height": 2,
+        "name": "STOP TALEP",
+        "label": "Stop Talep",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 627.0000152587891,
+        "y": 613.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "0b786ecb6a05d8a5",
+        "type": "mqtt in",
+        "z": "bd1f51e98ea227f1",
+        "name": "LOG IN",
+        "topic": "sau/iot/mega/konveyor/logs",
+        "qos": "0",
+        "datatype": "auto",
+        "broker": "mqtt_broker_cfg",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 120,
+        "y": 600,
+        "wires": [
+            [
+                "0bc05519c58c63a1",
+                "c9e809e3afa3f6c9",
+                "fn_parse_mega_events"
+            ]
+        ]
+    },
+    {
+        "id": "0bc05519c58c63a1",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "buffer log",
+        "func": "let logs = flow.get('logBuffer') || [];\nlet line = String(msg.payload || '').trim();\n\nif (line.length > 0) {\n    logs.push(line);\n}\n\nconst MAX_LINES = 200;\nif (logs.length > MAX_LINES) {\n    logs = logs.slice(logs.length - MAX_LINES);\n}\n\nflow.set('logBuffer', logs);\nmsg.payload = logs.join('\\n');\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 340,
+        "y": 580,
+        "wires": [
+            [
+                "229d7ed15ba02440"
+            ]
+        ]
+    },
+    {
+        "id": "229d7ed15ba02440",
+        "type": "ui_template",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_cmd",
+        "name": "Canli Log",
+        "order": 9,
+        "width": 0,
+        "height": 0,
+        "format": "<div class=\"pro-log-shell\">\n  <div class=\"pro-log-header\">\n    <span>Canli Akis</span>\n    <span class=\"pro-log-badge\"><span class=\"pro-log-dot\"></span>MQTT LOG</span>\n  </div>\n  <div class=\"pro-log-body\" id=\"mainLogBox\">{{msg.payload || 'Log bekleniyor...'}} </div>\n</div>\n<script>\n(function(scope){\n  scope.$watch('msg', function(msg){\n    if(!msg) return;\n    setTimeout(function(){\n      var el = document.getElementById('mainLogBox');\n      if(el) el.scrollTop = el.scrollHeight;\n    }, 10);\n  });\n})(scope);\n</script>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "pro-log-template",
+        "x": 580,
+        "y": 580,
+        "wires": [
+            [
+                "3acecd5bc193ec29"
+            ]
+        ]
+    },
+    {
+        "id": "c9e809e3afa3f6c9",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "count colors",
+        "func": "let counts = flow.get('counts') || {\n    red: 0,\n    yellow: 0,\n    blue: 0\n};\n\nconst line = String(msg.payload || '').trim();\n\nif (line === '__reset_counts__') {\n    counts = { red: 0, yellow: 0, blue: 0 };\n} else if (line.includes('QUEUE=ENQ')) {\n    const parts = line.split('|');\n    const obj = {};\n    for (let i = 0; i < parts.length; i++) {\n        const eq = parts[i].indexOf('=');\n        if (eq > 0) obj[parts[i].slice(0, eq)] = parts[i].slice(eq + 1);\n    }\n\n    if (obj.COLOR === 'KIRMIZI') counts.red++;\n    else if (obj.COLOR === 'SARI') counts.yellow++;\n    else if (obj.COLOR === 'MAVI') counts.blue++;\n}\n\nflow.set('counts', counts);\n\nreturn [\n    { payload: counts.red },\n    { payload: counts.yellow },\n    { payload: counts.blue }\n];",
+        "outputs": 3,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 350,
+        "y": 640,
+        "wires": [
+            [
+                "a1e7707b6a4a98e0"
+            ],
+            [
+                "1117c8976ef2b0cd"
+            ],
+            [
+                "802620c07bc7d73b"
+            ]
+        ]
+    },
+    {
+        "id": "a1e7707b6a4a98e0",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_counts",
+        "order": 1,
+        "width": 5,
+        "height": 3,
+        "name": "KIRMIZI",
+        "label": "Kirmizi",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-count count-red",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 640,
+        "y": 620,
+        "wires": []
+    },
+    {
+        "id": "1117c8976ef2b0cd",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_counts",
+        "order": 3,
+        "width": 5,
+        "height": 3,
+        "name": "SARI",
+        "label": "Sari",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-count count-yellow",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 640,
+        "y": 660,
+        "wires": []
+    },
+    {
+        "id": "802620c07bc7d73b",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_counts",
+        "order": 5,
+        "width": 5,
+        "height": 3,
+        "name": "MAVI",
+        "label": "Mavi",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-count count-blue",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 640,
+        "y": 700,
+        "wires": []
+    },
+    {
+        "id": "1d150f7bda639e83",
+        "type": "mqtt in",
+        "z": "bd1f51e98ea227f1",
+        "name": "HEARTBEAT IN",
+        "topic": "sau/iot/mega/konveyor/heartbeat",
+        "qos": "0",
+        "datatype": "auto",
+        "broker": "mqtt_broker_cfg",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 130,
+        "y": 860,
+        "wires": [
+            [
+                "06eeef1c83288363",
+                "3e8a924cf85d8c18"
+            ]
+        ]
+    },
+    {
+        "id": "06eeef1c83288363",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "heartbeat alive",
+        "func": "msg.payload = \"online\";\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 340,
+        "y": 880,
+        "wires": [
+            [
+                "bc346a0937c7d97a"
+            ]
+        ]
+    },
+    {
+        "id": "3e8a924cf85d8c18",
+        "type": "trigger",
+        "z": "bd1f51e98ea227f1",
+        "name": "hb timeout 15s",
+        "op1": "",
+        "op2": "offline",
+        "op1type": "nul",
+        "op2type": "str",
+        "duration": "10",
+        "extend": true,
+        "overrideDelay": false,
+        "units": "s",
+        "reset": "",
+        "bytopic": "all",
+        "topic": "topic",
+        "outputs": 1,
+        "x": 360,
+        "y": 920,
+        "wires": [
+            [
+                "bc346a0937c7d97a"
+            ]
+        ]
+    },
+    {
+        "id": "c7d805bed1eda3d3",
+        "type": "mqtt out",
+        "z": "bd1f51e98ea227f1",
+        "name": "CMD OUT",
+        "topic": "sau/iot/mega/konveyor/cmd",
+        "qos": "",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "mqtt_broker_cfg",
+        "x": 910,
+        "y": 1280,
+        "wires": []
+    },
+    {
+        "id": "d322339b9d59c5a4",
+        "type": "ui_button",
+        "z": "bd1f51e98ea227f1",
+        "name": "START",
+        "group": "ui_group_cmd",
+        "order": 1,
+        "width": 5,
+        "height": 1,
+        "passthru": false,
+        "label": "Baslat",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#1f8f59",
+        "className": "pro-btn btn-start",
+        "icon": "",
+        "payload": "start",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 150,
+        "y": 1000,
+        "wires": [
+            [
+                "c7d805bed1eda3d3"
+            ]
+        ]
+    },
+    {
+        "id": "3565ef7ec510e907",
+        "type": "ui_button",
+        "z": "bd1f51e98ea227f1",
+        "name": "STOP",
+        "group": "ui_group_cmd",
+        "order": 2,
+        "width": 5,
+        "height": 1,
+        "passthru": false,
+        "label": "Durdur",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#c64545",
+        "className": "pro-btn btn-stop",
+        "icon": "",
+        "payload": "stop",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 150,
+        "y": 1040,
+        "wires": [
+            [
+                "c7d805bed1eda3d3"
+            ]
+        ]
+    },
+    {
+        "id": "f955e3d7bbc89377",
+        "type": "ui_button",
+        "z": "bd1f51e98ea227f1",
+        "name": "REV",
+        "group": "ui_group_cmd",
+        "order": 6,
+        "width": 5,
+        "height": 1,
+        "passthru": false,
+        "label": "Ters Yon",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#7254d7",
+        "className": "pro-btn btn-reverse",
+        "icon": "",
+        "payload": "rev",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 150,
+        "y": 1080,
+        "wires": [
+            [
+                "c7d805bed1eda3d3"
+            ]
+        ]
+    },
+    {
+        "id": "926138be23328394",
+        "type": "ui_button",
+        "z": "bd1f51e98ea227f1",
+        "name": "STATUS",
+        "group": "ui_group_cmd",
+        "order": 3,
+        "width": 5,
+        "height": 1,
+        "passthru": false,
+        "label": "Durum",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#335f9e",
+        "className": "pro-btn btn-status",
+        "icon": "",
+        "payload": "status",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 160,
+        "y": 1120,
+        "wires": [
+            [
+                "c7d805bed1eda3d3"
+            ]
+        ]
+    },
+    {
+        "id": "5102a61484d716ea",
+        "type": "ui_button",
+        "z": "bd1f51e98ea227f1",
+        "name": "Q TEST",
+        "group": "ui_group_cmd",
+        "order": 5,
+        "width": 5,
+        "height": 1,
+        "passthru": false,
+        "label": "Q Test",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#d37d24",
+        "className": "pro-btn btn-qtest",
+        "icon": "",
+        "payload": "q",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 160,
+        "y": 1160,
+        "wires": [
+            [
+                "c7d805bed1eda3d3"
+            ]
+        ]
+    },
+    {
+        "id": "690f2c53911b48ae",
+        "type": "ui_button",
+        "z": "bd1f51e98ea227f1",
+        "name": "PICKPLACE",
+        "group": "ui_group_cmd",
+        "order": 4,
+        "width": 5,
+        "height": 1,
+        "passthru": false,
+        "label": "Pick Place",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#18837d",
+        "className": "pro-btn btn-pick",
+        "icon": "",
+        "payload": "pickplace",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 170,
+        "y": 1200,
+        "wires": [
+            [
+                "c7d805bed1eda3d3"
+            ]
+        ]
+    },
+    {
+        "id": "f7f0c7d7495271c1",
+        "type": "ui_button",
+        "z": "bd1f51e98ea227f1",
+        "name": "COUNT RESET",
+        "group": "ui_group_cmd",
+        "order": 7,
+        "width": 5,
+        "height": 1,
+        "passthru": false,
+        "label": "Sayac Sifirla",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#d37d24",
+        "className": "pro-btn btn-qtest",
+        "icon": "",
+        "payload": "__reset_counts__",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 180,
+        "y": 1240,
+        "wires": [
+            [
+                "c9e809e3afa3f6c9"
+            ]
+        ]
+    },
+    {
+        "id": "0dcfc57a4e5f0934",
+        "type": "ui_button",
+        "z": "bd1f51e98ea227f1",
+        "name": "CAL X",
+        "group": "ui_group_cmd",
+        "order": 8,
+        "width": 5,
+        "height": 1,
+        "passthru": false,
+        "label": "Cal Bos",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#335f9e",
+        "className": "pro-btn btn-status",
+        "icon": "",
+        "payload": "cal x",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 150,
+        "y": 1280,
+        "wires": [
+            [
+                "c7d805bed1eda3d3"
+            ]
+        ]
+    },
+    {
+        "id": "87947b353c86b92d",
+        "type": "ui_button",
+        "z": "bd1f51e98ea227f1",
+        "name": "CAL K",
+        "group": "ui_group_cmd",
+        "order": 9,
+        "width": 5,
+        "height": 1,
+        "passthru": false,
+        "label": "Cal Kirmizi",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#335f9e",
+        "className": "pro-btn btn-status",
+        "icon": "",
+        "payload": "cal k",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 160,
+        "y": 1320,
+        "wires": [
+            [
+                "c7d805bed1eda3d3"
+            ]
+        ]
+    },
+    {
+        "id": "a7b82becbf44d5e7",
+        "type": "ui_button",
+        "z": "bd1f51e98ea227f1",
+        "name": "CAL S",
+        "group": "ui_group_cmd",
+        "order": 10,
+        "width": 5,
+        "height": 1,
+        "passthru": false,
+        "label": "Cal Sari",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#335f9e",
+        "className": "pro-btn btn-status",
+        "icon": "",
+        "payload": "cal s",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 150,
+        "y": 1360,
+        "wires": [
+            [
+                "c7d805bed1eda3d3"
+            ]
+        ]
+    },
+    {
+        "id": "9a61ae7683f2286f",
+        "type": "ui_button",
+        "z": "bd1f51e98ea227f1",
+        "name": "CAL M",
+        "group": "ui_group_cmd",
+        "order": 11,
+        "width": 5,
+        "height": 1,
+        "passthru": false,
+        "label": "Cal Mavi",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "#335f9e",
+        "className": "pro-btn btn-status",
+        "icon": "",
+        "payload": "cal m",
+        "payloadType": "str",
+        "topic": "",
+        "topicType": "str",
+        "x": 150,
+        "y": 1400,
+        "wires": [
+            [
+                "c7d805bed1eda3d3"
+            ]
+        ]
+    },
+    {
+        "id": "27d63e89115c88ad",
+        "type": "ui_text_input",
+        "z": "bd1f51e98ea227f1",
+        "name": "Manual CMD",
+        "label": "Serbest Komut",
+        "tooltip": "",
+        "group": "ui_group_cmd",
+        "order": 20,
+        "width": 0,
+        "height": 0,
+        "passthru": false,
+        "mode": "text",
+        "delay": "0",
+        "topic": "",
+        "sendOnBlur": false,
+        "className": "pro-manual-input",
+        "topicType": "str",
+        "x": 160,
+        "y": 1460,
+        "wires": [
+            [
+                "c7d805bed1eda3d3"
+            ]
+        ]
+    },
+    {
+        "id": "cb8c140364f1929f",
+        "type": "debug",
+        "z": "bd1f51e98ea227f1",
+        "name": "dbg status",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "x": 950,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "3acecd5bc193ec29",
+        "type": "debug",
+        "z": "bd1f51e98ea227f1",
+        "name": "dbg log",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 920,
+        "y": 540,
+        "wires": []
+    },
+    {
+        "id": "2b78abfc910e06be",
+        "type": "mqtt in",
+        "z": "bd1f51e98ea227f1",
+        "name": "",
+        "topic": "sau/iot/mega/konveyor/logs",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "mqtt_broker_cfg",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 1110,
+        "y": 360,
+        "wires": [
+            [
+                "65f5d25bbb0f8609"
+            ]
+        ]
+    },
+    {
+        "id": "65f5d25bbb0f8609",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "function 2",
+        "func": "let now = new Date();\n\nlet day = String(now.getDate()).padStart(2, '0');\nlet month = String(now.getMonth() + 1).padStart(2, '0');\nlet year = now.getFullYear();\n\nlet hour = String(now.getHours()).padStart(2, '0');\nlet minute = String(now.getMinutes()).padStart(2, '0');\nlet second = String(now.getSeconds()).padStart(2, '0');\nlet ms = String(now.getMilliseconds()).padStart(3, '0');\n\nlet timestamp = `${day}.${month}.${year} ${hour}:${minute}:${second}.${ms}`;\n\nmsg.payload = `[${timestamp}] ${msg.payload}\\n`;\nmsg.filename = `C:\\\\Users\\\\acer\\\\Documents\\\\.CODE\\\\codex\\\\MES\\\\logs\\\\log_${year}-${month}-${day}.txt`;\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1340,
+        "y": 340,
+        "wires": [
+            [
+                "9321061af92bd98d"
+            ]
+        ]
+    },
+    {
+        "id": "9321061af92bd98d",
+        "type": "file",
+        "z": "bd1f51e98ea227f1",
+        "name": "",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": false,
+        "createDir": true,
+        "overwriteFile": "false",
+        "encoding": "utf8",
+        "x": 1500,
+        "y": 340,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "90efd9614424a95b",
+        "type": "ui_template",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_system",
+        "name": "PRO Dashboard CSS",
+        "order": 4,
+        "width": 0,
+        "height": 0,
+        "format": "<style>\n:root {\n  --bg-0: #08101a;\n  --bg-1: #0e1623;\n  --panel-border: #24364c;\n  --panel-stroke: rgba(93, 169, 255, 0.10);\n  --text-main: #eef4ff;\n  --text-soft: #9db1cb;\n  --success: #39d98a;\n  --shadow: 0 18px 40px rgba(0, 0, 0, 0.28);\n}\nbody,\n.nr-dashboard-theme,\n.nr-dashboard-theme md-content,\n.nr-dashboard-theme ui-view,\n.nr-dashboard-theme .nr-dashboard-cardpanel {\n  background:\n    radial-gradient(circle at top left, rgba(76, 201, 240, 0.10), transparent 26%),\n    radial-gradient(circle at top right, rgba(57, 217, 138, 0.10), transparent 24%),\n    linear-gradient(180deg, #07101a 0%, #0b1420 46%, #101927 100%) !important;\n  color: var(--text-main) !important;\n  font-family: Bahnschrift, 'Segoe UI', sans-serif !important;\n}\n.nr-dashboard-theme .nr-dashboard-cardpanel {\n  padding: 18px 22px 36px !important;\n}\n.nr-dashboard-theme .nr-dashboard-cardcontainer {\n  background: transparent !important;\n  box-shadow: none !important;\n  padding: 0 8px 10px !important;\n}\n.nr-dashboard-theme md-toolbar,\n.nr-dashboard-theme .md-toolbar-tools {\n  background: rgba(8, 16, 26, 0.94) !important;\n  color: var(--text-main) !important;\n  border-bottom: 1px solid rgba(93, 169, 255, 0.14) !important;\n  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.22) !important;\n}\n.nr-dashboard-theme .md-toolbar-tools {\n  font-family: Bahnschrift, 'Segoe UI', sans-serif !important;\n  letter-spacing: 0.04em;\n}\n.nr-dashboard-theme .nr-dashboard-card {\n  background: linear-gradient(180deg, rgba(17, 28, 43, 0.98) 0%, rgba(13, 22, 35, 0.98) 100%) !important;\n  border: 1px solid var(--panel-border) !important;\n  border-radius: 22px !important;\n  box-shadow: var(--shadow) !important;\n  margin-bottom: 24px !important;\n}\n.nr-dashboard-theme .nr-dashboard-cardtitle {\n  color: var(--text-main) !important;\n  font-size: 15px !important;\n  font-weight: 700 !important;\n  letter-spacing: 0.05em;\n  text-transform: uppercase;\n  padding: 20px 24px 12px !important;\n}\n.nr-dashboard-theme .nr-dashboard-template,\n.nr-dashboard-theme .nr-dashboard-text,\n.nr-dashboard-theme .nr-dashboard-button,\n.nr-dashboard-theme .nr-dashboard-textinput {\n  background: transparent !important;\n}\n.pro-card {\n  min-height: 82px !important;\n  margin: 10px 0 !important;\n  padding: 16px 18px !important;\n  border-radius: 18px !important;\n  border: 1px solid rgba(85, 118, 156, 0.18) !important;\n  background: linear-gradient(180deg, rgba(23, 36, 54, 0.92) 0%, rgba(16, 26, 40, 0.96) 100%) !important;\n  box-shadow: inset 0 1px 0 rgba(255,255,255,0.02) !important;\n}\n.pro-card p,\n.pro-card .label,\n.pro-card .value {\n  margin: 0 !important;\n}\n.pro-card .label {\n  color: var(--text-soft) !important;\n  font-size: 11px !important;\n  font-weight: 700 !important;\n  letter-spacing: 0.10em !important;\n  text-transform: uppercase !important;\n  margin-bottom: 8px !important;\n}\n.pro-card .value {\n  color: var(--text-main) !important;\n  font-size: 23px !important;\n  font-weight: 700 !important;\n  line-height: 1.18 !important;\n}\n.pro-hw .value {\n  font-size: 21px !important;\n}\n.pro-count {\n  min-height: 96px !important;\n}\n.pro-count .value {\n  font-size: 30px !important;\n}\n.count-red {\n  background: linear-gradient(180deg, rgba(73, 24, 31, 0.96) 0%, rgba(43, 17, 22, 0.98) 100%) !important;\n  border-color: rgba(255, 107, 107, 0.28) !important;\n}\n.count-red .label,\n.count-red .value {\n  color: #ffd9d9 !important;\n}\n.count-yellow {\n  background: linear-gradient(180deg, rgba(73, 56, 17, 0.96) 0%, rgba(45, 34, 12, 0.98) 100%) !important;\n  border-color: rgba(245, 196, 81, 0.30) !important;\n}\n.count-yellow .label,\n.count-yellow .value {\n  color: #fff0c4 !important;\n}\n.count-blue {\n  background: linear-gradient(180deg, rgba(24, 48, 83, 0.96) 0%, rgba(16, 30, 55, 0.98) 100%) !important;\n  border-color: rgba(93, 169, 255, 0.28) !important;\n}\n.count-blue .label,\n.count-blue .value {\n  color: #d8ecff !important;\n}\n.pro-btn {\n  padding: 8px 4px !important;\n}\n.pro-btn button {\n  min-height: 60px !important;\n  border: 1px solid rgba(255,255,255,0.06) !important;\n  border-radius: 16px !important;\n  color: #f6fbff !important;\n  font-family: Bahnschrift, 'Segoe UI', sans-serif !important;\n  font-size: 14px !important;\n  font-weight: 700 !important;\n  letter-spacing: 0.06em !important;\n  box-shadow: 0 14px 26px rgba(0, 0, 0, 0.26) !important;\n  text-transform: uppercase;\n}\n.btn-start button { background: linear-gradient(135deg, #1f8f59 0%, #14633d 100%) !important; }\n.btn-stop button { background: linear-gradient(135deg, #c64545 0%, #8f2e2e 100%) !important; }\n.btn-status button { background: linear-gradient(135deg, #335f9e 0%, #274779 100%) !important; }\n.btn-reverse button { background: linear-gradient(135deg, #7254d7 0%, #4d34a1 100%) !important; }\n.btn-qtest button { background: linear-gradient(135deg, #d37d24 0%, #9c5817 100%) !important; }\n.btn-pick button { background: linear-gradient(135deg, #18837d 0%, #0e5a55 100%) !important; }\n.pro-section-spacer {\n  height: 14px;\n}\n.pro-panel-gap {\n  display: block;\n}\n.pro-log-template {\n  display: block;\n  padding-top: 4px !important;\n}\n.pro-log-shell {\n  border: 1px solid var(--panel-border);\n  border-radius: 20px;\n  overflow: hidden;\n  background: linear-gradient(180deg, rgba(10, 16, 24, 0.96) 0%, rgba(6, 11, 18, 0.98) 100%);\n  box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);\n}\n.pro-log-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  padding: 14px 18px;\n  border-bottom: 1px solid rgba(54, 80, 109, 0.6);\n  background: rgba(17, 28, 43, 0.86);\n  color: var(--text-main);\n  font-size: 12px;\n  font-weight: 700;\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n}\n.pro-log-badge {\n  display: inline-flex;\n  align-items: center;\n  gap: 8px;\n  color: var(--text-soft);\n}\n.pro-log-dot {\n  width: 8px;\n  height: 8px;\n  border-radius: 50%;\n  background: var(--success);\n  box-shadow: 0 0 10px rgba(57, 217, 138, 0.9);\n}\n.pro-log-body {\n  height: 380px;\n  overflow-y: auto;\n  background: transparent;\n  color: #dce7f5;\n  padding: 18px;\n  font-family: 'Cascadia Code', Consolas, monospace;\n  font-size: 12px;\n  line-height: 1.60;\n  white-space: pre-wrap;\n}\n.pro-log-body::-webkit-scrollbar { width: 10px; }\n.pro-log-body::-webkit-scrollbar-thumb {\n  background: rgba(93, 169, 255, 0.22);\n  border-radius: 999px;\n}\n.pro-manual-input {\n  display: block;\n  margin-top: 18px !important;\n}\n.pro-manual-input md-input-container {\n  margin: 0 !important;\n  min-height: 64px;\n  padding: 12px 16px 6px !important;\n  border-radius: 18px !important;\n  border: 1px solid var(--panel-border) !important;\n  background: linear-gradient(180deg, rgba(17, 28, 43, 0.94) 0%, rgba(13, 22, 35, 0.98) 100%) !important;\n}\n.pro-manual-input label {\n  color: var(--text-soft) !important;\n  font-size: 12px !important;\n  font-weight: 700 !important;\n  letter-spacing: 0.08em !important;\n  text-transform: uppercase !important;\n}\n.pro-manual-input input {\n  color: var(--text-main) !important;\n  font-family: 'Cascadia Code', Consolas, monospace !important;\n  font-size: 14px !important;\n}\n.pro-manual-input .md-errors-spacer {\n  min-height: 0 !important;\n}\n.esp32-tile {\n  min-height: 82px;\n  border-radius: 18px;\n  border: 1px solid rgba(57, 217, 138, 0.20);\n  background: linear-gradient(180deg, rgba(19, 35, 33, 0.95) 0%, rgba(13, 23, 24, 0.98) 100%);\n  padding: 16px 18px;\n  display: flex;\n  flex-direction: column;\n  justify-content: space-between;\n}\n.esp32-tile .eyebrow {\n  color: #9de7c3;\n  font-size: 11px;\n  font-weight: 700;\n  letter-spacing: 0.10em;\n  text-transform: uppercase;\n}\n.esp32-row {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n}\n.esp32-state {\n  color: #effff7;\n  font-size: 23px;\n  font-weight: 700;\n}\n.esp32-dot {\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  display: inline-block;\n}\n</style>",
+        "storeOutMessages": false,
+        "fwdInMessages": false,
+        "resendOnRefresh": true,
+        "templateScope": "global",
+        "className": "",
+        "x": 0,
+        "y": 0,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "bc346a0937c7d97a",
+        "type": "ui_template",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_hw",
+        "name": "ESP32 Durumu",
+        "order": 9,
+        "width": 9,
+        "height": 4,
+        "format": "<div class=\"esp32-tile\">\n  <div class=\"eyebrow\">ESP32 Baglantisi</div>\n  <div class=\"esp32-row\">\n    <div class=\"esp32-state\">{{msg.payload === 'online' ? 'Aktif' : 'Bagli Degil'}}</div>\n    <span class=\"esp32-dot\"\n          ng-style=\"{'background': (msg.payload === 'online' ? '#39d98a' : '#ff6b6b'),\n                     'box-shadow': (msg.payload === 'online' ? '0 0 12px rgba(57,217,138,.95)' : '0 0 12px rgba(255,107,107,.95)')}\" ></span>\n  </div>\n</div>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 0,
+        "y": 0,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "05c7b35233d2f36b",
+        "type": "ui_spacer",
+        "z": "bd1f51e98ea227f1",
+        "name": "spacer",
+        "group": "ui_group_system",
+        "order": 5,
+        "width": 15,
+        "height": 1
+    },
+    {
+        "id": "e472b8cf808c7970",
+        "type": "ui_spacer",
+        "z": "bd1f51e98ea227f1",
+        "name": "spacer",
+        "group": "ui_group_counts",
+        "order": 2,
+        "width": 5,
+        "height": 1
+    },
+    {
+        "id": "d32dd4b621c6c40a",
+        "type": "ui_spacer",
+        "z": "bd1f51e98ea227f1",
+        "name": "spacer",
+        "group": "ui_group_counts",
+        "order": 4,
+        "width": 5,
+        "height": 1
+    },
+    {
+        "id": "b8a91db5365e2069",
+        "type": "ui_spacer",
+        "z": "bd1f51e98ea227f1",
+        "name": "spacer",
+        "group": "ui_group_cmd",
+        "order": 7,
+        "width": 30,
+        "height": 1
+    },
+    {
+        "id": "6287aa1b540dac24",
+        "type": "ui_spacer",
+        "z": "bd1f51e98ea227f1",
+        "name": "spacer",
+        "group": "ui_group_cmd",
+        "order": 8,
+        "width": 30,
+        "height": 1
+    },
+    {
+        "id": "ab3467f11231d8f8",
+        "type": "ui_spacer",
+        "z": "bd1f51e98ea227f1",
+        "name": "spacer",
+        "group": "ui_group_hw",
+        "order": 6,
+        "width": 15,
+        "height": 1
+    },
+    {
+        "id": "14af99fa69803262",
+        "type": "ui_spacer",
+        "z": "bd1f51e98ea227f1",
+        "name": "spacer",
+        "group": "ui_group_hw",
+        "order": 10,
+        "width": 6,
+        "height": 1
+    },
+    {
+        "id": "c0100a4be18bbaec",
+        "type": "ui_spacer",
+        "z": "bd1f51e98ea227f1",
+        "name": "spacer",
+        "group": "ui_group_hw",
+        "order": 11,
+        "width": 6,
+        "height": 1
+    },
+    {
+        "id": "mqtt_broker_cfg",
+        "type": "mqtt-broker",
+        "name": "MQTT Broker",
+        "broker": "broker.emqx.io",
+        "port": "1883",
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthRetain": "false",
+        "birthPayload": "",
+        "closeTopic": "",
+        "closeQos": "0",
+        "closeRetain": "false",
+        "closePayload": "",
+        "willTopic": "",
+        "willQos": "0",
+        "willRetain": "false",
+        "willPayload": ""
+    },
+    {
+        "id": "ui_group_system",
+        "type": "ui_group",
+        "name": "Sistem Durumu",
+        "tab": "ui_tab_main",
+        "order": 1,
+        "disp": true,
+        "width": 15,
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "ui_group_hw",
+        "type": "ui_group",
+        "name": "Donanim Durumu",
+        "tab": "ui_tab_main",
+        "order": 4,
+        "disp": true,
+        "width": 15,
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "ui_group_cmd",
+        "type": "ui_group",
+        "name": "Komut Paneli",
+        "tab": "ui_tab_main",
+        "order": 3,
+        "disp": true,
+        "width": 30,
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "ui_group_counts",
+        "type": "ui_group",
+        "name": "Renk Sayaclari",
+        "tab": "ui_tab_main",
+        "order": 2,
+        "disp": true,
+        "width": 5,
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "ui_tab_main",
+        "type": "ui_tab",
+        "name": "Konveyor Panel",
+        "icon": "dashboard",
+        "disabled": false,
+        "hidden": false
+    },
+    {
+        "id": "ce3b67abef6fb8a9",
+        "type": "global-config",
+        "env": [],
+        "modules": {
+            "node-red-dashboard": "3.6.6"
+        }
+    },
+    {
+        "id": "ui_group_analytics",
+        "type": "ui_group",
+        "name": "Analitik ve CSV",
+        "tab": "ui_tab_main",
+        "order": 5,
+        "disp": true,
+        "width": 15,
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "ui_group_vision",
+        "type": "ui_group",
+        "name": "Vision Izleme",
+        "tab": "ui_tab_main",
+        "order": 6,
+        "disp": true,
+        "width": 15,
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "mqtt_bridge_status_in",
+        "type": "mqtt in",
+        "z": "bd1f51e98ea227f1",
+        "name": "BRIDGE STATUS IN",
+        "topic": "sau/iot/mega/konveyor/bridge/status",
+        "qos": "0",
+        "datatype": "auto",
+        "broker": "mqtt_broker_cfg",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 140,
+        "y": 900,
+        "wires": [
+            [
+                "fn_parse_bridge_status"
+            ]
+        ]
+    },
+    {
+        "id": "fn_parse_bridge_status",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "parse bridge status",
+        "func": "const line = String(msg.payload || '').trim();\nlet obj = {};\nif (line.startsWith('ESP32|BRIDGE|')) {\n    const parts = line.split('|');\n    for (let i = 2; i < parts.length; i++) {\n        const eq = parts[i].indexOf('=');\n        if (eq > 0) obj[parts[i].slice(0, eq)] = parts[i].slice(eq + 1);\n    }\n} else {\n    try {\n        obj = JSON.parse(line);\n    } catch (err) {\n        return [null, null, null, null];\n    }\n}\nconst wifiOk = obj.WIFI === '1' || obj.wifi === 1 || obj.wifi === true;\nconst mqttOk = obj.MQTT === '1' || obj.mqtt === 1 || obj.mqtt === true;\nreturn [\n    { payload: (wifiOk && mqttOk) ? 'Online' : 'Offline' },\n    { payload: String(obj.QUEUE ?? obj.queue ?? '0') },\n    { payload: String(obj.DROP_UART ?? obj.drop_uart ?? '0') },\n    { payload: String(obj.DROP_PUB ?? obj.drop_pub ?? '0') }\n];",
+        "outputs": 4,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 380,
+        "y": 900,
+        "wires": [
+            [
+                "ui_bridge_link"
+            ],
+            [
+                "ui_bridge_queue"
+            ],
+            [
+                "ui_uart_drop"
+            ],
+            [
+                "ui_publish_drop"
+            ]
+        ]
+    },
+    {
+        "id": "ui_bridge_link",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_analytics",
+        "order": 1,
+        "width": 3,
+        "height": 2,
+        "name": "BRIDGE LINK",
+        "label": "Bridge Link",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 650,
+        "y": 860,
+        "wires": []
+    },
+    {
+        "id": "ui_bridge_queue",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_analytics",
+        "order": 2,
+        "width": 3,
+        "height": 2,
+        "name": "BRIDGE QUEUE",
+        "label": "Bridge Queue",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 650,
+        "y": 900,
+        "wires": []
+    },
+    {
+        "id": "ui_uart_drop",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_analytics",
+        "order": 3,
+        "width": 3,
+        "height": 2,
+        "name": "UART DROP",
+        "label": "UART Drop",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 650,
+        "y": 940,
+        "wires": []
+    },
+    {
+        "id": "ui_publish_drop",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_analytics",
+        "order": 4,
+        "width": 3,
+        "height": 2,
+        "name": "PUBLISH DROP",
+        "label": "Publish Drop",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 660,
+        "y": 980,
+        "wires": []
+    },
+    {
+        "id": "ui_mega_compare",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_analytics",
+        "order": 5,
+        "width": 7,
+        "height": 2,
+        "name": "MEGA COMPARE",
+        "label": "Mega Count",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 980,
+        "y": 1360,
+        "wires": []
+    },
+    {
+        "id": "ui_vision_compare",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_analytics",
+        "order": 6,
+        "width": 7,
+        "height": 2,
+        "name": "VISION COMPARE",
+        "label": "Vision Count",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 990,
+        "y": 1400,
+        "wires": []
+    },
+    {
+        "id": "ui_diff_compare",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_analytics",
+        "order": 7,
+        "width": 7,
+        "height": 2,
+        "name": "DIFF COMPARE",
+        "label": "Count Diff",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 980,
+        "y": 1440,
+        "wires": []
+    },
+    {
+        "id": "ui_yellow_alarm",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_analytics",
+        "order": 8,
+        "width": 7,
+        "height": 2,
+        "name": "YELLOW ALARM",
+        "label": "Yellow Alarm",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card count-yellow",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 980,
+        "y": 1480,
+        "wires": []
+    },
+    {
+        "id": "mqtt_vision_status_in",
+        "type": "mqtt in",
+        "z": "bd1f51e98ea227f1",
+        "name": "VISION STATUS IN",
+        "topic": "sau/iot/mega/konveyor/vision/status",
+        "qos": "0",
+        "datatype": "auto",
+        "broker": "mqtt_broker_cfg",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 140,
+        "y": 980,
+        "wires": [
+            [
+                "fn_parse_vision_streams"
+            ]
+        ]
+    },
+    {
+        "id": "mqtt_vision_tracks_in",
+        "type": "mqtt in",
+        "z": "bd1f51e98ea227f1",
+        "name": "VISION TRACKS IN",
+        "topic": "sau/iot/mega/konveyor/vision/tracks",
+        "qos": "0",
+        "datatype": "auto",
+        "broker": "mqtt_broker_cfg",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 140,
+        "y": 1020,
+        "wires": [
+            [
+                "fn_parse_vision_streams"
+            ]
+        ]
+    },
+    {
+        "id": "mqtt_vision_heartbeat_in",
+        "type": "mqtt in",
+        "z": "bd1f51e98ea227f1",
+        "name": "VISION HEARTBEAT IN",
+        "topic": "sau/iot/mega/konveyor/vision/heartbeat",
+        "qos": "0",
+        "datatype": "auto",
+        "broker": "mqtt_broker_cfg",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 150,
+        "y": 1060,
+        "wires": [
+            [
+                "fn_parse_vision_streams"
+            ]
+        ]
+    },
+    {
+        "id": "fn_parse_vision_streams",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "parse vision streams",
+        "func": "let payload = msg.payload;\nif (typeof payload === 'string') {\n    try { payload = JSON.parse(payload); } catch (err) { return [null, null, null, null, null, null]; }\n}\nconst topic = String(msg.topic || '');\nconst outputs = [null, null, null, null, null, null];\nconst fmt = (value, fallback = '-') => value == null || value === '' ? fallback : String(value);\nif (topic.endsWith('/status')) {\n    outputs[0] = { payload: fmt(payload.state, '-') };\n    outputs[1] = { payload: fmt(payload.fps, '0') };\n    outputs[2] = { payload: fmt(payload.active_tracks, '0') };\n    outputs[3] = { payload: fmt(payload.pending_tracks, '0') };\n    outputs[4] = { payload: fmt(payload.total_crossings, '0') };\n} else if (topic.endsWith('/tracks')) {\n    outputs[2] = { payload: fmt(payload.active_tracks, '0') };\n    outputs[3] = { payload: fmt(payload.pending_tracks, '0') };\n    outputs[4] = { payload: fmt(payload.total_crossings, '0') };\n} else if (topic.endsWith('/heartbeat')) {\n    const ts = fmt(payload.timestamp, '').replace('T', ' ').replace('Z', '');\n    const frame = fmt(payload.frame_index, '-');\n    outputs[5] = { payload: ts ? (frame + ' | ' + ts) : frame };\n}\nreturn outputs;",
+        "outputs": 6,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 390,
+        "y": 1020,
+        "wires": [
+            [
+                "ui_vision_state"
+            ],
+            [
+                "ui_vision_fps"
+            ],
+            [
+                "ui_vision_active"
+            ],
+            [
+                "ui_vision_pending"
+            ],
+            [
+                "ui_vision_crossings"
+            ],
+            [
+                "ui_vision_heartbeat"
+            ]
+        ]
+    },
+    {
+        "id": "ui_vision_state",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_vision",
+        "order": 1,
+        "width": 5,
+        "height": 2,
+        "name": "VISION STATE",
+        "label": "Vision State",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-hw",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 650,
+        "y": 980,
+        "wires": []
+    },
+    {
+        "id": "ui_vision_fps",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_vision",
+        "order": 2,
+        "width": 5,
+        "height": 2,
+        "name": "VISION FPS",
+        "label": "Vision FPS",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-hw",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 650,
+        "y": 1020,
+        "wires": []
+    },
+    {
+        "id": "ui_vision_active",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_vision",
+        "order": 3,
+        "width": 5,
+        "height": 2,
+        "name": "VISION ACTIVE",
+        "label": "Vision Active",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-hw",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 660,
+        "y": 1060,
+        "wires": []
+    },
+    {
+        "id": "ui_vision_pending",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_vision",
+        "order": 4,
+        "width": 5,
+        "height": 2,
+        "name": "VISION PENDING",
+        "label": "Vision Pending",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-hw",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 670,
+        "y": 1100,
+        "wires": []
+    },
+    {
+        "id": "ui_vision_crossings",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_vision",
+        "order": 5,
+        "width": 5,
+        "height": 2,
+        "name": "VISION CROSSINGS",
+        "label": "Vision Crossings",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-hw",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 680,
+        "y": 1140,
+        "wires": []
+    },
+    {
+        "id": "ui_vision_heartbeat",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_vision",
+        "order": 6,
+        "width": 5,
+        "height": 2,
+        "name": "VISION HEARTBEAT",
+        "label": "Vision HB",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-hw",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 680,
+        "y": 1180,
+        "wires": []
+    },
+    {
+        "id": "mqtt_vision_events_in",
+        "type": "mqtt in",
+        "z": "bd1f51e98ea227f1",
+        "name": "VISION EVENTS IN",
+        "topic": "sau/iot/mega/konveyor/vision/events",
+        "qos": "0",
+        "datatype": "auto",
+        "broker": "mqtt_broker_cfg",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 150,
+        "y": 1220,
+        "wires": [
+            [
+                "fn_parse_vision_events"
+            ]
+        ]
+    },
+    {
+        "id": "fn_parse_vision_events",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "parse vision events",
+        "func": "const colorMap = { red: 'red', yellow: 'yellow', blue: 'blue', kirmizi: 'red', sari: 'yellow', mavi: 'blue' };\nlet payload = msg.payload;\nif (typeof payload === 'string') {\n    try { payload = JSON.parse(payload); } catch (err) { return [null, null]; }\n}\nconst rawColor = String(payload.color_name || payload.label || payload.profile_id || '').trim().toLowerCase();\nconst color = colorMap[rawColor] || rawColor;\nconst notes = [];\nif (payload.profile_id) notes.push('profile=' + payload.profile_id);\nif (payload.frame_index != null) notes.push('frame=' + payload.frame_index);\nconst structured = {\n    event_time: payload.timestamp || new Date().toISOString(),\n    item_id: '',\n    measure_id: '',\n    source: 'vision',\n    event_type: payload.event || 'vision_event',\n    color,\n    decision_source: 'vision',\n    queue_depth: '',\n    mega_state: '',\n    raw_r: '',\n    raw_g: '',\n    raw_b: '',\n    confidence: '',\n    vision_track_id: payload.track_id != null ? String(payload.track_id) : '',\n    notes: notes.join(';'),\n    review_required: false,\n    travel_ms: ''\n};\nconst compare = payload.event === 'line_crossed' ? { source: 'vision', color } : null;\nreturn [{ payload: structured }, compare ? { payload: compare } : null];",
+        "outputs": 2,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 390,
+        "y": 1220,
+        "wires": [
+            [
+                "fn_event_csv"
+            ],
+            [
+                "fn_compare_counts"
+            ]
+        ]
+    },
+    {
+        "id": "fn_parse_mega_events",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "parse mega events",
+        "func": "const colorMap = { KIRMIZI: 'red', SARI: 'yellow', MAVI: 'blue', BOS: 'empty', BELIRSIZ: 'uncertain' };\nconst line = String(msg.payload || '').trim();\nif (!line.startsWith('MEGA|')) return [null, null, null];\n\nconst parts = line.split('|');\nconst moduleName = parts[1] || '';\nconst obj = {};\nfor (let i = 2; i < parts.length; i++) {\n    const eq = parts[i].indexOf('=');\n    if (eq > 0) obj[parts[i].slice(0, eq)] = parts[i].slice(eq + 1);\n}\n\nconst normalizeColor = (value) => {\n    const raw = String(value || '').trim().toUpperCase();\n    return colorMap[raw] || raw.toLowerCase();\n};\nconst normalizeId = (value) => {\n    const text = String(value == null ? '' : value).trim();\n    return (!text || text === '0' || text === '-') ? '' : text;\n};\nconst eventTime = new Date().toISOString();\nlet structured = null;\nlet compare = null;\n\nif (moduleName === 'TCS3200' && obj.STATE === 'MEASURING' && obj.FINAL) {\n    const notes = [];\n    if (obj.SEARCH_HINT) notes.push('search_hint=' + obj.SEARCH_HINT);\n    if (obj.REVIEW != null) notes.push('review=' + obj.REVIEW);\n    if (obj.VOTE_Y != null) notes.push('vote_y=' + obj.VOTE_Y);\n    if (obj.VOTE_SECOND != null) notes.push('vote_second=' + obj.VOTE_SECOND);\n    structured = {\n        event_time: eventTime,\n        item_id: normalizeId(obj.ITEM_ID),\n        measure_id: normalizeId(obj.MEASURE_ID),\n        source: 'mega',\n        event_type: 'measurement_decision',\n        color: normalizeColor(obj.FINAL),\n        decision_source: obj.FINAL_SOURCE || '',\n        queue_depth: obj.PENDING || '',\n        mega_state: obj.STATE || '',\n        raw_r: obj.MED_R || '',\n        raw_g: obj.MED_G || '',\n        raw_b: obj.MED_B || '',\n        confidence: obj.CONF || '',\n        vision_track_id: '',\n        notes: notes.join(';'),\n        review_required: obj.REVIEW === '1',\n        travel_ms: ''\n    };\n} else if (moduleName === 'AUTO' && obj.QUEUE === 'ENQ') {\n    structured = {\n        event_time: eventTime,\n        item_id: normalizeId(obj.ITEM_ID),\n        measure_id: normalizeId(obj.MEASURE_ID),\n        source: 'mega',\n        event_type: 'queue_enq',\n        color: normalizeColor(obj.COLOR),\n        decision_source: obj.DECISION_SOURCE || '',\n        queue_depth: obj.PENDING || '',\n        mega_state: obj.STATE || 'QUEUE',\n        raw_r: '',\n        raw_g: '',\n        raw_b: '',\n        confidence: '',\n        vision_track_id: '',\n        notes: obj.REVIEW != null ? ('review=' + obj.REVIEW) : '',\n        review_required: obj.REVIEW === '1',\n        travel_ms: obj.TRAVEL_MS || ''\n    };\n    compare = { source: 'mega', color: structured.color };\n} else if (moduleName === 'AUTO' && obj.EVENT === 'ARM_POSITION_REACHED') {\n    structured = {\n        event_time: eventTime,\n        item_id: normalizeId(obj.ITEM_ID),\n        measure_id: normalizeId(obj.MEASURE_ID),\n        source: 'mega',\n        event_type: 'arm_position_reached',\n        color: normalizeColor(obj.COLOR),\n        decision_source: obj.DECISION_SOURCE || '',\n        queue_depth: '',\n        mega_state: obj.STATE || '',\n        raw_r: '',\n        raw_g: '',\n        raw_b: '',\n        confidence: '',\n        vision_track_id: '',\n        notes: obj.REVIEW != null ? ('review=' + obj.REVIEW) : '',\n        review_required: obj.REVIEW === '1',\n        travel_ms: ''\n    };\n} else if (moduleName === 'AUTO' && obj.EVENT === 'PICKPLACE_DONE') {\n    structured = {\n        event_time: eventTime,\n        item_id: normalizeId(obj.ITEM_ID),\n        measure_id: normalizeId(obj.MEASURE_ID),\n        source: 'mega',\n        event_type: 'pickplace_done',\n        color: normalizeColor(obj.COLOR),\n        decision_source: obj.DECISION_SOURCE || '',\n        queue_depth: obj.PENDING || obj.QUEUE || '',\n        mega_state: obj.STATE || '',\n        raw_r: '',\n        raw_g: '',\n        raw_b: '',\n        confidence: '',\n        vision_track_id: '',\n        notes: obj.REVIEW != null ? ('review=' + obj.REVIEW) : '',\n        review_required: obj.REVIEW === '1',\n        travel_ms: ''\n    };\n}\n\nif (!structured) return [null, null, null];\nreturn [{ payload: structured }, { payload: structured }, compare ? { payload: compare } : null];",
+        "outputs": 3,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 390,
+        "y": 1280,
+        "wires": [
+            [
+                "fn_event_csv"
+            ],
+            [
+                "fn_completed_csv"
+            ],
+            [
+                "fn_compare_counts"
+            ]
+        ]
+    },
+    {
+        "id": "fn_event_csv",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "event csv row",
+        "func": "const cols = ['event_time','item_id','measure_id','source','event_type','color','decision_source','queue_depth','mega_state','raw_r','raw_g','raw_b','confidence','vision_track_id','notes'];\nconst filename = 'C:\\\\Users\\\\acer\\\\Documents\\\\.CODE\\\\codex\\\\MES\\\\production_events.csv';\nconst headerKey = 'header:' + filename;\nconst csv = (value) => {\n    const text = value == null ? '' : String(value);\n    if (text.includes(',') || text.includes('\"') || text.includes('\\n')) return '\"' + text.replace(/\"/g, '\"\"') + '\"';\n    return text;\n};\nconst row = cols.map((key) => csv(msg.payload[key] ?? '')).join(',') + '\\n';\nmsg.filename = filename;\nmsg.payload = flow.get(headerKey) ? row : (cols.join(',') + '\\n' + row);\nflow.set(headerKey, true);\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 660,
+        "y": 1260,
+        "wires": [
+            [
+                "file_production_events_csv"
+            ]
+        ]
+    },
+    {
+        "id": "file_production_events_csv",
+        "type": "file",
+        "z": "bd1f51e98ea227f1",
+        "name": "production_events.csv",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": false,
+        "createDir": true,
+        "overwriteFile": "false",
+        "encoding": "utf8",
+        "x": 960,
+        "y": 1260,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "fn_completed_csv",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "completed csv row",
+        "func": "const event = msg.payload || {};\nif (!event.event_type) return null;\nconst key = event.item_id || (event.measure_id ? 'measure:' + event.measure_id : '');\nif (!key) return null;\nconst state = flow.get('productionCompletedState') || {};\nconst entry = state[key] || {\n    item_id: event.item_id || '',\n    measure_id: event.measure_id || '',\n    detected_at: '',\n    completed_at: '',\n    color: '',\n    travel_ms: '',\n    decision_source: '',\n    review_required: false\n};\n\nif (event.item_id) entry.item_id = event.item_id;\nif (event.measure_id) entry.measure_id = event.measure_id;\nif (event.color) entry.color = event.color;\nif (event.decision_source) entry.decision_source = event.decision_source;\nentry.review_required = Boolean(entry.review_required || event.review_required);\nif (event.travel_ms) entry.travel_ms = event.travel_ms;\n\nif (event.event_type === 'queue_enq' && event.event_time) {\n    entry.detected_at = event.event_time;\n}\n\nif (event.event_type !== 'pickplace_done') {\n    state[key] = entry;\n    flow.set('productionCompletedState', state);\n    return null;\n}\n\nentry.completed_at = event.event_time || '';\nconst startedAt = Date.parse(entry.detected_at || '');\nconst finishedAt = Date.parse(entry.completed_at || '');\nlet cycleMs = '';\nif (!Number.isNaN(startedAt) && !Number.isNaN(finishedAt) && finishedAt >= startedAt) {\n    cycleMs = String(finishedAt - startedAt);\n}\n\nconst payload = {\n    item_id: entry.item_id || event.item_id || '',\n    detected_at: entry.detected_at || '',\n    completed_at: entry.completed_at || '',\n    color: entry.color || event.color || '',\n    status: entry.review_required ? 'COMPLETED_REVIEW' : 'COMPLETED',\n    travel_ms: entry.travel_ms || '',\n    cycle_ms: cycleMs,\n    decision_source: entry.decision_source || event.decision_source || ''\n};\n\ndelete state[key];\nflow.set('productionCompletedState', state);\nmsg.payload = payload;\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 660,
+        "y": 1320,
+        "wires": [
+            [
+                "fn_completed_csv_writer"
+            ]
+        ]
+    },
+    {
+        "id": "fn_completed_csv_writer",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "completed csv writer",
+        "func": "const cols = ['item_id','detected_at','completed_at','color','status','travel_ms','cycle_ms','decision_source'];\nconst filename = 'C:\\\\Users\\\\acer\\\\Documents\\\\.CODE\\\\codex\\\\MES\\\\production_completed.csv';\nconst headerKey = 'header:' + filename;\nconst csv = (value) => {\n    const text = value == null ? '' : String(value);\n    if (text.includes(',') || text.includes('\"') || text.includes('\\n')) return '\"' + text.replace(/\"/g, '\"\"') + '\"';\n    return text;\n};\nconst row = cols.map((key) => csv(msg.payload[key] ?? '')).join(',') + '\\n';\nmsg.filename = filename;\nmsg.payload = flow.get(headerKey) ? row : (cols.join(',') + '\\n' + row);\nflow.set(headerKey, true);\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 960,
+        "y": 1320,
+        "wires": [
+            [
+                "file_production_completed_csv"
+            ]
+        ]
+    },
+    {
+        "id": "file_production_completed_csv",
+        "type": "file",
+        "z": "bd1f51e98ea227f1",
+        "name": "production_completed.csv",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": false,
+        "createDir": true,
+        "overwriteFile": "false",
+        "encoding": "utf8",
+        "x": 1260,
+        "y": 1320,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "fn_compare_counts",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "compare mega vision",
+        "func": "const update = msg.payload || {};\nconst allowed = ['red', 'yellow', 'blue'];\nif (!allowed.includes(update.color)) return null;\nconst stats = flow.get('megaVisionCompare') || {\n    mega: { red: 0, yellow: 0, blue: 0 },\n    vision: { red: 0, yellow: 0, blue: 0 }\n};\nif (update.source === 'mega') stats.mega[update.color]++;\nif (update.source === 'vision') stats.vision[update.color]++;\nflow.set('megaVisionCompare', stats);\nconst diff = {\n    red: stats.mega.red - stats.vision.red,\n    yellow: stats.mega.yellow - stats.vision.yellow,\n    blue: stats.mega.blue - stats.vision.blue\n};\nconst yellowAlarm = Math.abs(diff.yellow) > 1\n    ? 'ALARM | mega=' + stats.mega.yellow + ' vision=' + stats.vision.yellow\n    : 'Normal | mega=' + stats.mega.yellow + ' vision=' + stats.vision.yellow;\nreturn [\n    { payload: 'K:' + stats.mega.red + ' S:' + stats.mega.yellow + ' M:' + stats.mega.blue },\n    { payload: 'K:' + stats.vision.red + ' S:' + stats.vision.yellow + ' M:' + stats.vision.blue },\n    { payload: 'K:' + diff.red + ' S:' + diff.yellow + ' M:' + diff.blue },\n    { payload: yellowAlarm }\n];",
+        "outputs": 4,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 670,
+        "y": 1380,
+        "wires": [
+            [
+                "ui_mega_compare"
+            ],
+            [
+                "ui_vision_compare"
+            ],
+            [
+                "ui_diff_compare"
+            ],
+            [
+                "ui_yellow_alarm"
+            ]
+        ]
+    }
+]

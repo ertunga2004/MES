@@ -1,0 +1,51 @@
+{
+  "device_name": "observer-dev",
+  "camera": {
+    "source": 0,
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "flip_horizontal": true
+  },
+  "processing": {
+    "roi": {
+      "x": 120,
+      "y": 120,
+      "width": 1000,
+      "height": 420
+    },
+    "blur_kernel": 5,
+    "morph_kernel": 5,
+    "open_iterations": 1,
+    "close_iterations": 2,
+    "min_contour_area": 1400
+  },
+  "tracker": {
+    "max_distance": 150,
+    "max_missed_frames": 18,
+    "min_confirmed_frames": 2,
+    "max_unconfirmed_missed_frames": 2,
+    "expected_direction": "left_to_right",
+    "direction_slack": 25
+  },
+  "line_counter": {
+    "enabled": true,
+    "x": 640,
+    "direction": "left_to_right"
+  },
+  "mqtt": {
+    "enabled": true,
+    "host": "broker.emqx.io",
+    "port": 1883,
+    "client_id": "mes-observer-dev",
+    "topic_root": "sau/iot/mega/konveyor/vision",
+    "keepalive": 60,
+    "heartbeat_interval_sec": 10,
+    "publish_interval_sec": 0.5,
+    "qos": 0
+  },
+  "ui": {
+    "show_windows": true,
+    "show_masks": false
+  }
+}

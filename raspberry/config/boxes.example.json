@@ -1,0 +1,65 @@
+{
+  "profiles": [
+    {
+      "id": "red_box",
+      "label": "Red Box",
+      "color_name": "red",
+      "overlay_bgr": [0, 0, 255],
+      "min_area": 1800,
+      "max_area": 60000,
+      "aspect_ratio": [0.5, 2.4],
+      "metadata": {
+        "sku": "BX-RED-01",
+        "notes": "Sample profile"
+      },
+      "ranges": [
+        {
+          "lower": [173, 87, 24], 
+          "upper": [179, 255, 171]
+        },
+        {
+          "lower": [141, 69, 87], 
+          "upper": [179, 242, 192]
+        }
+      ]
+    },
+    {
+      "id": "yellow_box",
+      "label": "Yellow Box",
+      "color_name": "yellow",
+      "overlay_bgr": [0, 255, 255],
+      "min_area": 1800,
+      "max_area": 60000,
+      "aspect_ratio": [0.5, 2.4],
+      "metadata": {
+        "sku": "BX-YEL-01",
+        "notes": "Sample profile"
+      },
+      "ranges": [
+        {
+          "lower": [12, 93, 106], 
+          "upper": [72, 255, 209]
+        }
+      ]
+    },
+    {
+      "id": "blue_box",
+      "label": "Blue Box",
+      "color_name": "blue",
+      "overlay_bgr": [255, 0, 0],
+      "min_area": 1800,
+      "max_area": 60000,
+      "aspect_ratio": [0.5, 2.4],
+      "metadata": {
+        "sku": "BX-BLU-01",
+        "notes": "Sample profile"
+      },
+      "ranges": [
+        {
+          "lower": [103, 97, 114], 
+          "upper": [114, 219, 159]
+        }
+      ]
+    }
+  ]
+}

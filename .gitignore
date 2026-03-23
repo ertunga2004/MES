@@ -1,0 +1,19 @@
+desktop.ini
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Runtime outputs
+logs/
+production_events.csv
+production_completed.csv
+
+# Local scratch files
+_css_dump.txt
+_node_red_current_summary.json
+_ui_nodes_snapshot.json
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

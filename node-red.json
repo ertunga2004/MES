@@ -1307,8 +1307,8 @@
         "rap": true,
         "rh": 0,
         "inputs": 0,
-        "x": 140,
-        "y": 900,
+        "x": 130,
+        "y": 860,
         "wires": [
             [
                 "fn_parse_bridge_status"
@@ -1320,14 +1320,14 @@
         "type": "function",
         "z": "bd1f51e98ea227f1",
         "name": "parse bridge status",
-        "func": "const line = String(msg.payload || '').trim();\nlet obj = {};\nif (line.startsWith('ESP32|BRIDGE|')) {\n    const parts = line.split('|');\n    for (let i = 2; i < parts.length; i++) {\n        const eq = parts[i].indexOf('=');\n        if (eq > 0) obj[parts[i].slice(0, eq)] = parts[i].slice(eq + 1);\n    }\n} else {\n    try {\n        obj = JSON.parse(line);\n    } catch (err) {\n        return [null, null, null, null];\n    }\n}\nconst wifiOk = obj.WIFI === '1' || obj.wifi === 1 || obj.wifi === true;\nconst mqttOk = obj.MQTT === '1' || obj.mqtt === 1 || obj.mqtt === true;\nreturn [\n    { payload: (wifiOk && mqttOk) ? 'Online' : 'Offline' },\n    { payload: String(obj.QUEUE ?? obj.queue ?? '0') },\n    { payload: String(obj.DROP_UART ?? obj.drop_uart ?? '0') },\n    { payload: String(obj.DROP_PUB ?? obj.drop_pub ?? '0') }\n];",
+        "func": "let line = String(msg.payload || '').trim();\nif (!line.startsWith('ESP32|BRIDGE|')) return null;\n\nconst parts = line.split('|');\nconst obj = {};\nfor (let i = 2; i < parts.length; i++) {\n    const eq = parts[i].indexOf('=');\n    if (eq > 0) obj[parts[i].slice(0, eq)] = parts[i].slice(eq + 1);\n}\n\nconst link = (obj.WIFI === '1' && obj.MQTT === '1') ? 'Online' : 'Degrede';\nreturn [\n    { payload: link },\n    { payload: obj.QUEUE || '0' },\n    { payload: obj.DROP_UART || '0' },\n    { payload: obj.DROP_PUB || '0' }\n];",
         "outputs": 4,
         "noerr": 0,
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 380,
-        "y": 900,
+        "x": 360,
+        "y": 860,
         "wires": [
             [
                 "ui_bridge_link"
@@ -1336,10 +1336,10 @@
                 "ui_bridge_queue"
             ],
             [
-                "ui_uart_drop"
+                "ui_bridge_drop_uart"
             ],
             [
-                "ui_publish_drop"
+                "ui_bridge_drop_pub"
             ]
         ]
     },
@@ -1355,13 +1355,13 @@
         "label": "Bridge Link",
         "format": "{{msg.payload}}",
         "layout": "col-center",
-        "className": "pro-card pro-status",
+        "className": "pro-card pro-hw",
         "style": false,
         "font": "",
         "fontSize": "",
         "color": "#000000",
-        "x": 650,
-        "y": 860,
+        "x": 640,
+        "y": 800,
         "wires": []
     },
     {
@@ -1376,17 +1376,17 @@
         "label": "Bridge Queue",
         "format": "{{msg.payload}}",
         "layout": "col-center",
-        "className": "pro-card pro-status",
+        "className": "pro-card pro-hw",
         "style": false,
         "font": "",
         "fontSize": "",
         "color": "#000000",
         "x": 650,
-        "y": 900,
+        "y": 840,
         "wires": []
     },
     {
-        "id": "ui_uart_drop",
+        "id": "ui_bridge_drop_uart",
         "type": "ui_text",
         "z": "bd1f51e98ea227f1",
         "group": "ui_group_analytics",
@@ -1397,118 +1397,34 @@
         "label": "UART Drop",
         "format": "{{msg.payload}}",
         "layout": "col-center",
-        "className": "pro-card pro-status",
+        "className": "pro-card pro-hw",
         "style": false,
         "font": "",
         "fontSize": "",
         "color": "#000000",
         "x": 650,
-        "y": 940,
+        "y": 880,
         "wires": []
     },
     {
-        "id": "ui_publish_drop",
+        "id": "ui_bridge_drop_pub",
         "type": "ui_text",
         "z": "bd1f51e98ea227f1",
         "group": "ui_group_analytics",
         "order": 4,
         "width": 3,
         "height": 2,
-        "name": "PUBLISH DROP",
+        "name": "PUB DROP",
         "label": "Publish Drop",
         "format": "{{msg.payload}}",
         "layout": "col-center",
-        "className": "pro-card pro-status",
+        "className": "pro-card pro-hw",
         "style": false,
         "font": "",
         "fontSize": "",
         "color": "#000000",
-        "x": 660,
-        "y": 980,
-        "wires": []
-    },
-    {
-        "id": "ui_mega_compare",
-        "type": "ui_text",
-        "z": "bd1f51e98ea227f1",
-        "group": "ui_group_analytics",
-        "order": 5,
-        "width": 7,
-        "height": 2,
-        "name": "MEGA COMPARE",
-        "label": "Mega Count",
-        "format": "{{msg.payload}}",
-        "layout": "col-center",
-        "className": "pro-card pro-status",
-        "style": false,
-        "font": "",
-        "fontSize": "",
-        "color": "#000000",
-        "x": 980,
-        "y": 1360,
-        "wires": []
-    },
-    {
-        "id": "ui_vision_compare",
-        "type": "ui_text",
-        "z": "bd1f51e98ea227f1",
-        "group": "ui_group_analytics",
-        "order": 6,
-        "width": 7,
-        "height": 2,
-        "name": "VISION COMPARE",
-        "label": "Vision Count",
-        "format": "{{msg.payload}}",
-        "layout": "col-center",
-        "className": "pro-card pro-status",
-        "style": false,
-        "font": "",
-        "fontSize": "",
-        "color": "#000000",
-        "x": 990,
-        "y": 1400,
-        "wires": []
-    },
-    {
-        "id": "ui_diff_compare",
-        "type": "ui_text",
-        "z": "bd1f51e98ea227f1",
-        "group": "ui_group_analytics",
-        "order": 7,
-        "width": 7,
-        "height": 2,
-        "name": "DIFF COMPARE",
-        "label": "Count Diff",
-        "format": "{{msg.payload}}",
-        "layout": "col-center",
-        "className": "pro-card pro-status",
-        "style": false,
-        "font": "",
-        "fontSize": "",
-        "color": "#000000",
-        "x": 980,
-        "y": 1440,
-        "wires": []
-    },
-    {
-        "id": "ui_yellow_alarm",
-        "type": "ui_text",
-        "z": "bd1f51e98ea227f1",
-        "group": "ui_group_analytics",
-        "order": 8,
-        "width": 7,
-        "height": 2,
-        "name": "YELLOW ALARM",
-        "label": "Yellow Alarm",
-        "format": "{{msg.payload}}",
-        "layout": "col-center",
-        "className": "pro-card count-yellow",
-        "style": false,
-        "font": "",
-        "fontSize": "",
-        "color": "#000000",
-        "x": 980,
-        "y": 1480,
+        "x": 650,
+        "y": 920,
         "wires": []
     },
     {
@@ -1528,7 +1444,29 @@
         "y": 980,
         "wires": [
             [
-                "fn_parse_vision_streams"
+                "fn_parse_vision_status"
+            ]
+        ]
+    },
+    {
+        "id": "fn_parse_vision_status",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "parse vision status",
+        "func": "let payload = msg.payload;\nif (typeof payload === 'string') {\n    try { payload = JSON.parse(payload); } catch (err) { return null; }\n}\nconst stateMap = { starting: 'Basliyor', running: 'Calisiyor', stopped: 'Durdu' };\nreturn [\n    { payload: stateMap[payload.state] || payload.state || '-' },\n    { payload: payload.fps != null ? String(payload.fps) : '-' }\n];",
+        "outputs": 2,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 370,
+        "y": 980,
+        "wires": [
+            [
+                "ui_vision_state"
+            ],
+            [
+                "ui_vision_fps"
             ]
         ]
     },
@@ -1546,10 +1484,35 @@
         "rh": 0,
         "inputs": 0,
         "x": 140,
-        "y": 1020,
+        "y": 1040,
         "wires": [
             [
-                "fn_parse_vision_streams"
+                "fn_parse_vision_tracks"
+            ]
+        ]
+    },
+    {
+        "id": "fn_parse_vision_tracks",
+        "type": "function",
+        "z": "bd1f51e98ea227f1",
+        "name": "parse vision tracks",
+        "func": "let payload = msg.payload;\nif (typeof payload === 'string') {\n    try { payload = JSON.parse(payload); } catch (err) { return null; }\n}\nreturn [\n    { payload: payload.active_tracks != null ? String(payload.active_tracks) : '0' },\n    { payload: payload.pending_tracks != null ? String(payload.pending_tracks) : '0' },\n    { payload: payload.total_crossings != null ? String(payload.total_crossings) : '0' }\n];",
+        "outputs": 3,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 370,
+        "y": 1040,
+        "wires": [
+            [
+                "ui_vision_active"
+            ],
+            [
+                "ui_vision_pending"
+            ],
+            [
+                "ui_vision_crossings"
             ]
         ]
     },
@@ -1567,42 +1530,27 @@
         "rh": 0,
         "inputs": 0,
         "x": 150,
-        "y": 1060,
+        "y": 1100,
         "wires": [
             [
-                "fn_parse_vision_streams"
+                "fn_parse_vision_heartbeat"
             ]
         ]
     },
     {
-        "id": "fn_parse_vision_streams",
+        "id": "fn_parse_vision_heartbeat",
         "type": "function",
         "z": "bd1f51e98ea227f1",
-        "name": "parse vision streams",
-        "func": "let payload = msg.payload;\nif (typeof payload === 'string') {\n    try { payload = JSON.parse(payload); } catch (err) { return [null, null, null, null, null, null]; }\n}\nconst topic = String(msg.topic || '');\nconst outputs = [null, null, null, null, null, null];\nconst fmt = (value, fallback = '-') => value == null || value === '' ? fallback : String(value);\nif (topic.endsWith('/status')) {\n    outputs[0] = { payload: fmt(payload.state, '-') };\n    outputs[1] = { payload: fmt(payload.fps, '0') };\n    outputs[2] = { payload: fmt(payload.active_tracks, '0') };\n    outputs[3] = { payload: fmt(payload.pending_tracks, '0') };\n    outputs[4] = { payload: fmt(payload.total_crossings, '0') };\n} else if (topic.endsWith('/tracks')) {\n    outputs[2] = { payload: fmt(payload.active_tracks, '0') };\n    outputs[3] = { payload: fmt(payload.pending_tracks, '0') };\n    outputs[4] = { payload: fmt(payload.total_crossings, '0') };\n} else if (topic.endsWith('/heartbeat')) {\n    const ts = fmt(payload.timestamp, '').replace('T', ' ').replace('Z', '');\n    const frame = fmt(payload.frame_index, '-');\n    outputs[5] = { payload: ts ? (frame + ' | ' + ts) : frame };\n}\nreturn outputs;",
-        "outputs": 6,
+        "name": "parse vision heartbeat",
+        "func": "let payload = msg.payload;\nif (typeof payload === 'string') {\n    try { payload = JSON.parse(payload); } catch (err) { return null; }\n}\nlet stamp = '-';\nif (payload.timestamp) {\n    const dt = new Date(payload.timestamp);\n    stamp = Number.isNaN(dt.getTime()) ? String(payload.timestamp) : dt.toLocaleTimeString('tr-TR', { hour12: false });\n}\nreturn { payload: stamp };",
+        "outputs": 1,
         "noerr": 0,
         "initialize": "",
         "finalize": "",
         "libs": [],
         "x": 390,
-        "y": 1020,
+        "y": 1100,
         "wires": [
-            [
-                "ui_vision_state"
-            ],
-            [
-                "ui_vision_fps"
-            ],
-            [
-                "ui_vision_active"
-            ],
-            [
-                "ui_vision_pending"
-            ],
-            [
-                "ui_vision_crossings"
-            ],
             [
                 "ui_vision_heartbeat"
             ]
@@ -1614,7 +1562,7 @@
         "z": "bd1f51e98ea227f1",
         "group": "ui_group_vision",
         "order": 1,
-        "width": 5,
+        "width": 3,
         "height": 2,
         "name": "VISION STATE",
         "label": "Vision State",
@@ -1635,7 +1583,7 @@
         "z": "bd1f51e98ea227f1",
         "group": "ui_group_vision",
         "order": 2,
-        "width": 5,
+        "width": 3,
         "height": 2,
         "name": "VISION FPS",
         "label": "Vision FPS",
@@ -1656,7 +1604,7 @@
         "z": "bd1f51e98ea227f1",
         "group": "ui_group_vision",
         "order": 3,
-        "width": 5,
+        "width": 3,
         "height": 2,
         "name": "VISION ACTIVE",
         "label": "Vision Active",
@@ -1677,7 +1625,7 @@
         "z": "bd1f51e98ea227f1",
         "group": "ui_group_vision",
         "order": 4,
-        "width": 5,
+        "width": 3,
         "height": 2,
         "name": "VISION PENDING",
         "label": "Vision Pending",
@@ -1698,7 +1646,7 @@
         "z": "bd1f51e98ea227f1",
         "group": "ui_group_vision",
         "order": 5,
-        "width": 5,
+        "width": 3,
         "height": 2,
         "name": "VISION CROSSINGS",
         "label": "Vision Crossings",
@@ -1719,7 +1667,7 @@
         "z": "bd1f51e98ea227f1",
         "group": "ui_group_vision",
         "order": 6,
-        "width": 5,
+        "width": 3,
         "height": 2,
         "name": "VISION HEARTBEAT",
         "label": "Vision HB",
@@ -1788,7 +1736,7 @@
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 390,
+        "x": 380,
         "y": 1280,
         "wires": [
             [
@@ -1920,5 +1868,89 @@
                 "ui_yellow_alarm"
             ]
         ]
+    },
+    {
+        "id": "ui_mega_compare",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_analytics",
+        "order": 5,
+        "width": 6,
+        "height": 2,
+        "name": "MEGA COMPARE",
+        "label": "Mega Count",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 980,
+        "y": 1360,
+        "wires": []
+    },
+    {
+        "id": "ui_vision_compare",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_analytics",
+        "order": 6,
+        "width": 6,
+        "height": 2,
+        "name": "VISION COMPARE",
+        "label": "Vision Count",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 990,
+        "y": 1400,
+        "wires": []
+    },
+    {
+        "id": "ui_diff_compare",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_analytics",
+        "order": 7,
+        "width": 6,
+        "height": 2,
+        "name": "DIFF COMPARE",
+        "label": "Count Diff",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card pro-status",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 980,
+        "y": 1440,
+        "wires": []
+    },
+    {
+        "id": "ui_yellow_alarm",
+        "type": "ui_text",
+        "z": "bd1f51e98ea227f1",
+        "group": "ui_group_analytics",
+        "order": 8,
+        "width": 6,
+        "height": 2,
+        "name": "YELLOW ALARM",
+        "label": "Yellow Alarm",
+        "format": "{{msg.payload}}",
+        "layout": "col-center",
+        "className": "pro-card count-yellow",
+        "style": false,
+        "font": "",
+        "fontSize": "",
+        "color": "#000000",
+        "x": 980,
+        "y": 1480,
+        "wires": []
     }
 ]

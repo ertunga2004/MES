@@ -1215,7 +1215,7 @@ bool autoMode = false;
 bool stopRequested = false;
 
 unsigned long lastSenseMs = 0;
-const unsigned long sensePeriodMs = 120; // daha hizli algila
+const unsigned long sensePeriodMs = 120; // kutu merkeze daha yakin gelsin
 
 String lastMeasured = "";
 unsigned long lastTravelUpdateMs = 0;
@@ -1285,7 +1285,9 @@ const unsigned long measSettleMs = 280;   // bant durduktan sonra olcum penceres
 
 bool sensorRearmRequired = false;
 uint8_t sensorClearStreak = 0;
+unsigned long sensorRearmRemainingMs = 0;
 const uint8_t SENSOR_CLEAR_STREAK_N = 1;
+const unsigned long SENSOR_REARM_MIN_RUN_MS = 900;
 
 const uint8_t MAX_PENDING_ITEMS = 6;
 PendingItem pendingItems[MAX_PENDING_ITEMS];
@@ -1393,7 +1395,7 @@ void noteDetectLabel(const String& cls){
   detectLabelCodes[DETECT_STREAK_N - 1] = code;
 }
 
-String detectHintLabel(){
+String detectHintLabel(uint8_t *bestCountOut = nullptr, uint8_t *secondCountOut = nullptr){
   uint8_t voteHintR = 0;
   uint8_t voteHintY = 0;
   uint8_t voteHintB = 0;
@@ -1407,8 +1409,25 @@ String detectHintLabel(){
   uint8_t best = voteHintR;
   String label = "KIRMIZI";
   if(voteHintY > best){ best = voteHintY; label = "SARI"; }
-  if(voteHintB > best){ label = "MAVI"; }
-  if(best == 0) return "BELIRSIZ";
+  if(voteHintB > best){ best = voteHintB; label = "MAVI"; }
+  if(best == 0){
+    if(bestCountOut) *bestCountOut = 0;
+    if(secondCountOut) *secondCountOut = 0;
+    return "BELIRSIZ";
+  }
+
+  uint8_t bestMatches = 0;
+  uint8_t second = 0;
+  uint8_t counts[3] = { voteHintR, voteHintY, voteHintB };
+  for(uint8_t i = 0; i < 3; i++){
+    uint8_t v = counts[i];
+    if(v == best) bestMatches++;
+    else if(v > second) second = v;
+  }
+
+  if(bestCountOut) *bestCountOut = best;
+  if(secondCountOut) *secondCountOut = second;
+  if(bestMatches > 1) return "BELIRSIZ";
   return label;
 }
 
@@ -1534,11 +1553,6 @@ void pausePendingTravelTimer(){
 }
 
 void updatePendingTravel(unsigned long now){
-  if(!hasPendingItems()){
-    lastTravelUpdateMs = now;
-    return;
-  }
-
   if(lastTravelUpdateMs == 0){
     lastTravelUpdateMs = now;
     return;
@@ -1547,6 +1561,15 @@ void updatePendingTravel(unsigned long now){
   unsigned long delta = now - lastTravelUpdateMs;
   lastTravelUpdateMs = now;
   if(delta == 0) return;
+
+  if(sensorRearmRemainingMs > 0){
+    if(sensorRearmRemainingMs > delta) sensorRearmRemainingMs -= delta;
+    else sensorRearmRemainingMs = 0;
+  }
+
+  if(!hasPendingItems()){
+    return;
+  }
 
   for(uint8_t i = 0; i < pendingCount; i++){
     uint8_t idx = (pendingHead + i) % MAX_PENDING_ITEMS;
@@ -1823,6 +1846,7 @@ void loop() {
         resetDetectLabels();
         sensorRearmRequired = false;
         sensorClearStreak = 0;
+        sensorRearmRemainingMs = 0;
         resetVotes();
         lastSenseMs = 0;
         runConveyorAndTrack(millis());
@@ -2060,13 +2084,25 @@ void loop() {
         if(sensorClearStreak >= SENSOR_CLEAR_STREAK_N){
           sensorRearmRequired = false;
           sensorClearStreak = 0;
+          sensorRearmRemainingMs = 0;
           detectStreak = 0;
           resetDetectLabels();
         }
       } else {
         sensorClearStreak = 0;
       }
-      return;
+
+      if(sensorRearmRequired && sensorRearmRemainingMs == 0 && s.objectPresent){
+        sensorRearmRequired = false;
+        sensorClearStreak = 0;
+        detectStreak = 0;
+        resetDetectLabels();
+        logEvent("AUTO", "STATE=SEARCHING|EVENT=REARM_TIMEOUT|ACTION=ALLOW_OBJECT");
+      }
+
+      if(sensorRearmRequired){
+        return;
+      }
     }
 
     if(s.cls == "CAL"){
@@ -2212,7 +2248,11 @@ void loop() {
     uint16_t voteWin = topVoteCountOf(coreVoteBOS, coreVoteR, coreVoteY, coreVoteB, coreVoteCAL);
     uint16_t voteSecond = secondVoteCountOf(coreVoteBOS, coreVoteR, coreVoteY, coreVoteB, coreVoteCAL);
     uint16_t classifiedVotes = coreVoteR + coreVoteY + coreVoteB;
-    String searchHint = detectHintLabel();
+    uint8_t searchHintWin = 0;
+    uint8_t searchHintSecond = 0;
+    String searchHint = detectHintLabel(&searchHintWin, &searchHintSecond);
+    bool searchHintStrong = (searchHint != "BELIRSIZ" && searchHintWin >= 2 && searchHintWin > searchHintSecond);
+    bool searchHintFallbackAllowed = (classifiedVotes >= 3 && voteWin >= 2);
     bool reviewRequired = false;
 
     if(finalCls == "KIRMIZI" && scoreNearest == "SARI" && coreVoteY >= coreVoteR && coreVoteY >= 2){
@@ -2230,9 +2270,20 @@ void loop() {
       finalCls = voteCls;
       finalSource = "CORE_VOTE_MATCH";
     } else if(finalCls == "BELIRSIZ" && scoreNearest == voteCls && voteCls != "BOS" && voteCls != "CAL" &&
-              classifiedVotes >= 2){
+              classifiedVotes >= 4 && voteWin >= 3){
       finalCls = scoreNearest;
       finalSource = "CORE_SCORE_VOTE";
+    }
+
+    if(finalCls == "BELIRSIZ" && searchHintStrong && searchHintFallbackAllowed){
+      finalCls = searchHint;
+      finalSource = "SEARCH_HINT_STRONG";
+      reviewRequired = true;
+    } else if(searchHintStrong && searchHintFallbackAllowed && finalCls != searchHint &&
+              (!medianConfident || classifiedVotes < 4 || finalSource == "CORE_SCORE_VOTE")){
+      finalCls = searchHint;
+      finalSource = "SEARCH_HINT_OVERRIDE";
+      reviewRequired = true;
     }
 
     bool yellowEvidence = (medianNearest == "SARI") || (scoreNearest == "SARI") || (coreVoteY >= 2);
@@ -2274,6 +2325,14 @@ void loop() {
     Serial1.print(finalSource);
     Serial1.print("|SEARCH_HINT=");
     Serial1.print(searchHint);
+    Serial1.print("|SEARCH_HINT_WIN=");
+    Serial1.print(searchHintWin);
+    Serial1.print("|SEARCH_HINT_SECOND=");
+    Serial1.print(searchHintSecond);
+    Serial1.print("|SEARCH_HINT_STRONG=");
+    Serial1.print(searchHintStrong ? 1 : 0);
+    Serial1.print("|SEARCH_HINT_FALLBACK_ALLOWED=");
+    Serial1.print(searchHintFallbackAllowed ? 1 : 0);
     Serial1.print("|REVIEW=");
     Serial1.print(reviewRequired ? 1 : 0);
     Serial1.print("|CORE_USED=");
@@ -2347,6 +2406,7 @@ void loop() {
     resetDetectLabels();
     sensorRearmRequired = true;
     sensorClearStreak = 0;
+    sensorRearmRemainingMs = SENSOR_REARM_MIN_RUN_MS;
     lastSenseMs = 0;
     activeMeasureId = 0;
 

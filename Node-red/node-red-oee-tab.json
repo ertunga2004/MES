@@ -1,0 +1,245 @@
+[
+  {
+    "id": "flow_oee_mes",
+    "type": "tab",
+    "label": "Konveyor OEE MES",
+    "disabled": false,
+    "info": "Ayrik import edilebilir OEE dashboard tabi.",
+    "env": []
+  },
+  {
+    "id": "mqtt_in_oee_tablet",
+    "type": "mqtt in",
+    "z": "flow_oee_mes",
+    "name": "OEE TABLET LOG",
+    "topic": "sau/iot/mega/konveyor/tablet/log",
+    "qos": "2",
+    "datatype": "utf8",
+    "broker": "mqtt_broker_oee_cfg",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 170,
+    "y": 80,
+    "wires": [
+      [
+        "fn_parse_oee_dashboard"
+      ]
+    ]
+  },
+  {
+    "id": "fn_parse_oee_dashboard",
+    "type": "function",
+    "z": "flow_oee_mes",
+    "name": "parse oee dashboard",
+    "func": "let raw = msg.payload;\nif (Buffer.isBuffer(raw)) raw = raw.toString('utf8');\nif (typeof raw !== 'string') {\n    node.warn('Payload string degil');\n    return null;\n}\n\nconst line = raw.trim();\nif (!line) return null;\n\nfunction readNumber(text, key, fallback = 0) {\n    const match = text.match(new RegExp('\\\\|' + key + ':(.*?)(?=\\\\||$)'));\n    if (!match) return fallback;\n    const normalized = match[1].trim().replace(',', '.');\n    const value = Number(normalized);\n    return Number.isFinite(value) ? value : fallback;\n}\n\nfunction readText(text, key, fallback = '') {\n    const match = text.match(new RegExp('\\\\|' + key + ':(.*?)(?=\\\\||$)'));\n    return match ? match[1].trim() : fallback;\n}\n\nfunction fixed(value) {\n    return Number(value || 0).toFixed(1);\n}\n\nfunction stamp(date) {\n    const pad = (n) => String(n).padStart(2, '0');\n    return pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds());\n}\n\nlet faultState = context.get('faultState') || {\n    reason: 'Bilinmiyor',\n    status: 'BITTI',\n    startedAt: null\n};\n\nif (/\\|Tablet\\|Ar[^|]{0,2}za\\|/i.test(line) || line.includes('|Tablet|Ariza|')) {\n    faultState = {\n        reason: readText(line, 'NEDEN', 'Bilinmiyor'),\n        status: readText(line, 'DURUM', 'Yok'),\n        startedAt: Date.now()\n    };\n    context.set('faultState', faultState);\n    return null;\n}\n\nif (!line.includes('|Tablet|OEE|')) {\n    return null;\n}\n\nconst availability = readNumber(line, 'KULL') * 100;\nconst performance = readNumber(line, 'PERF') * 100;\nconst quality = readNumber(line, 'KALITE') * 100;\nconst oee = readNumber(line, 'OEE') * 100;\n\nconst counts = {\n    yellow: {\n        name: 'Sari',\n        key: 'yellow',\n        good: readNumber(line, 'SARI_S'),\n        scrap: readNumber(line, 'SARI_H'),\n        rework: readNumber(line, 'SARI_R')\n    },\n    blue: {\n        name: 'Mavi',\n        key: 'blue',\n        good: readNumber(line, 'MAVI_S'),\n        scrap: readNumber(line, 'MAVI_H'),\n        rework: readNumber(line, 'MAVI_R')\n    },\n    red: {\n        name: 'Kirmizi',\n        key: 'red',\n        good: readNumber(line, 'KIRMIZI_S'),\n        scrap: readNumber(line, 'KIRMIZI_H'),\n        rework: readNumber(line, 'KIRMIZI_R')\n    }\n};\n\nObject.keys(counts).forEach((key) => {\n    const item = counts[key];\n    item.total = item.good + item.scrap + item.rework;\n    item.loss = item.scrap + item.rework;\n    item.lossRate = item.total > 0 ? (item.loss / item.total) * 100 : 0;\n    item.qualityRate = item.total > 0 ? (item.good / item.total) * 100 : 0;\n});\n\nconst totalProduct = counts.yellow.total + counts.blue.total + counts.red.total;\nconst goodProduct = counts.yellow.good + counts.blue.good + counts.red.good;\nconst scrapTotal = counts.yellow.scrap + counts.blue.scrap + counts.red.scrap;\nconst reworkTotal = counts.yellow.rework + counts.blue.rework + counts.red.rework;\nconst totalLoss = scrapTotal + reworkTotal;\nconst errorRate = totalProduct > 0 ? (totalLoss / totalProduct) * 100 : 0;\n\nfaultState = context.get('faultState') || faultState;\nconst stopStatus = String(faultState.status || '').toUpperCase();\nconst isStopped = stopStatus && !['BITTI', 'YOK', '0', 'OK', 'NORMAL'].includes(stopStatus);\nconst lineState = isStopped ? 'Durusta' : 'Calisiyor';\nconst stateSummary = isStopped\n    ? (faultState.reason || 'Plansiz durus aktif')\n    : 'Hat akisi normal ve veri aliniyor';\n\nconst colorCards = Object.keys(counts).map((key) => {\n    const item = counts[key];\n    const mixRate = totalProduct > 0 ? (item.total / totalProduct) * 100 : 0;\n    return {\n        key: item.key,\n        name: item.name,\n        total: item.total,\n        good: item.good,\n        scrap: item.scrap,\n        rework: item.rework,\n        lossRate: fixed(item.lossRate),\n        qualityRate: fixed(item.qualityRate),\n        mixRate: fixed(mixRate)\n    };\n}).sort((a, b) => b.total - a.total);\n\nconst biggestLossColor = colorCards.slice().sort((a, b) => Number(b.lossRate) - Number(a.lossRate))[0] || { name: '-' };\nconst bestQualityColor = colorCards.slice().sort((a, b) => Number(b.qualityRate) - Number(a.qualityRate))[0] || { name: '-' };\n\nlet history = flow.get('oeeHistory') || [];\nconst now = new Date();\nhistory.push({\n    time: stamp(now),\n    oee: Number(fixed(oee)),\n    quality: Number(fixed(quality)),\n    performance: Number(fixed(performance)),\n    availability: Number(fixed(availability)),\n    error: Number(fixed(errorRate))\n});\nif (history.length > 10) {\n    history = history.slice(history.length - 10);\n}\nflow.set('oeeHistory', history);\n\nconst trend = history.map((item) => ({\n    time: item.time,\n    oee: fixed(item.oee),\n    quality: fixed(item.quality),\n    performance: fixed(item.performance),\n    availability: fixed(item.availability),\n    error: fixed(item.error),\n    oeeWidth: Math.max(6, Math.min(100, Math.round(item.oee))),\n    qualityWidth: Math.max(6, Math.min(100, Math.round(item.quality))),\n    performanceWidth: Math.max(6, Math.min(100, Math.round(item.performance)))\n}));\n\nlet focus = [];\nif (quality < 85) {\n    focus.push('Kalite kritik seviyede. Hurda ve yeniden isleme akisina oncelik verin.');\n} else if (quality < 92) {\n    focus.push('Kalite uyari bandinda. Renk bazli kayip dagilimini yakin izleyin.');\n} else {\n    focus.push('Kalite seviyesi stabil. Mevcut ayar ve tempo korunabilir.');\n}\n\nif (isStopped) {\n    focus.push('Aktif durus nedeni: ' + (faultState.reason || 'Bilinmiyor') + '.');\n} else {\n    focus.push('Plansiz durus gorunmuyor. OEE trendini vardiya boyunca takip edin.');\n}\n\nfocus.push('En yuksek kayip orani ' + biggestLossColor.name + ' urun grubunda.');\nfocus = focus.slice(0, 3);\n\nconst oeeTone = oee >= 75 ? 'good' : (oee >= 60 ? 'warn' : 'bad');\nconst qualityTone = quality >= 92 ? 'good' : (quality >= 85 ? 'warn' : 'bad');\nconst stopTone = isStopped ? 'bad' : 'good';\n\nmsg.payload = {\n    updatedAt: stamp(now),\n    rawLine: line,\n    header: {\n        title: 'Konveyor OEE Kontrol Merkezi',\n        subtitle: 'Ayni veri akisini koruyan ikinci dashboard tabi',\n        lineState,\n        stateSummary,\n        tone: stopTone\n    },\n    kpis: [\n        {\n            label: 'Kullanilabilirlik',\n            value: fixed(availability) + '%',\n            tone: availability >= 90 ? 'good' : (availability >= 75 ? 'warn' : 'bad')\n        },\n        {\n            label: 'Performans',\n            value: fixed(performance) + '%',\n            tone: performance >= 90 ? 'good' : (performance >= 75 ? 'warn' : 'bad')\n        },\n        {\n            label: 'Kalite',\n            value: fixed(quality) + '%',\n            tone: qualityTone\n        },\n        {\n            label: 'OEE',\n            value: fixed(oee) + '%',\n            tone: oeeTone,\n            featured: true\n        }\n    ],\n    production: [\n        { label: 'Toplam urun', value: totalProduct, tone: 'neutral' },\n        { label: 'Saglam urun', value: goodProduct, tone: 'good' },\n        { label: 'Hurda', value: scrapTotal, tone: 'bad' },\n        { label: 'Yeniden isleme', value: reworkTotal, tone: 'warn' }\n    ],\n    downtime: {\n        planned: '0 aktif kayit',\n        unplanned: isStopped ? '1 aktif kayit' : '0 aktif kayit',\n        total: isStopped ? '1 aktif kayit' : '0 aktif kayit',\n        reason: faultState.reason || 'Bilinmiyor',\n        status: faultState.status || 'Yok'\n    },\n    targets: {\n        ideal: totalProduct,\n        actual: totalProduct,\n        gap: 0,\n        errorRate: fixed(errorRate) + '%',\n        totalLoss: totalLoss\n    },\n    colors: colorCards,\n    insights: [\n        {\n            label: 'Kalite alarmi',\n            value: quality < 85 ? 'Kritik' : (quality < 92 ? 'Uyari' : 'Normal'),\n            tone: qualityTone\n        },\n        {\n            label: 'Durus durumu',\n            value: isStopped ? 'Mudahale gerekli' : 'Hat aktif',\n            tone: stopTone\n        },\n        {\n            label: 'Oncelikli renk',\n            value: biggestLossColor.name,\n            tone: 'warn'\n        },\n        {\n            label: 'En iyi kalite',\n            value: bestQualityColor.name,\n            tone: 'good'\n        }\n    ],\n    trend,\n    focus\n};\n\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 420,
+    "y": 80,
+    "wires": [
+      [
+        "ui_tpl_oee_overview",
+        "ui_tpl_oee_ops",
+        "ui_tpl_oee_colors",
+        "ui_tpl_oee_trend"
+      ]
+    ]
+  },
+  {
+    "id": "ui_tpl_oee_theme",
+    "type": "ui_template",
+    "z": "flow_oee_mes",
+    "group": "ui_group_oee_overview",
+    "name": "OEE Theme",
+    "order": 0,
+    "width": 0,
+    "height": 0,
+    "format": "<style>\n:root {\n  --bg-0: #08101a;\n  --bg-1: #0f1826;\n  --panel-border: #24364c;\n  --text-main: #eef4ff;\n  --text-soft: #9db1cb;\n  --shadow: 0 18px 40px rgba(0, 0, 0, 0.28);\n}\nbody,\n.nr-dashboard-theme,\n.nr-dashboard-theme md-content,\n.nr-dashboard-theme ui-view,\n.nr-dashboard-theme .nr-dashboard-cardpanel {\n  background:\n    radial-gradient(circle at top left, rgba(76, 201, 240, 0.10), transparent 26%),\n    radial-gradient(circle at top right, rgba(57, 217, 138, 0.10), transparent 24%),\n    linear-gradient(180deg, #07101a 0%, #0b1420 46%, #101927 100%) !important;\n  color: var(--text-main) !important;\n  font-family: Bahnschrift, 'Segoe UI', sans-serif !important;\n}\n.nr-dashboard-theme .nr-dashboard-cardpanel {\n  padding: 18px 22px 36px !important;\n}\n.nr-dashboard-theme .nr-dashboard-cardcontainer {\n  background: transparent !important;\n  box-shadow: none !important;\n  padding: 0 8px 10px !important;\n}\n.nr-dashboard-theme md-toolbar,\n.nr-dashboard-theme .md-toolbar-tools {\n  background: rgba(8, 16, 26, 0.94) !important;\n  color: var(--text-main) !important;\n  border-bottom: 1px solid rgba(93, 169, 255, 0.14) !important;\n  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.22) !important;\n}\n.nr-dashboard-theme .nr-dashboard-card {\n  background: linear-gradient(180deg, rgba(17, 28, 43, 0.98) 0%, rgba(13, 22, 35, 0.98) 100%) !important;\n  border: 1px solid var(--panel-border) !important;\n  border-radius: 22px !important;\n  box-shadow: var(--shadow) !important;\n  margin-bottom: 24px !important;\n}\n.nr-dashboard-theme .nr-dashboard-cardtitle {\n  color: var(--text-main) !important;\n  font-size: 15px !important;\n  font-weight: 700 !important;\n  letter-spacing: 0.05em;\n  text-transform: uppercase;\n  padding: 20px 24px 12px !important;\n}\n.oee-shell,\n.oee-stack,\n.oee-trend-layout {\n  display: block;\n}\n.oee-hero {\n  display: flex;\n  align-items: flex-start;\n  justify-content: space-between;\n  gap: 18px;\n  padding: 8px 4px 18px;\n}\n.oee-eyebrow {\n  color: var(--text-soft);\n  font-size: 12px;\n  font-weight: 700;\n  letter-spacing: 0.10em;\n  text-transform: uppercase;\n  margin-bottom: 8px;\n}\n.oee-title {\n  font-size: 34px;\n  font-weight: 700;\n  line-height: 1.1;\n}\n.oee-meta {\n  color: var(--text-soft);\n  font-size: 13px;\n  margin-top: 10px;\n}\n.oee-badge {\n  display: inline-flex;\n  align-items: center;\n  gap: 10px;\n  min-height: 46px;\n  padding: 0 16px;\n  border-radius: 999px;\n  border: 1px solid rgba(85, 118, 156, 0.18);\n  background: rgba(255,255,255,0.04);\n  color: var(--text-main);\n  font-size: 13px;\n  font-weight: 700;\n  letter-spacing: 0.06em;\n  text-transform: uppercase;\n}\n.oee-badge-dot {\n  width: 10px;\n  height: 10px;\n  border-radius: 50%;\n  background: #5da9ff;\n}\n.oee-kpi-grid {\n  display: grid;\n  grid-template-columns: repeat(4, minmax(0, 1fr));\n  gap: 14px;\n}\n.oee-kpi-card,\n.oee-mini-card,\n.oee-panel,\n.oee-color-card {\n  border-radius: 18px;\n  border: 1px solid rgba(85, 118, 156, 0.18);\n  background: linear-gradient(180deg, rgba(23, 36, 54, 0.92) 0%, rgba(16, 26, 40, 0.96) 100%) !important;\n  box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);\n}\n.oee-kpi-card {\n  min-height: 112px;\n  padding: 18px;\n}\n.oee-kpi-card.is-featured {\n  border-color: rgba(93, 169, 255, 0.38) !important;\n  background: linear-gradient(180deg, rgba(22, 39, 61, 0.98) 0%, rgba(12, 24, 41, 0.98) 100%) !important;\n}\n.oee-card-label {\n  color: var(--text-soft);\n  font-size: 11px;\n  font-weight: 700;\n  letter-spacing: 0.10em;\n  text-transform: uppercase;\n  margin-bottom: 12px;\n}\n.oee-card-value {\n  color: var(--text-main);\n  font-size: 30px;\n  font-weight: 700;\n  line-height: 1.15;\n}\n.oee-small-value {\n  font-size: 20px;\n}\n.oee-stack {\n  display: grid;\n  gap: 14px;\n}\n.oee-panel {\n  padding: 18px;\n}\n.oee-panel-title {\n  color: var(--text-main);\n  font-size: 14px;\n  font-weight: 700;\n  text-transform: uppercase;\n  letter-spacing: 0.08em;\n  margin-bottom: 16px;\n}\n.oee-mini-grid {\n  display: grid;\n  grid-template-columns: repeat(2, minmax(0, 1fr));\n  gap: 12px;\n}\n.oee-mini-card {\n  min-height: 86px;\n  padding: 16px;\n}\n.oee-info-list {\n  display: grid;\n  gap: 10px;\n}\n.oee-info-row {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  padding: 11px 0;\n  border-bottom: 1px solid rgba(85, 118, 156, 0.16);\n  color: var(--text-soft);\n  font-size: 13px;\n}\n.oee-info-row:last-child {\n  border-bottom: none;\n  padding-bottom: 0;\n}\n.oee-info-row strong {\n  color: var(--text-main);\n  font-size: 14px;\n}\n.oee-color-card {\n  padding: 16px;\n  border-left: 4px solid transparent;\n}\n.oee-color-head {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  margin-bottom: 14px;\n}\n.oee-color-name {\n  font-size: 22px;\n  font-weight: 700;\n}\n.oee-chip {\n  display: inline-flex;\n  align-items: center;\n  min-height: 32px;\n  padding: 0 12px;\n  border-radius: 999px;\n  background: rgba(255,255,255,0.08);\n  color: var(--text-main);\n  font-size: 12px;\n  font-weight: 700;\n}\n.oee-chip-grid {\n  display: grid;\n  grid-template-columns: repeat(3, minmax(0, 1fr));\n  gap: 10px;\n}\n.oee-chip-item {\n  padding: 10px 12px;\n  border-radius: 14px;\n  background: rgba(255,255,255,0.04);\n}\n.oee-chip-item span {\n  display: block;\n  color: var(--text-soft);\n  font-size: 11px;\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n  margin-bottom: 6px;\n}\n.oee-chip-item strong {\n  color: var(--text-main);\n  font-size: 15px;\n}\n.color-yellow {\n  border-color: #f5c451 !important;\n  background: linear-gradient(180deg, rgba(73, 56, 17, 0.96) 0%, rgba(45, 34, 12, 0.98) 100%) !important;\n}\n.color-blue {\n  border-color: #5da9ff !important;\n  background: linear-gradient(180deg, rgba(24, 48, 83, 0.96) 0%, rgba(16, 30, 55, 0.98) 100%) !important;\n}\n.color-red {\n  border-color: #ff6b6b !important;\n  background: linear-gradient(180deg, rgba(73, 24, 31, 0.96) 0%, rgba(43, 17, 22, 0.98) 100%) !important;\n}\n.oee-trend-layout {\n  display: grid;\n  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);\n  gap: 14px;\n}\n.oee-trend-list {\n  display: grid;\n  gap: 12px;\n}\n.oee-trend-row {\n  display: grid;\n  grid-template-columns: 72px minmax(0, 1fr) 88px;\n  gap: 12px;\n  align-items: start;\n  padding: 12px 0;\n  border-bottom: 1px solid rgba(85, 118, 156, 0.16);\n}\n.oee-trend-row:last-child {\n  border-bottom: none;\n  padding-bottom: 0;\n}\n.oee-trend-time {\n  color: var(--text-main);\n  font-size: 13px;\n  font-weight: 700;\n  padding-top: 4px;\n}\n.oee-trend-bars {\n  display: grid;\n  gap: 8px;\n}\n.oee-bar {\n  display: grid;\n  gap: 6px;\n}\n.oee-bar span {\n  color: var(--text-soft);\n  font-size: 12px;\n}\n.oee-bar-track {\n  width: 100%;\n  height: 8px;\n  border-radius: 999px;\n  overflow: hidden;\n  background: rgba(255,255,255,0.08);\n}\n.oee-bar-fill {\n  height: 100%;\n  border-radius: 999px;\n}\n.fill-oee {\n  background: linear-gradient(90deg, #5da9ff 0%, #8ad6ff 100%);\n}\n.fill-quality {\n  background: linear-gradient(90deg, #39d98a 0%, #8bf0bd 100%);\n}\n.fill-performance {\n  background: linear-gradient(90deg, #f5c451 0%, #ffd97d 100%);\n}\n.oee-trend-error {\n  color: var(--text-main);\n  font-size: 13px;\n  font-weight: 700;\n  text-align: right;\n  padding-top: 4px;\n}\n.oee-note-list {\n  display: grid;\n  gap: 10px;\n  margin-bottom: 18px;\n}\n.oee-note-item {\n  padding: 12px 14px;\n  border-radius: 14px;\n  background: rgba(255,255,255,0.04);\n  color: var(--text-main);\n  line-height: 1.5;\n}\n.oee-console-label {\n  color: var(--text-soft);\n  font-size: 11px;\n  font-weight: 700;\n  letter-spacing: 0.10em;\n  text-transform: uppercase;\n  margin-bottom: 8px;\n}\n.oee-console {\n  min-height: 88px;\n  max-height: 160px;\n  overflow: auto;\n  padding: 14px;\n  border-radius: 16px;\n  background: rgba(7, 11, 18, 0.92);\n  border: 1px solid rgba(54, 80, 109, 0.6);\n  color: #dce7f5;\n  font-family: 'Cascadia Code', Consolas, monospace;\n  font-size: 12px;\n  line-height: 1.6;\n  word-break: break-word;\n}\n.oee-empty {\n  padding: 14px 4px 8px;\n  color: var(--text-soft);\n  font-size: 13px;\n}\n.tone-good {\n  border-color: rgba(57, 217, 138, 0.26) !important;\n}\n.tone-warn {\n  border-color: rgba(245, 196, 81, 0.26) !important;\n}\n.tone-bad {\n  border-color: rgba(255, 107, 107, 0.26) !important;\n}\n.tone-good .oee-card-value,\n.tone-good strong {\n  color: #bdf5d8 !important;\n}\n.tone-warn .oee-card-value,\n.tone-warn strong {\n  color: #ffe8a6 !important;\n}\n.tone-bad .oee-card-value,\n.tone-bad strong {\n  color: #ffc3c3 !important;\n}\n.tone-good .oee-badge-dot {\n  background: #39d98a;\n  box-shadow: 0 0 12px rgba(57, 217, 138, 0.95);\n}\n.tone-warn .oee-badge-dot {\n  background: #f5c451;\n  box-shadow: 0 0 12px rgba(245, 196, 81, 0.95);\n}\n.tone-bad .oee-badge-dot {\n  background: #ff6b6b;\n  box-shadow: 0 0 12px rgba(255, 107, 107, 0.95);\n}\n@media (max-width: 960px) {\n  .oee-hero {\n    flex-direction: column;\n    align-items: flex-start;\n  }\n  .oee-kpi-grid,\n  .oee-mini-grid,\n  .oee-chip-grid,\n  .oee-trend-layout {\n    grid-template-columns: 1fr;\n  }\n  .oee-trend-row {\n    grid-template-columns: 1fr;\n  }\n  .oee-trend-error {\n    text-align: left;\n  }\n}\n</style>",
+    "storeOutMessages": false,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "global",
+    "className": "",
+    "x": 150,
+    "y": 20,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "ui_tpl_oee_overview",
+    "type": "ui_template",
+    "z": "flow_oee_mes",
+    "group": "ui_group_oee_overview",
+    "name": "OEE Overview",
+    "order": 1,
+    "width": 30,
+    "height": 8,
+    "format": "<div class='oee-shell' ng-if='msg && msg.payload'>\n  <div class='oee-hero'>\n    <div>\n      <div class='oee-eyebrow'>{{msg.payload.header.subtitle}}</div>\n      <div class='oee-title'>{{msg.payload.header.title}}</div>\n      <div class='oee-meta'>Son guncelleme {{msg.payload.updatedAt}} | {{msg.payload.header.stateSummary}}</div>\n    </div>\n    <div class='oee-badge' ng-class=\"'tone-' + msg.payload.header.tone\">\n      <span class='oee-badge-dot'></span>\n      {{msg.payload.header.lineState}}\n    </div>\n  </div>\n  <div class='oee-kpi-grid'>\n    <div class='oee-kpi-card' ng-repeat='item in msg.payload.kpis track by $index' ng-class=\"['tone-' + item.tone, item.featured ? 'is-featured' : '']\">\n      <div class='oee-card-label'>{{item.label}}</div>\n      <div class='oee-card-value'>{{item.value}}</div>\n    </div>\n  </div>\n</div>\n<div class='oee-empty' ng-if='!msg || !msg.payload'>OEE verisi bekleniyor...</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 720,
+    "y": 40,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "ui_tpl_oee_ops",
+    "type": "ui_template",
+    "z": "flow_oee_mes",
+    "group": "ui_group_oee_operation",
+    "name": "OEE Operations",
+    "order": 1,
+    "width": 15,
+    "height": 11,
+    "format": "<div class='oee-stack' ng-if='msg && msg.payload'>\n  <div class='oee-panel'>\n    <div class='oee-panel-title'>Uretim Ozeti</div>\n    <div class='oee-mini-grid'>\n      <div class='oee-mini-card' ng-repeat='item in msg.payload.production track by $index' ng-class=\"'tone-' + item.tone\">\n        <div class='oee-card-label'>{{item.label}}</div>\n        <div class='oee-card-value'>{{item.value}}</div>\n      </div>\n    </div>\n  </div>\n  <div class='oee-panel'>\n    <div class='oee-panel-title'>Durus ve Hedef</div>\n    <div class='oee-info-list'>\n      <div class='oee-info-row'><span>Planli durus</span><strong>{{msg.payload.downtime.planned}}</strong></div>\n      <div class='oee-info-row'><span>Plansiz durus</span><strong>{{msg.payload.downtime.unplanned}}</strong></div>\n      <div class='oee-info-row'><span>Toplam durus</span><strong>{{msg.payload.downtime.total}}</strong></div>\n      <div class='oee-info-row'><span>Durus nedeni</span><strong>{{msg.payload.downtime.reason}}</strong></div>\n      <div class='oee-info-row'><span>Ariza durumu</span><strong>{{msg.payload.downtime.status}}</strong></div>\n      <div class='oee-info-row'><span>Hedef / Gerceklesen</span><strong>{{msg.payload.targets.ideal}} / {{msg.payload.targets.actual}}</strong></div>\n      <div class='oee-info-row'><span>Toplam kayip</span><strong>{{msg.payload.targets.totalLoss}}</strong></div>\n      <div class='oee-info-row'><span>Genel hata orani</span><strong>{{msg.payload.targets.errorRate}}</strong></div>\n    </div>\n  </div>\n</div>\n<div class='oee-empty' ng-if='!msg || !msg.payload'>Durus ve uretim kartlari veri bekliyor...</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 710,
+    "y": 100,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "ui_tpl_oee_colors",
+    "type": "ui_template",
+    "z": "flow_oee_mes",
+    "group": "ui_group_oee_colors",
+    "name": "OEE Colors",
+    "order": 1,
+    "width": 15,
+    "height": 11,
+    "format": "<div class='oee-stack' ng-if='msg && msg.payload'>\n  <div class='oee-color-card' ng-repeat='item in msg.payload.colors track by item.key' ng-class=\"'color-' + item.key\">\n    <div class='oee-color-head'>\n      <div class='oee-color-name'>{{item.name}}</div>\n      <div class='oee-chip'>{{item.mixRate}}% mix</div>\n    </div>\n    <div class='oee-chip-grid'>\n      <div class='oee-chip-item'><span>Toplam</span><strong>{{item.total}}</strong></div>\n      <div class='oee-chip-item'><span>Saglam</span><strong>{{item.good}}</strong></div>\n      <div class='oee-chip-item'><span>Hurda</span><strong>{{item.scrap}}</strong></div>\n      <div class='oee-chip-item'><span>Yeniden</span><strong>{{item.rework}}</strong></div>\n      <div class='oee-chip-item'><span>Kalite</span><strong>{{item.qualityRate}}%</strong></div>\n      <div class='oee-chip-item'><span>Kayip</span><strong>{{item.lossRate}}%</strong></div>\n    </div>\n  </div>\n  <div class='oee-mini-grid'>\n    <div class='oee-mini-card' ng-repeat='item in msg.payload.insights track by $index' ng-class=\"'tone-' + item.tone\">\n      <div class='oee-card-label'>{{item.label}}</div>\n      <div class='oee-card-value oee-small-value'>{{item.value}}</div>\n    </div>\n  </div>\n</div>\n<div class='oee-empty' ng-if='!msg || !msg.payload'>Renk bazli kalite kartlari veri bekliyor...</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 700,
+    "y": 160,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "ui_tpl_oee_trend",
+    "type": "ui_template",
+    "z": "flow_oee_mes",
+    "group": "ui_group_oee_trend",
+    "name": "OEE Trend",
+    "order": 1,
+    "width": 30,
+    "height": 12,
+    "format": "<div class='oee-trend-layout' ng-if='msg && msg.payload'>\n  <div class='oee-panel'>\n    <div class='oee-panel-title'>Trend Izleme</div>\n    <div class='oee-trend-list'>\n      <div class='oee-trend-row' ng-repeat='item in msg.payload.trend track by $index'>\n        <div class='oee-trend-time'>{{item.time}}</div>\n        <div class='oee-trend-bars'>\n          <div class='oee-bar'>\n            <span>OEE {{item.oee}}%</span>\n            <div class='oee-bar-track'><div class='oee-bar-fill fill-oee' ng-style=\"{'width': item.oeeWidth + '%'}\"></div></div>\n          </div>\n          <div class='oee-bar'>\n            <span>Kalite {{item.quality}}%</span>\n            <div class='oee-bar-track'><div class='oee-bar-fill fill-quality' ng-style=\"{'width': item.qualityWidth + '%'}\"></div></div>\n          </div>\n          <div class='oee-bar'>\n            <span>Performans {{item.performance}}%</span>\n            <div class='oee-bar-track'><div class='oee-bar-fill fill-performance' ng-style=\"{'width': item.performanceWidth + '%'}\"></div></div>\n          </div>\n        </div>\n        <div class='oee-trend-error'>Hata {{item.error}}%</div>\n      </div>\n    </div>\n  </div>\n  <div class='oee-panel'>\n    <div class='oee-panel-title'>Operasyon Notlari</div>\n    <div class='oee-note-list'>\n      <div class='oee-note-item' ng-repeat='note in msg.payload.focus track by $index'>{{note}}</div>\n    </div>\n    <div class='oee-console-label'>Son veri paketi</div>\n    <div class='oee-console'>{{msg.payload.rawLine}}</div>\n  </div>\n</div>\n<div class='oee-empty' ng-if='!msg || !msg.payload'>Trend verisi olusmasi icin OEE mesaji bekleniyor...</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 700,
+    "y": 220,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "ui_group_oee_overview",
+    "type": "ui_group",
+    "name": "OEE Genel Bakis",
+    "tab": "ui_tab_oee",
+    "order": 1,
+    "disp": true,
+    "width": 30,
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "ui_group_oee_operation",
+    "type": "ui_group",
+    "name": "Uretim ve Durus",
+    "tab": "ui_tab_oee",
+    "order": 2,
+    "disp": true,
+    "width": 15,
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "ui_group_oee_colors",
+    "type": "ui_group",
+    "name": "Renk ve Kalite",
+    "tab": "ui_tab_oee",
+    "order": 3,
+    "disp": true,
+    "width": 15,
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "ui_group_oee_trend",
+    "type": "ui_group",
+    "name": "Trend ve Aksiyon",
+    "tab": "ui_tab_oee",
+    "order": 4,
+    "disp": true,
+    "width": 30,
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "ui_tab_oee",
+    "type": "ui_tab",
+    "name": "OEE Panel",
+    "icon": "timeline",
+    "order": 4,
+    "disabled": false,
+    "hidden": false
+  },
+  {
+    "id": "mqtt_broker_oee_cfg",
+    "type": "mqtt-broker",
+    "name": "MQTT Broker OEE",
+    "broker": "broker.emqx.io",
+    "port": "1883",
+    "clientid": "",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "birthTopic": "",
+    "birthQos": "0",
+    "birthRetain": "false",
+    "birthPayload": "",
+    "closeTopic": "",
+    "closeQos": "0",
+    "closeRetain": "false",
+    "closePayload": "",
+    "willTopic": "",
+    "willQos": "0",
+    "willRetain": "false",
+    "willPayload": ""
+  },
+  {
+    "id": "dashboard_cfg_oee",
+    "type": "global-config",
+    "env": [],
+    "modules": {
+      "node-red-dashboard": "3.6.6"
+    }
+  }
+]

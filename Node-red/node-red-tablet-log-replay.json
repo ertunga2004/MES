@@ -1,0 +1,221 @@
+[
+  {
+    "id": "flow_tablet_log_replay",
+    "type": "tab",
+    "label": "Tablet Log Replay",
+    "disabled": false,
+    "info": "Tablet olmadiginda log replay ile OEE ekranini besler.",
+    "env": []
+  },
+  {
+    "id": "inject_replay_latest_tablet",
+    "type": "inject",
+    "z": "flow_tablet_log_replay",
+    "name": "Replay latest tablet log",
+    "props": [
+      {
+        "p": "filename",
+        "v": "C:\\Users\\acer\\Documents\\.CODE\\codex\\MES\\logs\\tablet_log_2026-03-25.txt",
+        "vt": "str"
+      },
+      {
+        "p": "topic",
+        "v": "tablet_log_2026-03-25",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "x": 170,
+    "y": 80,
+    "wires": [
+      [
+        "file_in_tablet_replay"
+      ]
+    ]
+  },
+  {
+    "id": "inject_replay_previous_tablet",
+    "type": "inject",
+    "z": "flow_tablet_log_replay",
+    "name": "Replay previous tablet log",
+    "props": [
+      {
+        "p": "filename",
+        "v": "C:\\Users\\acer\\Documents\\.CODE\\codex\\MES\\logs\\tablet_log_2026-03-24.txt",
+        "vt": "str"
+      },
+      {
+        "p": "topic",
+        "v": "tablet_log_2026-03-24",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "x": 180,
+    "y": 140,
+    "wires": [
+      [
+        "file_in_tablet_replay"
+      ]
+    ]
+  },
+  {
+    "id": "inject_stop_tablet_replay",
+    "type": "inject",
+    "z": "flow_tablet_log_replay",
+    "name": "Stop replay queue",
+    "props": [
+      {
+        "p": "reset",
+        "v": "true",
+        "vt": "bool"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "x": 150,
+    "y": 220,
+    "wires": [
+      [
+        "delay_tablet_replay"
+      ]
+    ]
+  },
+  {
+    "id": "file_in_tablet_replay",
+    "type": "file in",
+    "z": "flow_tablet_log_replay",
+    "name": "read tablet log file",
+    "filename": "filename",
+    "filenameType": "msg",
+    "format": "utf8",
+    "chunk": false,
+    "sendError": true,
+    "encoding": "none",
+    "allProps": false,
+    "x": 430,
+    "y": 110,
+    "wires": [
+      [
+        "fn_prepare_tablet_replay"
+      ]
+    ]
+  },
+  {
+    "id": "fn_prepare_tablet_replay",
+    "type": "function",
+    "z": "flow_tablet_log_replay",
+    "name": "prepare tablet replay",
+    "func": "const text = String(msg.payload || '');\nconst source = String(msg.filename || '').split(/[\\\\/]/).pop() || 'tablet_log';\nconst lines = text.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);\nconst messages = [];\n\nfor (const line of lines) {\n    const tabletIndex = line.indexOf('|Tablet|');\n    if (tabletIndex < 0) continue;\n\n    const payload = line.slice(tabletIndex).trim();\n    const isOee = payload.includes('|Tablet|OEE|');\n    const isFault = /\\|Tablet\\|Ar[^|]{0,2}za\\|/i.test(payload) || payload.includes('|Tablet|Ariza|');\n\n    if (!isOee && !isFault) continue;\n\n    messages.push({\n        payload,\n        replaySource: source,\n        replayTopic: msg.topic || source,\n        replayIndex: messages.length + 1\n    });\n}\n\nnode.status({\n    fill: messages.length ? 'green' : 'yellow',\n    shape: 'dot',\n    text: source + ' | ' + messages.length + ' mesaj hazir'\n});\n\nreturn [messages];",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 660,
+    "y": 110,
+    "wires": [
+      [
+        "delay_tablet_replay"
+      ]
+    ]
+  },
+  {
+    "id": "delay_tablet_replay",
+    "type": "delay",
+    "z": "flow_tablet_log_replay",
+    "name": "1 msg per second",
+    "pauseType": "rate",
+    "timeout": "5",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "rateUnits": "second",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 900,
+    "y": 140,
+    "wires": [
+      [
+        "mqtt_out_tablet_replay",
+        "debug_tablet_replay"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_out_tablet_replay",
+    "type": "mqtt out",
+    "z": "flow_tablet_log_replay",
+    "name": "TABLET LOG OUT",
+    "topic": "sau/iot/mega/konveyor/tablet/log",
+    "qos": "",
+    "retain": "",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "mqtt_broker_tablet_replay_cfg",
+    "x": 1150,
+    "y": 120,
+    "wires": []
+  },
+  {
+    "id": "debug_tablet_replay",
+    "type": "debug",
+    "z": "flow_tablet_log_replay",
+    "name": "TABLET REPLAY DEBUG",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "replaySource & ':' & replayIndex",
+    "statusType": "jsonata",
+    "x": 1160,
+    "y": 180,
+    "wires": []
+  },
+  {
+    "id": "mqtt_broker_tablet_replay_cfg",
+    "type": "mqtt-broker",
+    "name": "MQTT Broker Replay",
+    "broker": "broker.emqx.io",
+    "port": "1883",
+    "clientid": "",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "birthTopic": "",
+    "birthQos": "0",
+    "birthRetain": "false",
+    "birthPayload": "",
+    "closeTopic": "",
+    "closeQos": "0",
+    "closeRetain": "false",
+    "closePayload": "",
+    "willTopic": "",
+    "willQos": "0",
+    "willRetain": "false",
+    "willPayload": ""
+  }
+]

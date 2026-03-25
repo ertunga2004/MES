@@ -1,92 +1,94 @@
-# Raspberry observer yapisi
+# Raspberry Observer
 
-`kamera.py` dosyasi mevcut tek dosyalik HSV denemesi olarak kalabilir. Bunun yanina, masaustunde test edilip daha sonra Raspberry Pi 3 uzerine alinabilecek ayri bir gozlemci yapisi eklendi.
+## Amac
 
-## Dosya yapisi
+`raspberry/` klasoru, konveyor uzerindeki kutulari goruntu ile gozlemleyen pasif observer servisini icerir. Bu servis ana sorting kararini degistirmez; sayim, dogrulama ve sapma takibi icin ek veri uretir.
 
-- `run_observer.py`: ana giris noktasi
-- `calibrate_hsv.py`: HSV ve LAB profili cikarmak icin yardimci arac
-- `config/observer.example.json`: kamera, ROI, tracker, MQTT ayarlari
-- `config/boxes.example.json`: tanimlanacak kutu profilleri ve HSV araliklari
+## Dosya Haritasi
+
+- `run_observer.py`: uygulamanin ana giris noktasi
+- `calibrate_hsv.py`: HSV ve LAB profil cikarimi icin yardimci arac
+- `kamera.py`: tek dosyalik eski HSV denemesi
+- `config/observer.example.json`: kamera, ROI, tracker ve MQTT ayarlari
+- `config/boxes.example.json`: kutu profilleri ve renk araliklari
 - `observer/`: algilama, takip, MQTT ve uygulama modulleri
 
-## Ne yapiyor
+## Ne Yapar
 
-- Kutulari JSON ile tanimlamanizi saglar.
-- Her kutu profili icin HSV maske uretir, istenirse LAB ile daraltir.
-- Kontur alanina gore aday kutulari bulur.
-- Overlap bastirma ile ayni kutunun iki renk olarak sayilmasini azaltir.
-- Hareket toleransli tracker ile ayni kutuya sabit `track_id` verir.
-- Istenirse bir dikey sayim cizgisini gecen kutulari sayar.
-- MQTT uzerinden `status`, `heartbeat`, `tracks` ve `events` yayinlar.
-- Ilk demo asamasinda yalnizca pasif gozlemci olarak calisir; sorting kararini etkilemez.
+- JSON ile kutu profilleri tanimlar
+- HSV maske ve istege bagli LAB kisiti ile kutu tespiti yapar
+- Track bazli izleme ile ayni kutuya tutarli `track_id` atar
+- Dikey sayim cizgisi gecislerini sayar
+- MQTT uzerinden durum, heartbeat, track ve event yayini yapar
 
-Varsayilan MQTT root topic:
+## MQTT Yayinlari
 
-- `sau/iot/mega/konveyor/vision/status`
-- `sau/iot/mega/konveyor/vision/heartbeat`
-- `sau/iot/mega/konveyor/vision/tracks`
-- `sau/iot/mega/konveyor/vision/events`
+Varsayilan root:
 
-Bu secim mevcut projedeki `sau/iot/mega/konveyor/...` yapisiyla uyumlu ama mevcut `status/logs/cmd` topicleriyle cakismayacak sekilde yapildi.
+`sau/iot/mega/konveyor/vision`
+
+Topicler:
+
+- `status`
+- `heartbeat`
+- `tracks`
+- `events`
+
+Tipik `events` olaylari:
+
+- `box_confirmed`
+- `box_lost`
+- `line_crossed`
+
+Bu yayinlar JSON formatindadir.
 
 ## Kurulum
 
-`raspberry` klasorunde:
+`raspberry/` klasorunde:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-## Ilk calistirma
+## Ilk Calistirma
 
 ```bash
 cd raspberry
 python run_observer.py --config config/observer.example.json --boxes config/boxes.example.json
 ```
 
-GUI istemiyorsaniz:
+GUI olmadan:
 
 ```bash
 cd raspberry
 python run_observer.py --config config/observer.example.json --boxes config/boxes.example.json --no-gui
 ```
 
-Varsayilan `observer.example.json` MQTT acik gelir. Demo akisinda bu servis yalnizca `vision/...` topiclerine yayin yapar.
-
-Video dosyasi ile denemek icin:
+Video dosyasi ile test:
 
 ```bash
 cd raspberry
 python run_observer.py --config config/observer.example.json --boxes config/boxes.example.json --source sample.mp4
 ```
 
-## Kutu tanitma akisi
+## Kalibrasyon Akisi
 
 1. `python calibrate_hsv.py --source 0 --profile-id red_box --label "Red Box" --color-name red --overlay-bgr 0,0,255` ile araci acin.
-2. Kutuyu ekrandaki sari merkez ROI'nin icine getirin.
-3. `c` tusuna basin. Arac size dogrudan profile uygun `ranges` ve `lab_ranges` JSON'u uretecek.
-4. Gerekirse trackbar ile manuel HSV denemesi yapip `s` ile anlik HSV araligini alin.
-5. Uretilen JSON'u `config/boxes.example.json` icinde ilgili profile koyun.
-6. Gerekirse `min_area`, `max_area` ve `aspect_ratio` degerlerini ayarlayin.
+2. Kutuyu merkez ROI icine getirin.
+3. `c` ile profil cikartin.
+4. Gerekirse trackbar ile deneme yapip `s` ile HSV araligini alin.
+5. Uretilen JSON parcasini `config/boxes.example.json` icine tasiyin.
+6. `min_area`, `max_area` ve `aspect_ratio` alanlarini sahaya gore ince ayarlayin.
 
-Bu projedeki mevcut renk seti:
+## Dikkat Edilecek Sinirlar
 
-- `red_box`
-- `yellow_box`
-- `blue_box`
+- Observer pasif calisir; Mega kararini override etmez.
+- Track kimligi `item_id` yerine gecmez.
+- Isik kosulu degistiginde sari ve benzeri renkler tekrar kalibre edilmelidir.
+- Pi 3 gibi sinirli cihazlarda ROI'yi dar tutmak ve cozunurlugu dusurmek daha stabildir.
 
-## Saha notlari
+## AI Icin Notlar
 
-- Sari kutu icin en az iki farkli isik kosulunda kalibrasyon alin ve profili sahada tekrar dogrulayin.
-- Demo suresince vision verisi Mega kararini override etmez; Node-RED tarafinda sadece sayim ve sapma karsilastirmasi icin kullanilir.
-- `line_crossed` olaylari, Mega `QUEUE=ENQ` sayaclariyla karsilastirilacak ana vision olayi olarak kabul edilir.
-
-## Notlar
-
-- Su anki siniflandirma renk + alan + oran tabanlidir. Ayni renkte farkli kutular varsa ek ozellik gerekir.
-- `priority` alani, ayni nesne birden fazla profile takildiginda hangi rengin kazanacagini belirler.
-- `tracker.min_confirmed_frames`, yeni bir kutunun kac frame gorulmeden gercek kutu sayilmayacagini belirler.
-- `tracker.expected_direction`, konveyor yonunun tersine giden yalanci eslesmeleri azaltir.
-- Pi 3 uzerinde daha stabil calisma icin ROI'yi dar tutun ve cozunurlugu dusurun.
-- Raspberry tarafinda masaustu gosterimi gerekmiyorsa `--no-gui` ile calistirin.
+- Vision ile ilgili bir gorev verirken mutlaka `config/observer.example.json` ve `config/boxes.example.json` da paylasilmalidir.
+- "Tespiti iyilestir" gibi genel ifadeler yerine hangi renk, hangi isik kosulu ve hangi hata tipi oldugu yazilmalidir.
+- MQTT topic veya event degisikligi oneriliyorsa `mqtt-topics.md` ile uyum kontrol edilmelidir.

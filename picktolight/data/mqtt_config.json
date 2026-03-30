@@ -1,0 +1,7 @@
+{
+  "broker_host": "broker.emqx.io",
+  "broker_port": 1883,
+  "topic_root": "sau/iot/mega/konveyor/picktolight",
+  "station_id": "assembly_01",
+  "keepalive": 60
+}

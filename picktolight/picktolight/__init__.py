@@ -1,0 +1,1 @@
+"""Pick-to-light package."""

@@ -1,0 +1,12 @@
+{
+  "station_id": "assembly_01",
+  "selected_product_id": "lego_vagon",
+  "current_step_index": 0,
+  "phase": "pick",
+  "completed_counts": {
+    "lego_vagon": 2
+  },
+  "last_event_at": "2026-03-30T18:27:46+03:00",
+  "last_event_type": "next_cycle_started",
+  "last_button_source": "gui"
+}

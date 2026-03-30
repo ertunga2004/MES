@@ -1,0 +1,39 @@
+{
+  "box_inventory": [
+    {
+      "box_number": 1,
+      "part_id": "tekerlekli_parca",
+      "part_name": "Tekerlekli Parca",
+      "quantity": 2,
+      "min_quantity": 0
+    },
+    {
+      "box_number": 2,
+      "part_id": "4x2_parca",
+      "part_name": "4x2 Parca",
+      "quantity": 6,
+      "min_quantity": 0
+    },
+    {
+      "box_number": 3,
+      "part_id": "sapka_parca",
+      "part_name": "Sapka Parca",
+      "quantity": 2,
+      "min_quantity": 0
+    },
+    {
+      "box_number": 3,
+      "part_id": "u_parca",
+      "part_name": "U Parca",
+      "quantity": 3,
+      "min_quantity": 0
+    },
+    {
+      "box_number": 4,
+      "part_id": "8x2_parca",
+      "part_name": "8x2 Parca",
+      "quantity": 3,
+      "min_quantity": 0
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+
+logs/*.jsonl
+
+esp32/picktolight_nokia5110/.pio/
+esp32/picktolight_nokia5110/.vscode/
+esp32/picktolight_nokia5110/desktop.ini

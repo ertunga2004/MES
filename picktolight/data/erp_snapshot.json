@@ -1,0 +1,168 @@
+{
+  "generated_at": "2026-03-30T18:27:46+03:00",
+  "station": {
+    "station_id": "assembly_01",
+    "topic_role": "python_authority"
+  },
+  "selected_product_id": "lego_vagon",
+  "selected_product_name": "Lego Vagon",
+  "phase": "pick",
+  "current_step_index": 0,
+  "current_step": {
+    "sequence": 1,
+    "part_id": "tekerlekli_parca",
+    "part_name": "Tekerlekli Parca",
+    "box_number": 1,
+    "quantity": 1
+  },
+  "step_count": 6,
+  "instruction": "Lego Vagon icin kutu 1 icinden 1 adet Tekerlekli Parca alin ve butona basin.",
+  "completed_current_product": 2,
+  "completed_counts": {
+    "lego_vagon": 2
+  },
+  "completed_total": 2,
+  "last_event_at": "2026-03-30T18:27:46+03:00",
+  "last_event_type": "next_cycle_started",
+  "last_button_source": "gui",
+  "recipe_steps": [
+    {
+      "sequence": 1,
+      "part_id": "tekerlekli_parca",
+      "part_name": "Tekerlekli Parca",
+      "box_number": 1,
+      "quantity": 1
+    },
+    {
+      "sequence": 2,
+      "part_id": "4x2_parca",
+      "part_name": "4x2 Parca",
+      "box_number": 2,
+      "quantity": 2
+    },
+    {
+      "sequence": 3,
+      "part_id": "u_parca",
+      "part_name": "U Parca",
+      "box_number": 3,
+      "quantity": 1
+    },
+    {
+      "sequence": 4,
+      "part_id": "4x2_parca",
+      "part_name": "4x2 Parca",
+      "box_number": 2,
+      "quantity": 1
+    },
+    {
+      "sequence": 5,
+      "part_id": "sapka_parca",
+      "part_name": "Sapka Parca",
+      "box_number": 3,
+      "quantity": 1
+    },
+    {
+      "sequence": 6,
+      "part_id": "8x2_parca",
+      "part_name": "8x2 Parca",
+      "box_number": 4,
+      "quantity": 1
+    }
+  ],
+  "box_inventory": [
+    {
+      "box_number": 1,
+      "part_id": "tekerlekli_parca",
+      "part_name": "Tekerlekli Parca",
+      "quantity": 2,
+      "min_quantity": 0
+    },
+    {
+      "box_number": 2,
+      "part_id": "4x2_parca",
+      "part_name": "4x2 Parca",
+      "quantity": 6,
+      "min_quantity": 0
+    },
+    {
+      "box_number": 3,
+      "part_id": "sapka_parca",
+      "part_name": "Sapka Parca",
+      "quantity": 2,
+      "min_quantity": 0
+    },
+    {
+      "box_number": 3,
+      "part_id": "u_parca",
+      "part_name": "U Parca",
+      "quantity": 3,
+      "min_quantity": 0
+    },
+    {
+      "box_number": 4,
+      "part_id": "8x2_parca",
+      "part_name": "8x2 Parca",
+      "quantity": 3,
+      "min_quantity": 0
+    }
+  ],
+  "product_catalog": [
+    {
+      "product_id": "lego_vagon",
+      "product_name": "Lego Vagon",
+      "description": "Ornek pick to light montaj urunu",
+      "steps": [
+        {
+          "sequence": 1,
+          "part_id": "tekerlekli_parca",
+          "part_name": "Tekerlekli Parca",
+          "box_number": 1,
+          "quantity": 1
+        },
+        {
+          "sequence": 2,
+          "part_id": "4x2_parca",
+          "part_name": "4x2 Parca",
+          "box_number": 2,
+          "quantity": 2
+        },
+        {
+          "sequence": 3,
+          "part_id": "u_parca",
+          "part_name": "U Parca",
+          "box_number": 3,
+          "quantity": 1
+        },
+        {
+          "sequence": 4,
+          "part_id": "4x2_parca",
+          "part_name": "4x2 Parca",
+          "box_number": 2,
+          "quantity": 1
+        },
+        {
+          "sequence": 5,
+          "part_id": "sapka_parca",
+          "part_name": "Sapka Parca",
+          "box_number": 3,
+          "quantity": 1
+        },
+        {
+          "sequence": 6,
+          "part_id": "8x2_parca",
+          "part_name": "8x2 Parca",
+          "box_number": 4,
+          "quantity": 1
+        }
+      ]
+    }
+  ],
+  "display_lines": [
+    "Lego Vagon",
+    "Kutu 1 AL",
+    "Tekerlekli Par",
+    "Adet 1",
+    "Tamam 2",
+    "Butona bas"
+  ]
+}

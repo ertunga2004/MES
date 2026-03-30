@@ -30,6 +30,7 @@ void logEvent(const char* module, const String& msg);
 void logAlarm(const char* code, const String& msg);
 void printStatus();
 void publishStatusNow();
+void pausePendingTravelTimer();
 long dist3(int r1,int g1,int b1,int r2,int g2,int b2);
 const char* calibrationWorkflowExpectedLabel();
 const char* calibrationWorkflowNextLabel(uint8_t step);
@@ -1271,6 +1272,10 @@ void logSensorReading(const SensorSample& s, const char* state, unsigned long no
 uint8_t detectStreak = 0;                 // SEARCHING'de ardışık ürün görme sayacı
 const uint8_t DETECT_STREAK_N = 3;        // false-positive azaltır (3 ardışık algı)
 
+bool searchCenteringActive = false;
+unsigned long searchCenteringStartedMs = 0;
+unsigned long CENTER_MS = 100;
+
 uint8_t measCount = 0;                    // 0..10
 uint16_t voteBOS=0, voteR=0, voteY=0, voteB=0, voteCAL=0;
 int measRs[N], measGs[N], measBs[N];
@@ -1281,7 +1286,7 @@ uint8_t detectLabelCount = 0;
 unsigned long lastMeasMs = 0;
 unsigned long measSettleUntilMs = 0;
 const unsigned long measPeriodMs = 120;   // motor durmuşken ölçüm periyodu (ms)
-const unsigned long measSettleMs = 280;   // bant durduktan sonra olcum penceresini sabitle
+unsigned long MEAS_SETTLE_MS = 280;       // bant durduktan sonra olcum penceresini sabitle
 
 bool sensorRearmRequired = false;
 uint8_t sensorClearStreak = 0;
@@ -1377,6 +1382,11 @@ void resetVotes(){
   measSettleUntilMs = 0;
 }
 
+void resetSearchCentering(){
+  searchCenteringActive = false;
+  searchCenteringStartedMs = 0;
+}
+
 void resetDetectLabels(){
   detectLabelCount = 0;
   for(uint8_t i = 0; i < DETECT_STREAK_N; i++) detectLabelCodes[i] = MEAS_LABEL_OTHER;
@@ -1429,6 +1439,20 @@ String detectHintLabel(uint8_t *bestCountOut = nullptr, uint8_t *secondCountOut 
   if(secondCountOut) *secondCountOut = second;
   if(bestMatches > 1) return "BELIRSIZ";
   return label;
+}
+
+void startMeasuring(unsigned long now){
+  motorStop();
+  pausePendingTravelTimer();
+  activeMeasureId = nextMeasureId++;
+  logEvent("AUTO", String("STATE=MEASURING|REASON=OBJECT_DETECTED|MEASURE_ID=") + activeMeasureId
+    + "|SEARCH_HINT=" + detectHintLabel()
+    + "|CENTER_MS=" + CENTER_MS);
+  st = MEASURING;
+  resetVotes();
+  measSettleUntilMs = now + MEAS_SETTLE_MS;
+  resetSearchCentering();
+  publishStatusNow();
 }
 
 int medianFromBuffer(const int *src, int n){
@@ -1681,6 +1705,12 @@ void printStatus(){
   Serial1.print("|TRAVEL_MS=");
   Serial1.print(TRAVEL_MS);
 
+  Serial1.print("|CENTER_MS=");
+  Serial1.print(CENTER_MS);
+
+  Serial1.print("|SETTLE_MS=");
+  Serial1.print(MEAS_SETTLE_MS);
+
   Serial1.print("|LAST=");
   Serial1.print(lastMeasured);
 
@@ -1726,6 +1756,8 @@ void printHelp(){
   Serial1.println("  rev           (konveyor yonunu degistir)");
   Serial1.println("  speed X       (PWM hiz 0-255)");
   Serial1.println("  t MS          (urun seyahat suresi ms)");
+  Serial1.println("  center MS     (algiladiktan sonra stop oncesi ek akis)");
+  Serial1.println("  settle MS     (stop sonrasi olcum oncesi bekleme)");
 
   Serial1.println("\nROBOT KOL:");
   Serial1.println("  pickplace     (robot alma-birakma test)");
@@ -1844,6 +1876,7 @@ void loop() {
       if(st == STOPPED){
         detectStreak = 0;
         resetDetectLabels();
+        resetSearchCentering();
         sensorRearmRequired = false;
         sensorClearStreak = 0;
         sensorRearmRemainingMs = 0;
@@ -1860,6 +1893,7 @@ void loop() {
       autoMode = false;
       detectStreak = 0;
       resetDetectLabels();
+      resetSearchCentering();
       motorStop();
       pausePendingTravelTimer();
 
@@ -1899,6 +1933,28 @@ void loop() {
       } else {
         logEvent("AUTO", "ERROR=INVALID_TRAVEL_MS");
         Serial1.println("HATA: t 500..20000 (ms)");
+      }
+    }
+    else if(cmd.startsWith("center ")){
+      long v = cmd.substring(7).toInt();
+      if(v >= 0 && v <= 1500){
+        CENTER_MS = (unsigned long)v;
+        logEvent("AUTO", String("CENTER_MS=") + CENTER_MS);
+        publishStatusNow();
+      } else {
+        logEvent("AUTO", "ERROR=INVALID_CENTER_MS");
+        Serial1.println("HATA: center 0..1500 (ms)");
+      }
+    }
+    else if(cmd.startsWith("settle ")){
+      long v = cmd.substring(7).toInt();
+      if(v >= 0 && v <= 2000){
+        MEAS_SETTLE_MS = (unsigned long)v;
+        logEvent("AUTO", String("SETTLE_MS=") + MEAS_SETTLE_MS);
+        publishStatusNow();
+      } else {
+        logEvent("AUTO", "ERROR=INVALID_SETTLE_MS");
+        Serial1.println("HATA: settle 0..2000 (ms)");
       }
     }
 
@@ -2066,6 +2122,11 @@ void loop() {
       return;
     }
 
+    if(searchCenteringActive && (now - searchCenteringStartedMs) >= CENTER_MS){
+      startMeasuring(now);
+      return;
+    }
+
     if(now - lastSenseMs < sensePeriodMs){
       return;
     }
@@ -2087,6 +2148,7 @@ void loop() {
           sensorRearmRemainingMs = 0;
           detectStreak = 0;
           resetDetectLabels();
+          resetSearchCentering();
         }
       } else {
         sensorClearStreak = 0;
@@ -2097,10 +2159,12 @@ void loop() {
         sensorClearStreak = 0;
         detectStreak = 0;
         resetDetectLabels();
+        resetSearchCentering();
         logEvent("AUTO", "STATE=SEARCHING|EVENT=REARM_TIMEOUT|ACTION=ALLOW_OBJECT");
       }
 
       if(sensorRearmRequired){
+        resetSearchCentering();
         return;
       }
     }
@@ -2108,12 +2172,14 @@ void loop() {
     if(s.cls == "CAL"){
       detectStreak = 0;
       resetDetectLabels();
+      resetSearchCentering();
       return;
     }
 
     if(!s.objectPresent){
       detectStreak = 0;
       resetDetectLabels();
+      resetSearchCentering();
       return; // ürün yok -> bant dönmeye devam
     }
 
@@ -2123,14 +2189,17 @@ void loop() {
       return;
     }
 
-    motorStop();
-    pausePendingTravelTimer();
-    activeMeasureId = nextMeasureId++;
-    logEvent("AUTO", String("STATE=MEASURING|REASON=OBJECT_DETECTED|MEASURE_ID=") + activeMeasureId + "|SEARCH_HINT=" + detectHintLabel());
-    st = MEASURING;
-    resetVotes();
-    measSettleUntilMs = now + measSettleMs;
-    publishStatusNow();
+    if(!searchCenteringActive){
+      searchCenteringActive = true;
+      searchCenteringStartedMs = now;
+      logEvent("AUTO", String("STATE=SEARCHING|EVENT=OBJECT_LOCKED|SEARCH_HINT=") + detectHintLabel()
+        + "|CENTER_MS=" + CENTER_MS);
+      if(CENTER_MS > 0){
+        return;
+      }
+    }
+
+    startMeasuring(now);
     return;
   }
 
@@ -2404,6 +2473,7 @@ void loop() {
 
     detectStreak = 0;
     resetDetectLabels();
+    resetSearchCentering();
     sensorRearmRequired = true;
     sensorClearStreak = 0;
     sensorRearmRemainingMs = SENSOR_REARM_MIN_RUN_MS;
@@ -2487,6 +2557,7 @@ void loop() {
       lastSenseMs = 0;
       detectStreak = 0;
       resetDetectLabels();
+      resetSearchCentering();
       runConveyorAndTrack(now);
       publishStatusNow();
     }

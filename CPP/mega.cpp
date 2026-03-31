@@ -25,6 +25,7 @@ void stepTick();
 void stepStop();
 void stepStartMove(long steps);
 void stepStartMoveWithLimit(long steps, int dirToWatch, uint8_t pinToWatch);
+void servoTick();
 void delayWithStep(unsigned long ms);
 void logEvent(const char* module, const String& msg);
 void logAlarm(const char* code, const String& msg);
@@ -72,6 +73,19 @@ const uint8_t SV2_PIN = 11;
 const uint8_t SV3_PIN = 12;
 const uint8_t SV4_PIN = 13;
 
+enum ServoAxis : uint8_t {
+  SERVO_S1 = 0,
+  SERVO_S2 = 1,
+  SERVO_S3 = 2,
+  SERVO_S4 = 3,
+  SERVO_COUNT = 4
+};
+
+const unsigned long SERVO_STEP_INTERVAL_MS[SERVO_COUNT] = {12, 12, 12, 8};
+int servoCurrent[SERVO_COUNT] = {90, 90, 90, 90};
+int servoTarget[SERVO_COUNT]  = {90, 90, 90, 90};
+unsigned long servoLastStepMs[SERVO_COUNT] = {0, 0, 0, 0};
+
 /* =========================
    (3B) LIMIT SWITCH (MEGA)
    22: alma (smove + iken son nokta)
@@ -91,12 +105,85 @@ bool isSwitchPressed(uint8_t pin){
 
 static inline int clampAngle(int a){ return constrain(a, 0, 180); }
 
+Servo& servoByAxis(uint8_t axis){
+  switch(axis){
+    case SERVO_S1: return sv1;
+    case SERVO_S2: return sv2;
+    case SERVO_S3: return sv3;
+    default:       return sv4;
+  }
+}
+
+void servoSetImmediate(uint8_t axis, int angle){
+  angle = clampAngle(angle);
+  servoCurrent[axis] = angle;
+  servoTarget[axis] = angle;
+  servoLastStepMs[axis] = millis();
+  servoByAxis(axis).write(angle);
+}
+
+void servoSetTarget(uint8_t axis, int angle){
+  servoTarget[axis] = clampAngle(angle);
+}
+
+bool servoAtTarget(uint8_t axis){
+  return servoCurrent[axis] == servoTarget[axis];
+}
+
+bool servosAtTarget(){
+  for(uint8_t axis = 0; axis < SERVO_COUNT; axis++){
+    if(!servoAtTarget(axis)) return false;
+  }
+  return true;
+}
+
+void servoTick(){
+  unsigned long now = millis();
+  for(uint8_t axis = 0; axis < SERVO_COUNT; axis++){
+    if(servoCurrent[axis] == servoTarget[axis]) continue;
+    if(now - servoLastStepMs[axis] < SERVO_STEP_INTERVAL_MS[axis]) continue;
+    servoLastStepMs[axis] = now;
+    servoCurrent[axis] += (servoTarget[axis] > servoCurrent[axis]) ? 1 : -1;
+    servoByAxis(axis).write(servoCurrent[axis]);
+  }
+}
+
+void waitForServo(uint8_t axis, unsigned long timeoutMs = 2500){
+  unsigned long t0 = millis();
+  while(!servoAtTarget(axis) && (millis() - t0 < timeoutMs)){
+    delayWithStep(1);
+  }
+}
+
+void waitForServos(unsigned long timeoutMs = 4000){
+  unsigned long t0 = millis();
+  while(!servosAtTarget() && (millis() - t0 < timeoutMs)){
+    delayWithStep(1);
+  }
+}
+
 void setServos(int a1, int a2, int a3, int a4){
-  a1 = clampAngle(a1); a2 = clampAngle(a2); a3 = clampAngle(a3); a4 = clampAngle(a4);
-  sv1.write(a1);
-  sv2.write(a2);
-  sv3.write(a3);
-  sv4.write(a4);
+  servoSetTarget(SERVO_S1, a1);
+  servoSetTarget(SERVO_S2, a2);
+  servoSetTarget(SERVO_S3, a3);
+  servoSetTarget(SERVO_S4, a4);
+}
+
+void setServosImmediate(int a1, int a2, int a3, int a4){
+  servoSetImmediate(SERVO_S1, a1);
+  servoSetImmediate(SERVO_S2, a2);
+  servoSetImmediate(SERVO_S3, a3);
+  servoSetImmediate(SERVO_S4, a4);
+}
+
+void moveServosBlocking(int a1, int a2, int a3, int a4){
+  setServos(a1, a2, a3, a4);
+  waitForServos();
+}
+
+void moveServoBlocking(uint8_t axis, int angle, unsigned long timeoutMs = 2500){
+  servoSetTarget(axis, angle);
+  waitForServo(axis, timeoutMs);
 }
 
 
@@ -105,43 +192,43 @@ void setServos(int a1, int a2, int a3, int a4){
    ========================= */
 void goPickPose(){
   // Alma konumu: s1:90,s3:20,s2:130,s4:100
-  setServos(90, 125, 20, 100);
+  moveServosBlocking(90, 125, 20, 100);
 }
 
 void gripBox(){
-  // s4:160 (hemen) s4:155
-  sv4.write(clampAngle(160));
-  delayWithStep(200);
-  sv4.write(clampAngle(155));
-
+  // Kapatmayi kademeli yap ki gripper urune sert vurmasin.
+  moveServoBlocking(SERVO_S4, 160);
+  delayWithStep(80);
+  moveServoBlocking(SERVO_S4, 155);
 }
 
 void goLiftPose(){
   // Kutuyu kaldırma: s2:150,s3:40,s1:160 (kutuyu havaya al / güvenli taşıma)
   delayWithStep(1000);
-  setServos(160, 150, 40, 155);
-  delayWithStep(350);
+  moveServosBlocking(160, 150, 40, 155);
+  delayWithStep(120);
 }
 
 void goTravelPose(){
   // Taşıma pozu: kafa YUKARIDA kalsın ki dönüşte kutuya/konveyöre çarpmasın
   // Not: s4 burada 170 (kapalı) kalsın, istersen 155 de olur.
-  setServos(160, 150, 40, 170);
-  delayWithStep(350);
+  moveServosBlocking(160, 150, 40, 170);
+  delayWithStep(120);
 }
 
 void releaseBox(){
   // Bırak: s4:100, sonra reset: s4:170
-  sv4.write(clampAngle(100));
-  delayWithStep(300);
-  sv4.write(clampAngle(170));
-  delayWithStep(300);
+  moveServoBlocking(SERVO_S4, 100);
+  delayWithStep(150);
+  moveServoBlocking(SERVO_S4, 170);
+  delayWithStep(120);
 }
 
 void runStepUntilStopOrTimeout(unsigned long timeoutMs){
   unsigned long t0 = millis();
   while(stepRunning){
     stepTick();
+    servoTick();
     if(millis() - t0 > timeoutMs){
       logEvent("STEP", "ERROR=TIMEOUT|ACTION=STOP");
       stepStop();
@@ -208,7 +295,6 @@ const long PP_ESCAPE_STEPS_22 = -90;   // 22 basiliysa kacis
 const long PP_ESCAPE_STEPS_23 = +90;   // 23 basiliysa kacis (ters yone kac)
 const unsigned long LIMIT_COOLDOWN_MS = 120;
 const unsigned long DROP_SETTLE_MS = 500;
-const unsigned long SERVO_STAGGER_MS = 200;
 
 static inline bool ppElapsed(unsigned long ms){ return (millis() - ppT0) >= ms; }
 static inline void ppEnter(uint8_t s){ ppSt = (PickPlaceState)s; ppT0 = millis(); ppMoveStarted = false; }
@@ -232,6 +318,7 @@ void pickPlaceResetDone(){
 void pickPlaceTick(){
   // step her zaman akmali
   stepTick();
+  servoTick();
 
   // limit spam azaltma: limit vurunca bir sure yeni hareket baslatma
   bool cool = (millis() < ppLimitCooldownUntil);
@@ -277,20 +364,19 @@ void pickPlaceTick(){
     }
 
     case PP_PICK_POSE: {
-      goPickPose();                 // bu fonksiyon kendi icinde delayWithStep kullaniyor
-      // Non-blocking istiyoruz ama bu poz gecisleri zaten kisa; sorun degil.
-      ppEnter((uint8_t)PP_GRIP_160);
+      setServos(90, 125, 20, 100);
+      if(servosAtTarget()) ppEnter((uint8_t)PP_GRIP_160);
       return;
     }
 
     case PP_GRIP_160: {
-      sv4.write(clampAngle(160));
-      if(ppElapsed(200)) ppEnter((uint8_t)PP_GRIP_155);
+      servoSetTarget(SERVO_S4, 160);
+      if(servoAtTarget(SERVO_S4)) ppEnter((uint8_t)PP_GRIP_155);
       return;
     }
     case PP_GRIP_155: {
-      sv4.write(clampAngle(155));
-      if(ppElapsed(150)) ppEnter((uint8_t)PP_LIFT_WAIT);
+      servoSetTarget(SERVO_S4, 155);
+      if(servoAtTarget(SERVO_S4)) ppEnter((uint8_t)PP_LIFT_WAIT);
       return;
     }
 
@@ -301,12 +387,12 @@ void pickPlaceTick(){
     }
     case PP_LIFT_S2: {
       setServos(90, 150, 20, 155);
-      if(ppElapsed(SERVO_STAGGER_MS)) ppEnter((uint8_t)PP_LIFT_SET);
+      if(servoAtTarget(SERVO_S2)) ppEnter((uint8_t)PP_LIFT_SET);
       return;
     }
     case PP_LIFT_SET: {
       setServos(160, 150, 40, 155);
-      if(ppElapsed(350)) ppEnter((uint8_t)PP_GO_23_START);
+      if(servosAtTarget()) ppEnter((uint8_t)PP_GO_23_START);
       return;
     }
 
@@ -362,19 +448,19 @@ void pickPlaceTick(){
     }
 
     case PP_RELEASE_100: {
-      sv4.write(clampAngle(100));
-      if(ppElapsed(300)) ppEnter((uint8_t)PP_RELEASE_170);
+      servoSetTarget(SERVO_S4, 100);
+      if(servoAtTarget(SERVO_S4)) ppEnter((uint8_t)PP_RELEASE_170);
       return;
     }
     case PP_RELEASE_170: {
-      sv4.write(clampAngle(170));
-      if(ppElapsed(300)) ppEnter((uint8_t)PP_TRAVEL_POSE);
+      servoSetTarget(SERVO_S4, 170);
+      if(servoAtTarget(SERVO_S4)) ppEnter((uint8_t)PP_TRAVEL_POSE);
       return;
     }
 
     case PP_TRAVEL_POSE: {
-      goTravelPose(); // mevcut fonksiyon (kisa)
-      ppEnter((uint8_t)PP_GO_22_START);
+      setServos(160, 150, 40, 170);
+      if(servosAtTarget()) ppEnter((uint8_t)PP_GO_22_START);
       return;
     }
 
@@ -409,14 +495,16 @@ void pickPlaceTick(){
     case PP_RETURN_ALIGN: {
       // Donuste sirayi ters cevir: once s1/s3 yaklas, sonra s2 asagi insin.
       setServos(90, 150, 20, 170);
-      if(ppElapsed(SERVO_STAGGER_MS)) ppEnter((uint8_t)PP_FINAL_PICKPOSE);
+      if(servosAtTarget()) ppEnter((uint8_t)PP_FINAL_PICKPOSE);
       return;
     }
 
     case PP_FINAL_PICKPOSE: {
-      goPickPose();
-      logEvent("ROBOT", "PICKPLACE=DONE");
-      ppSt = PP_DONE;
+      setServos(90, 125, 20, 100);
+      if(servosAtTarget()){
+        logEvent("ROBOT", "PICKPLACE=DONE");
+        ppSt = PP_DONE;
+      }
       return;
     }
 
@@ -553,6 +641,7 @@ void delayWithStep(unsigned long ms){
   unsigned long t0 = millis();
   while(millis() - t0 < ms){
     stepTick();
+    servoTick();
     // istersen burada başka tick'ler de eklenebilir
   }
 }
@@ -564,12 +653,14 @@ unsigned long pulseInStep(uint8_t pin, uint8_t state, unsigned long timeout_us){
   // 1) önce pinin "state değil" hale gelmesini bekle (önceki pulse kalıntısı vs.)
   while(digitalRead(pin) == state){
     stepTick();
+    servoTick();
     if(micros() - start >= timeout_us) return 0UL;
   }
 
   // 2) pulse başlangıcını bekle
   while(digitalRead(pin) != state){
     stepTick();
+    servoTick();
     if(micros() - start >= timeout_us) return 0UL;
   }
 
@@ -577,6 +668,7 @@ unsigned long pulseInStep(uint8_t pin, uint8_t state, unsigned long timeout_us){
   unsigned long pulseStart = micros();
   while(digitalRead(pin) == state){
     stepTick();
+    servoTick();
     if(micros() - start >= timeout_us) return 0UL;
   }
   return micros() - pulseStart;
@@ -1828,7 +1920,7 @@ void setup() {
   stepRelease();
 
   // STARTUP: HOME @ LIM22 ve kollar aşağıda
-  goTravelPose();
+  setServosImmediate(160, 150, 40, 170);
   homeToPickLimit22();
   goPickPose();
 
@@ -2045,23 +2137,27 @@ void loop() {
     }
     else if(cmd.startsWith("s1")){
       int a = cmd.substring(2).toInt();
-      sv1.write(clampAngle(a));
-      logEvent("ROBOT", String("S1=") + clampAngle(a));
+      a = clampAngle(a);
+      servoSetTarget(SERVO_S1, a);
+      logEvent("ROBOT", String("S1=") + a);
     }
     else if(cmd.startsWith("s2")){
       int a = cmd.substring(2).toInt();
-      sv2.write(clampAngle(a));
-      logEvent("ROBOT", String("S2=") + clampAngle(a));
+      a = clampAngle(a);
+      servoSetTarget(SERVO_S2, a);
+      logEvent("ROBOT", String("S2=") + a);
     }
     else if(cmd.startsWith("s3")){
       int a = cmd.substring(2).toInt();
-      sv3.write(clampAngle(a));
-      logEvent("ROBOT", String("S3=") + clampAngle(a));
+      a = clampAngle(a);
+      servoSetTarget(SERVO_S3, a);
+      logEvent("ROBOT", String("S3=") + a);
     }
     else if(cmd.startsWith("s4")){
       int a = cmd.substring(2).toInt();
-      sv4.write(clampAngle(a));
-      logEvent("ROBOT", String("S4=") + clampAngle(a));
+      a = clampAngle(a);
+      servoSetTarget(SERVO_S4, a);
+      logEvent("ROBOT", String("S4=") + a);
     }
     else if(cmd.startsWith("cal")){
       String calArg = cmd.substring(3);

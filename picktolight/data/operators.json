@@ -1,0 +1,16 @@
+{
+  "operators": [
+    {
+      "operator_id": "OP001",
+      "operator_name": "Ali"
+    },
+    {
+      "operator_id": "OP002",
+      "operator_name": "Ayse"
+    },
+    {
+      "operator_id": "OP003",
+      "operator_name": "Mehmet"
+    }
+  ]
+}

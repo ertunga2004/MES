@@ -23,6 +23,7 @@ ESP32 karti powerbank uzerinden USB ile beslenecek. Nokia 5110 modulunu ESP32'ni
 | Uc 2 | GND |
 
 Kod `INPUT_PULLUP` kullandigi icin ek direnc gerekmez.
+Kisa basma normal ilerletme, hizli cift basma son operasyonu geri alma, 3 saniye uzun basma reset komutu icindir.
 
 ## ASCII Cizim
 

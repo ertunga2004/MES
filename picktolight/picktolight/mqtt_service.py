@@ -27,6 +27,7 @@ class MqttBridge:
             "state": f"{self.topic_root}/station/state",
             "display": f"{self.topic_root}/station/display",
             "button": f"{self.topic_root}/station/button",
+            "command": f"{self.topic_root}/station/command",
             "event": f"{self.topic_root}/station/event",
             "python_status": f"{self.topic_root}/station/python_status",
             "esp32_status": f"{self.topic_root}/station/esp32_status",
@@ -75,6 +76,7 @@ class MqttBridge:
     def _on_connect(self, client, userdata, flags, reason_code, properties=None) -> None:
         self.connected = True
         client.subscribe(self.topics["button"])
+        client.subscribe(self.topics["command"])
         client.publish(
             self.topics["python_status"],
             json.dumps({"status": "online", "station_id": self.config["station_id"]}),

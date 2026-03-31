@@ -50,3 +50,24 @@ def read_recent_jsonl(path: Path, limit: int = 10) -> list[dict[str, Any]]:
             continue
 
     return payloads
+
+
+def read_all_jsonl(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if limit is not None:
+        lines = lines[-limit:]
+
+    payloads: list[dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payloads.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    return payloads

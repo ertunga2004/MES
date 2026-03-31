@@ -4,36 +4,43 @@
       "box_number": 1,
       "part_id": "tekerlekli_parca",
       "part_name": "Tekerlekli Parca",
-      "quantity": 2,
-      "min_quantity": 0
+      "quantity": 8,
+      "min_quantity": 1
     },
     {
       "box_number": 2,
       "part_id": "4x2_parca",
       "part_name": "4x2 Parca",
-      "quantity": 6,
-      "min_quantity": 0
+      "quantity": 5,
+      "min_quantity": 3
     },
     {
       "box_number": 3,
       "part_id": "sapka_parca",
       "part_name": "Sapka Parca",
-      "quantity": 2,
-      "min_quantity": 0
+      "quantity": 8,
+      "min_quantity": 1
     },
     {
       "box_number": 3,
       "part_id": "u_parca",
       "part_name": "U Parca",
-      "quantity": 3,
-      "min_quantity": 0
+      "quantity": 9,
+      "min_quantity": 1
     },
     {
       "box_number": 4,
       "part_id": "8x2_parca",
       "part_name": "8x2 Parca",
-      "quantity": 3,
-      "min_quantity": 0
+      "quantity": 9,
+      "min_quantity": 1
+    },
+    {
+      "box_number": 4,
+      "part_id": "vida_parca",
+      "part_name": "Vida",
+      "quantity": 48,
+      "min_quantity": 4
     }
   ]
 }

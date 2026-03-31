@@ -6,6 +6,7 @@ DATA_DIR = BASE_DIR / "data"
 LOG_DIR = BASE_DIR / "logs"
 
 PRODUCTS_PATH = DATA_DIR / "products.json"
+OPERATORS_PATH = DATA_DIR / "operators.json"
 INVENTORY_PATH = DATA_DIR / "inventory.json"
 STATE_PATH = DATA_DIR / "station_state.json"
 ERP_SNAPSHOT_PATH = DATA_DIR / "erp_snapshot.json"

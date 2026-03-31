@@ -10,42 +10,307 @@
           "part_id": "tekerlekli_parca",
           "part_name": "Tekerlekli Parca",
           "box_number": 1,
-          "quantity": 1
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_1_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 1,
+              "part_id": "tekerlekli_parca",
+              "part_name": "Tekerlekli Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_1_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "tekerlekli_parca",
+              "part_name": "Tekerlekli Parca",
+              "quantity": 0
+            }
+          ]
         },
         {
           "sequence": 2,
           "part_id": "4x2_parca",
           "part_name": "4x2 Parca",
           "box_number": 2,
-          "quantity": 2
+          "quantity": 2,
+          "operations": [
+            {
+              "operation_id": "op_2_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 2,
+              "part_id": "4x2_parca",
+              "part_name": "4x2 Parca",
+              "quantity": 2
+            },
+            {
+              "operation_id": "op_2_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "4x2_parca",
+              "part_name": "4x2 Parca",
+              "quantity": 0
+            }
+          ]
         },
         {
           "sequence": 3,
           "part_id": "u_parca",
           "part_name": "U Parca",
           "box_number": 3,
-          "quantity": 1
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_3_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 3,
+              "part_id": "u_parca",
+              "part_name": "U Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_3_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "u_parca",
+              "part_name": "U Parca",
+              "quantity": 0
+            }
+          ]
         },
         {
           "sequence": 4,
           "part_id": "4x2_parca",
           "part_name": "4x2 Parca",
           "box_number": 2,
-          "quantity": 1
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_4_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 2,
+              "part_id": "4x2_parca",
+              "part_name": "4x2 Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_4_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "4x2_parca",
+              "part_name": "4x2 Parca",
+              "quantity": 0
+            }
+          ]
         },
         {
           "sequence": 5,
           "part_id": "sapka_parca",
           "part_name": "Sapka Parca",
           "box_number": 3,
-          "quantity": 1
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_5_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 3,
+              "part_id": "sapka_parca",
+              "part_name": "Sapka Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_5_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "sapka_parca",
+              "part_name": "Sapka Parca",
+              "quantity": 0
+            }
+          ]
         },
         {
           "sequence": 6,
           "part_id": "8x2_parca",
           "part_name": "8x2 Parca",
           "box_number": 4,
-          "quantity": 1
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_6_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 4,
+              "part_id": "8x2_parca",
+              "part_name": "8x2 Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_6_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "8x2_parca",
+              "part_name": "8x2 Parca",
+              "quantity": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "product_id": "lego_vidali_vagon",
+      "product_name": "Lego Vidali Vagon",
+      "description": "Tornavida ve vida akisi iceren ornek montaj urunu",
+      "steps": [
+        {
+          "sequence": 1,
+          "part_id": "tekerlekli_parca",
+          "part_name": "Tekerlekli Parca",
+          "box_number": 1,
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_1_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 1,
+              "part_id": "tekerlekli_parca",
+              "part_name": "Tekerlekli Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_1_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "tekerlekli_parca",
+              "part_name": "Tekerlekli Parca",
+              "quantity": 0
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "part_id": "4x2_parca",
+          "part_name": "4x2 Parca",
+          "box_number": 2,
+          "quantity": 2,
+          "operations": [
+            {
+              "operation_id": "op_2_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 2,
+              "part_id": "4x2_parca",
+              "part_name": "4x2 Parca",
+              "quantity": 2
+            },
+            {
+              "operation_id": "op_2_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "4x2_parca",
+              "part_name": "4x2 Parca",
+              "quantity": 0
+            }
+          ]
+        },
+        {
+          "sequence": 3,
+          "part_id": "vida_parca",
+          "part_name": "Vida",
+          "box_number": 4,
+          "quantity": 2,
+          "operations": [
+            {
+              "operation_id": "op_3_1",
+              "action": "tool_pick",
+              "label": "Tornavida al",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "tornavida",
+              "part_name": "Tornavida",
+              "quantity": 0
+            },
+            {
+              "operation_id": "op_3_2",
+              "action": "pick",
+              "label": "Vida al",
+              "consumes_inventory": true,
+              "box_number": 4,
+              "part_id": "vida_parca",
+              "part_name": "Vida",
+              "quantity": 2
+            },
+            {
+              "operation_id": "op_3_3",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "vida_parca",
+              "part_name": "Vida Baglantisi",
+              "quantity": 0
+            }
+          ]
+        },
+        {
+          "sequence": 4,
+          "part_id": "sapka_parca",
+          "part_name": "Sapka Parca",
+          "box_number": 3,
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_4_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 3,
+              "part_id": "sapka_parca",
+              "part_name": "Sapka Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_4_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "sapka_parca",
+              "part_name": "Sapka Parca",
+              "quantity": 0
+            }
+          ]
         }
       ]
     }

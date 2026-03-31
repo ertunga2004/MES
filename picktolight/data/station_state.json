@@ -1,12 +1,20 @@
 {
   "station_id": "assembly_01",
-  "selected_product_id": "lego_vagon",
+  "selected_product_id": "lego_vidali_vagon",
   "current_step_index": 0,
-  "phase": "pick",
+  "phase": "active",
   "completed_counts": {
-    "lego_vagon": 2
+    "lego_vagon": 10,
+    "lego_vidali_vagon": 3
   },
-  "last_event_at": "2026-03-30T18:27:46+03:00",
-  "last_event_type": "next_cycle_started",
-  "last_button_source": "gui"
+  "last_event_at": "2026-03-31T15:59:17+03:00",
+  "last_event_type": "cycle_reset",
+  "last_button_source": "gui",
+  "last_operation_duration_ms": 2309,
+  "last_cycle_duration_ms": 72309,
+  "current_cycle_started_at": "2026-03-31T15:59:17+03:00",
+  "current_operation_started_at": "2026-03-31T15:59:17+03:00",
+  "selected_operator_id": "OP001",
+  "current_operation_index": 0,
+  "undo_stack": []
 }

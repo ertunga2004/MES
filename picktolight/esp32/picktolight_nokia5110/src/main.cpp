@@ -18,6 +18,7 @@ const uint16_t mqttPort = 1883;
 
 const char* TOPIC_DISPLAY = "sau/iot/mega/konveyor/picktolight/station/display";
 const char* TOPIC_BUTTON = "sau/iot/mega/konveyor/picktolight/station/button";
+const char* TOPIC_COMMAND = "sau/iot/mega/konveyor/picktolight/station/command";
 const char* TOPIC_STATUS = "sau/iot/mega/konveyor/picktolight/station/esp32_status";
 const char* TOPIC_HEARTBEAT = "sau/iot/mega/konveyor/picktolight/station/heartbeat";
 
@@ -34,7 +35,11 @@ constexpr int PIN_LCD_RST = 33;
 // Optional button
 // ---------------------
 constexpr int PIN_BUTTON = 25;
-constexpr unsigned long DEBOUNCE_MS = 60;
+constexpr unsigned long DEBOUNCE_MS = 35;
+constexpr unsigned long DOUBLE_CLICK_MS = 320;
+constexpr unsigned long RESET_HOLD_MS = 3000;
+constexpr uint8_t MAX_QUEUED_PRESSES = 6;
+constexpr uint8_t MAX_QUEUED_COMMANDS = 3;
 
 // ---------------------
 // Timing
@@ -65,10 +70,18 @@ String displayLines[6] = {
 
 int lastButtonReading = HIGH;
 int stableButtonState = HIGH;
+bool buttonPressed = false;
+bool longPressTriggered = false;
+bool pendingSingleClick = false;
 unsigned long lastDebounceAt = 0;
+unsigned long buttonPressStartedAt = 0;
+unsigned long firstClickReleasedAt = 0;
 unsigned long lastWiFiTryAt = 0;
 unsigned long lastMQTTTryAt = 0;
 unsigned long lastHeartbeatAt = 0;
+uint8_t queuedPressCount = 0;
+uint8_t queuedUndoCount = 0;
+uint8_t queuedResetCount = 0;
 
 void renderDisplay();
 void setStatusLines(const String& line1, const String& line2 = "", const String& line3 = "");
@@ -77,6 +90,9 @@ void ensureWiFi();
 void ensureMQTT();
 void publishStatus(const char* statusText);
 void publishHeartbeat(const char* statusText);
+bool publishCommand(const char* action);
+bool publishButtonPress();
+void flushPendingButtonActions();
 void readButton();
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -159,6 +175,55 @@ void publishHeartbeat(const char* statusText) {
   mqttClient.publish(TOPIC_HEARTBEAT, payload.c_str(), false);
 }
 
+bool publishCommand(const char* action) {
+  if (!mqttClient.connected()) return false;
+
+  String payload = "{\"source\":\"esp32_display\",\"action\":\"";
+  payload += action;
+  payload += "\"}";
+  return mqttClient.publish(TOPIC_COMMAND, payload.c_str(), false);
+}
+
+bool publishButtonPress() {
+  if (!mqttClient.connected()) return false;
+  return mqttClient.publish(TOPIC_BUTTON, "press", false);
+}
+
+void flushPendingButtonActions() {
+  if (pendingSingleClick && millis() - firstClickReleasedAt >= DOUBLE_CLICK_MS) {
+    pendingSingleClick = false;
+    if (queuedPressCount < MAX_QUEUED_PRESSES) {
+      queuedPressCount++;
+    }
+    Serial.println("Button short press queued");
+  }
+
+  if (!mqttClient.connected()) return;
+
+  if (queuedResetCount > 0) {
+    if (publishCommand("reset")) {
+      queuedResetCount--;
+      Serial.println("Reset command sent");
+    }
+    return;
+  }
+
+  if (queuedUndoCount > 0) {
+    if (publishCommand("undo")) {
+      queuedUndoCount--;
+      Serial.println("Undo command sent");
+    }
+    return;
+  }
+
+  if (queuedPressCount > 0) {
+    if (publishButtonPress()) {
+      queuedPressCount--;
+      Serial.println("Button short press sent");
+    }
+  }
+}
+
 void ensureWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
   if (millis() - lastWiFiTryAt < WIFI_RETRY_MS) return;
@@ -200,10 +265,41 @@ void readButton() {
     if (reading != stableButtonState) {
       stableButtonState = reading;
 
-      if (stableButtonState == LOW && mqttClient.connected()) {
-        mqttClient.publish(TOPIC_BUTTON, "press", false);
+      if (stableButtonState == LOW) {
+        buttonPressed = true;
+        longPressTriggered = false;
+        buttonPressStartedAt = millis();
+      } else if (buttonPressed) {
+        if (!longPressTriggered) {
+          if (pendingSingleClick && millis() - firstClickReleasedAt <= DOUBLE_CLICK_MS) {
+            pendingSingleClick = false;
+            if (queuedUndoCount < MAX_QUEUED_COMMANDS) {
+              queuedUndoCount++;
+            }
+            Serial.println("Button double press queued");
+          } else {
+            pendingSingleClick = true;
+            firstClickReleasedAt = millis();
+          }
+        }
+
+        buttonPressed = false;
+        longPressTriggered = false;
       }
     }
+  }
+
+  if (
+    buttonPressed &&
+    !longPressTriggered &&
+    millis() - buttonPressStartedAt >= RESET_HOLD_MS
+  ) {
+    pendingSingleClick = false;
+    if (queuedResetCount < MAX_QUEUED_COMMANDS) {
+      queuedResetCount++;
+    }
+    longPressTriggered = true;
+    Serial.println("Button long press reset queued");
   }
 }
 
@@ -233,10 +329,11 @@ void setup() {
 void loop() {
   ensureWiFi();
   ensureMQTT();
+  readButton();
+  flushPendingButtonActions();
 
   if (WiFi.status() == WL_CONNECTED && mqttClient.connected()) {
     mqttClient.loop();
-    readButton();
 
     if (millis() - lastHeartbeatAt >= HEARTBEAT_MS) {
       lastHeartbeatAt = millis();
@@ -246,5 +343,5 @@ void loop() {
     setStatusLines("WiFi yok");
   }
 
-  delay(15);
+  delay(5);
 }

@@ -1,72 +1,197 @@
 {
-  "generated_at": "2026-03-30T18:27:46+03:00",
+  "generated_at": "2026-03-31T15:59:17+03:00",
   "station": {
     "station_id": "assembly_01",
     "topic_role": "python_authority"
   },
-  "selected_product_id": "lego_vagon",
-  "selected_product_name": "Lego Vagon",
-  "phase": "pick",
+  "selected_product_id": "lego_vidali_vagon",
+  "selected_product_name": "Lego Vidali Vagon",
+  "selected_operator_id": "OP001",
+  "selected_operator_name": "Ali",
+  "phase": "active",
   "current_step_index": 0,
+  "current_operation_index": 0,
   "current_step": {
     "sequence": 1,
     "part_id": "tekerlekli_parca",
     "part_name": "Tekerlekli Parca",
     "box_number": 1,
+    "quantity": 1,
+    "operations": [
+      {
+        "operation_id": "op_1_1",
+        "action": "pick",
+        "label": "Parcayi al",
+        "consumes_inventory": true,
+        "box_number": 1,
+        "part_id": "tekerlekli_parca",
+        "part_name": "Tekerlekli Parca",
+        "quantity": 1
+      },
+      {
+        "operation_id": "op_1_2",
+        "action": "assemble",
+        "label": "Montaj yap",
+        "consumes_inventory": false,
+        "box_number": null,
+        "part_id": "tekerlekli_parca",
+        "part_name": "Tekerlekli Parca",
+        "quantity": 0
+      }
+    ]
+  },
+  "current_operation": {
+    "operation_id": "op_1_1",
+    "action": "pick",
+    "label": "Parcayi al",
+    "consumes_inventory": true,
+    "box_number": 1,
+    "part_id": "tekerlekli_parca",
+    "part_name": "Tekerlekli Parca",
     "quantity": 1
   },
-  "step_count": 6,
-  "instruction": "Lego Vagon icin kutu 1 icinden 1 adet Tekerlekli Parca alin ve butona basin.",
-  "completed_current_product": 2,
+  "step_count": 4,
+  "instruction": "Parcayi al: kutu 1 icinden 1 adet Tekerlekli Parca alin ve butona basin.",
+  "completed_current_product": 3,
   "completed_counts": {
-    "lego_vagon": 2
+    "lego_vagon": 10,
+    "lego_vidali_vagon": 3
   },
-  "completed_total": 2,
-  "last_event_at": "2026-03-30T18:27:46+03:00",
-  "last_event_type": "next_cycle_started",
+  "completed_total": 13,
+  "current_operation_elapsed_ms": 76,
+  "current_cycle_elapsed_ms": 76,
+  "last_operation_duration_ms": 2309,
+  "last_cycle_duration_ms": 72309,
+  "last_event_at": "2026-03-31T15:59:17+03:00",
+  "last_event_type": "cycle_reset",
   "last_button_source": "gui",
+  "can_undo": false,
   "recipe_steps": [
     {
       "sequence": 1,
       "part_id": "tekerlekli_parca",
       "part_name": "Tekerlekli Parca",
       "box_number": 1,
-      "quantity": 1
+      "quantity": 1,
+      "operations": [
+        {
+          "operation_id": "op_1_1",
+          "action": "pick",
+          "label": "Parcayi al",
+          "consumes_inventory": true,
+          "box_number": 1,
+          "part_id": "tekerlekli_parca",
+          "part_name": "Tekerlekli Parca",
+          "quantity": 1
+        },
+        {
+          "operation_id": "op_1_2",
+          "action": "assemble",
+          "label": "Montaj yap",
+          "consumes_inventory": false,
+          "box_number": null,
+          "part_id": "tekerlekli_parca",
+          "part_name": "Tekerlekli Parca",
+          "quantity": 0
+        }
+      ]
     },
     {
       "sequence": 2,
       "part_id": "4x2_parca",
       "part_name": "4x2 Parca",
       "box_number": 2,
-      "quantity": 2
+      "quantity": 2,
+      "operations": [
+        {
+          "operation_id": "op_2_1",
+          "action": "pick",
+          "label": "Parcayi al",
+          "consumes_inventory": true,
+          "box_number": 2,
+          "part_id": "4x2_parca",
+          "part_name": "4x2 Parca",
+          "quantity": 2
+        },
+        {
+          "operation_id": "op_2_2",
+          "action": "assemble",
+          "label": "Montaj yap",
+          "consumes_inventory": false,
+          "box_number": null,
+          "part_id": "4x2_parca",
+          "part_name": "4x2 Parca",
+          "quantity": 0
+        }
+      ]
     },
     {
       "sequence": 3,
-      "part_id": "u_parca",
-      "part_name": "U Parca",
-      "box_number": 3,
-      "quantity": 1
+      "part_id": "vida_parca",
+      "part_name": "Vida",
+      "box_number": 4,
+      "quantity": 2,
+      "operations": [
+        {
+          "operation_id": "op_3_1",
+          "action": "tool_pick",
+          "label": "Tornavida al",
+          "consumes_inventory": false,
+          "box_number": null,
+          "part_id": "tornavida",
+          "part_name": "Tornavida",
+          "quantity": 0
+        },
+        {
+          "operation_id": "op_3_2",
+          "action": "pick",
+          "label": "Vida al",
+          "consumes_inventory": true,
+          "box_number": 4,
+          "part_id": "vida_parca",
+          "part_name": "Vida",
+          "quantity": 2
+        },
+        {
+          "operation_id": "op_3_3",
+          "action": "assemble",
+          "label": "Montaj yap",
+          "consumes_inventory": false,
+          "box_number": null,
+          "part_id": "vida_parca",
+          "part_name": "Vida Baglantisi",
+          "quantity": 0
+        }
+      ]
     },
     {
       "sequence": 4,
-      "part_id": "4x2_parca",
-      "part_name": "4x2 Parca",
-      "box_number": 2,
-      "quantity": 1
-    },
-    {
-      "sequence": 5,
       "part_id": "sapka_parca",
       "part_name": "Sapka Parca",
       "box_number": 3,
-      "quantity": 1
-    },
-    {
-      "sequence": 6,
-      "part_id": "8x2_parca",
-      "part_name": "8x2 Parca",
-      "box_number": 4,
-      "quantity": 1
+      "quantity": 1,
+      "operations": [
+        {
+          "operation_id": "op_4_1",
+          "action": "pick",
+          "label": "Parcayi al",
+          "consumes_inventory": true,
+          "box_number": 3,
+          "part_id": "sapka_parca",
+          "part_name": "Sapka Parca",
+          "quantity": 1
+        },
+        {
+          "operation_id": "op_4_2",
+          "action": "assemble",
+          "label": "Montaj yap",
+          "consumes_inventory": false,
+          "box_number": null,
+          "part_id": "sapka_parca",
+          "part_name": "Sapka Parca",
+          "quantity": 0
+        }
+      ]
     }
   ],
   "box_inventory": [
@@ -74,38 +199,749 @@
       "box_number": 1,
       "part_id": "tekerlekli_parca",
       "part_name": "Tekerlekli Parca",
-      "quantity": 2,
-      "min_quantity": 0
+      "quantity": 8,
+      "min_quantity": 1
     },
     {
       "box_number": 2,
       "part_id": "4x2_parca",
       "part_name": "4x2 Parca",
-      "quantity": 6,
-      "min_quantity": 0
+      "quantity": 5,
+      "min_quantity": 3
     },
     {
       "box_number": 3,
       "part_id": "sapka_parca",
       "part_name": "Sapka Parca",
-      "quantity": 2,
-      "min_quantity": 0
+      "quantity": 8,
+      "min_quantity": 1
     },
     {
       "box_number": 3,
       "part_id": "u_parca",
       "part_name": "U Parca",
-      "quantity": 3,
-      "min_quantity": 0
+      "quantity": 9,
+      "min_quantity": 1
     },
     {
       "box_number": 4,
       "part_id": "8x2_parca",
       "part_name": "8x2 Parca",
-      "quantity": 3,
-      "min_quantity": 0
+      "quantity": 9,
+      "min_quantity": 1
+    },
+    {
+      "box_number": 4,
+      "part_id": "vida_parca",
+      "part_name": "Vida",
+      "quantity": 48,
+      "min_quantity": 4
     }
   ],
+  "performance": {
+    "selected_operator": {
+      "operator_id": "OP001",
+      "operator_name": "Ali",
+      "operation_count": 88,
+      "completed_products": 8,
+      "undo_count": 3,
+      "last_cycle_ms": 72309,
+      "avg_cycle_ms": 374017,
+      "step_breakdown": [
+        {
+          "product_id": "lego_vagon",
+          "product_name": "Lego Vagon",
+          "step_sequence": 1,
+          "operation_index": 1,
+          "label": "Parcayi al",
+          "part_name": "Tekerlekli Parca",
+          "count": 6,
+          "avg_duration_ms": 672140
+        },
+        {
+          "product_id": "lego_vagon",
+          "product_name": "Lego Vagon",
+          "step_sequence": 1,
+          "operation_index": 2,
+          "label": "Montaj yap",
+          "part_name": "Tekerlekli Parca",
+          "count": 6,
+          "avg_duration_ms": 2548
+        },
+        {
+          "product_id": "lego_vagon",
+          "product_name": "Lego Vagon",
+          "step_sequence": 2,
+          "operation_index": 1,
+          "label": "Parcayi al",
+          "part_name": "4x2 Parca",
+          "count": 5,
+          "avg_duration_ms": 7488
+        },
+        {
+          "product_id": "lego_vagon",
+          "product_name": "Lego Vagon",
+          "step_sequence": 2,
+          "operation_index": 2,
+          "label": "Montaj yap",
+          "part_name": "4x2 Parca",
+          "count": 5,
+          "avg_duration_ms": 35498
+        },
+        {
+          "product_id": "lego_vagon",
+          "product_name": "Lego Vagon",
+          "step_sequence": 3,
+          "operation_index": 1,
+          "label": "Parcayi al",
+          "part_name": "U Parca",
+          "count": 4,
+          "avg_duration_ms": 1412
+        },
+        {
+          "product_id": "lego_vagon",
+          "product_name": "Lego Vagon",
+          "step_sequence": 3,
+          "operation_index": 2,
+          "label": "Montaj yap",
+          "part_name": "U Parca",
+          "count": 5,
+          "avg_duration_ms": 7198
+        },
+        {
+          "product_id": "lego_vagon",
+          "product_name": "Lego Vagon",
+          "step_sequence": 4,
+          "operation_index": 1,
+          "label": "Parcayi al",
+          "part_name": "4x2 Parca",
+          "count": 5,
+          "avg_duration_ms": 47315
+        },
+        {
+          "product_id": "lego_vagon",
+          "product_name": "Lego Vagon",
+          "step_sequence": 4,
+          "operation_index": 2,
+          "label": "Montaj yap",
+          "part_name": "4x2 Parca",
+          "count": 5,
+          "avg_duration_ms": 3756
+        },
+        {
+          "product_id": "lego_vagon",
+          "product_name": "Lego Vagon",
+          "step_sequence": 5,
+          "operation_index": 1,
+          "label": "Parcayi al",
+          "part_name": "Sapka Parca",
+          "count": 5,
+          "avg_duration_ms": 2114
+        },
+        {
+          "product_id": "lego_vagon",
+          "product_name": "Lego Vagon",
+          "step_sequence": 5,
+          "operation_index": 2,
+          "label": "Montaj yap",
+          "part_name": "Sapka Parca",
+          "count": 5,
+          "avg_duration_ms": 2091
+        },
+        {
+          "product_id": "lego_vagon",
+          "product_name": "Lego Vagon",
+          "step_sequence": 6,
+          "operation_index": 1,
+          "label": "Parcayi al",
+          "part_name": "8x2 Parca",
+          "count": 5,
+          "avg_duration_ms": 2078
+        },
+        {
+          "product_id": "lego_vagon",
+          "product_name": "Lego Vagon",
+          "step_sequence": 6,
+          "operation_index": 2,
+          "label": "Montaj yap",
+          "part_name": "8x2 Parca",
+          "count": 5,
+          "avg_duration_ms": 1670
+        },
+        {
+          "product_id": "lego_vidali_vagon",
+          "product_name": "Lego Vidali Vagon",
+          "step_sequence": 1,
+          "operation_index": 1,
+          "label": "Parcayi al",
+          "part_name": "Tekerlekli Parca",
+          "count": 3,
+          "avg_duration_ms": 11018
+        },
+        {
+          "product_id": "lego_vidali_vagon",
+          "product_name": "Lego Vidali Vagon",
+          "step_sequence": 1,
+          "operation_index": 2,
+          "label": "Montaj yap",
+          "part_name": "Tekerlekli Parca",
+          "count": 3,
+          "avg_duration_ms": 2842
+        },
+        {
+          "product_id": "lego_vidali_vagon",
+          "product_name": "Lego Vidali Vagon",
+          "step_sequence": 2,
+          "operation_index": 1,
+          "label": "Parcayi al",
+          "part_name": "4x2 Parca",
+          "count": 3,
+          "avg_duration_ms": 8213
+        },
+        {
+          "product_id": "lego_vidali_vagon",
+          "product_name": "Lego Vidali Vagon",
+          "step_sequence": 2,
+          "operation_index": 2,
+          "label": "Montaj yap",
+          "part_name": "4x2 Parca",
+          "count": 3,
+          "avg_duration_ms": 11243
+        },
+        {
+          "product_id": "lego_vidali_vagon",
+          "product_name": "Lego Vidali Vagon",
+          "step_sequence": 3,
+          "operation_index": 1,
+          "label": "Tornavida al",
+          "part_name": "Tornavida",
+          "count": 3,
+          "avg_duration_ms": 3605
+        },
+        {
+          "product_id": "lego_vidali_vagon",
+          "product_name": "Lego Vidali Vagon",
+          "step_sequence": 3,
+          "operation_index": 2,
+          "label": "Vida al",
+          "part_name": "Vida",
+          "count": 3,
+          "avg_duration_ms": 3571
+        },
+        {
+          "product_id": "lego_vidali_vagon",
+          "product_name": "Lego Vidali Vagon",
+          "step_sequence": 3,
+          "operation_index": 3,
+          "label": "Montaj yap",
+          "part_name": "Vida Baglantisi",
+          "count": 3,
+          "avg_duration_ms": 3670
+        },
+        {
+          "product_id": "lego_vidali_vagon",
+          "product_name": "Lego Vidali Vagon",
+          "step_sequence": 4,
+          "operation_index": 1,
+          "label": "Parcayi al",
+          "part_name": "Sapka Parca",
+          "count": 3,
+          "avg_duration_ms": 3917
+        },
+        {
+          "product_id": "lego_vidali_vagon",
+          "product_name": "Lego Vidali Vagon",
+          "step_sequence": 4,
+          "operation_index": 2,
+          "label": "Montaj yap",
+          "part_name": "Sapka Parca",
+          "count": 3,
+          "avg_duration_ms": 2594
+        }
+      ]
+    },
+    "operators": [
+      {
+        "operator_id": "OP001",
+        "operator_name": "Ali",
+        "operation_count": 88,
+        "completed_products": 8,
+        "undo_count": 3,
+        "last_cycle_ms": 72309,
+        "avg_cycle_ms": 374017,
+        "step_breakdown": [
+          {
+            "product_id": "lego_vagon",
+            "product_name": "Lego Vagon",
+            "step_sequence": 1,
+            "operation_index": 1,
+            "label": "Parcayi al",
+            "part_name": "Tekerlekli Parca",
+            "count": 6,
+            "avg_duration_ms": 672140
+          },
+          {
+            "product_id": "lego_vagon",
+            "product_name": "Lego Vagon",
+            "step_sequence": 1,
+            "operation_index": 2,
+            "label": "Montaj yap",
+            "part_name": "Tekerlekli Parca",
+            "count": 6,
+            "avg_duration_ms": 2548
+          },
+          {
+            "product_id": "lego_vagon",
+            "product_name": "Lego Vagon",
+            "step_sequence": 2,
+            "operation_index": 1,
+            "label": "Parcayi al",
+            "part_name": "4x2 Parca",
+            "count": 5,
+            "avg_duration_ms": 7488
+          },
+          {
+            "product_id": "lego_vagon",
+            "product_name": "Lego Vagon",
+            "step_sequence": 2,
+            "operation_index": 2,
+            "label": "Montaj yap",
+            "part_name": "4x2 Parca",
+            "count": 5,
+            "avg_duration_ms": 35498
+          },
+          {
+            "product_id": "lego_vagon",
+            "product_name": "Lego Vagon",
+            "step_sequence": 3,
+            "operation_index": 1,
+            "label": "Parcayi al",
+            "part_name": "U Parca",
+            "count": 4,
+            "avg_duration_ms": 1412
+          },
+          {
+            "product_id": "lego_vagon",
+            "product_name": "Lego Vagon",
+            "step_sequence": 3,
+            "operation_index": 2,
+            "label": "Montaj yap",
+            "part_name": "U Parca",
+            "count": 5,
+            "avg_duration_ms": 7198
+          },
+          {
+            "product_id": "lego_vagon",
+            "product_name": "Lego Vagon",
+            "step_sequence": 4,
+            "operation_index": 1,
+            "label": "Parcayi al",
+            "part_name": "4x2 Parca",
+            "count": 5,
+            "avg_duration_ms": 47315
+          },
+          {
+            "product_id": "lego_vagon",
+            "product_name": "Lego Vagon",
+            "step_sequence": 4,
+            "operation_index": 2,
+            "label": "Montaj yap",
+            "part_name": "4x2 Parca",
+            "count": 5,
+            "avg_duration_ms": 3756
+          },
+          {
+            "product_id": "lego_vagon",
+            "product_name": "Lego Vagon",
+            "step_sequence": 5,
+            "operation_index": 1,
+            "label": "Parcayi al",
+            "part_name": "Sapka Parca",
+            "count": 5,
+            "avg_duration_ms": 2114
+          },
+          {
+            "product_id": "lego_vagon",
+            "product_name": "Lego Vagon",
+            "step_sequence": 5,
+            "operation_index": 2,
+            "label": "Montaj yap",
+            "part_name": "Sapka Parca",
+            "count": 5,
+            "avg_duration_ms": 2091
+          },
+          {
+            "product_id": "lego_vagon",
+            "product_name": "Lego Vagon",
+            "step_sequence": 6,
+            "operation_index": 1,
+            "label": "Parcayi al",
+            "part_name": "8x2 Parca",
+            "count": 5,
+            "avg_duration_ms": 2078
+          },
+          {
+            "product_id": "lego_vagon",
+            "product_name": "Lego Vagon",
+            "step_sequence": 6,
+            "operation_index": 2,
+            "label": "Montaj yap",
+            "part_name": "8x2 Parca",
+            "count": 5,
+            "avg_duration_ms": 1670
+          },
+          {
+            "product_id": "lego_vidali_vagon",
+            "product_name": "Lego Vidali Vagon",
+            "step_sequence": 1,
+            "operation_index": 1,
+            "label": "Parcayi al",
+            "part_name": "Tekerlekli Parca",
+            "count": 3,
+            "avg_duration_ms": 11018
+          },
+          {
+            "product_id": "lego_vidali_vagon",
+            "product_name": "Lego Vidali Vagon",
+            "step_sequence": 1,
+            "operation_index": 2,
+            "label": "Montaj yap",
+            "part_name": "Tekerlekli Parca",
+            "count": 3,
+            "avg_duration_ms": 2842
+          },
+          {
+            "product_id": "lego_vidali_vagon",
+            "product_name": "Lego Vidali Vagon",
+            "step_sequence": 2,
+            "operation_index": 1,
+            "label": "Parcayi al",
+            "part_name": "4x2 Parca",
+            "count": 3,
+            "avg_duration_ms": 8213
+          },
+          {
+            "product_id": "lego_vidali_vagon",
+            "product_name": "Lego Vidali Vagon",
+            "step_sequence": 2,
+            "operation_index": 2,
+            "label": "Montaj yap",
+            "part_name": "4x2 Parca",
+            "count": 3,
+            "avg_duration_ms": 11243
+          },
+          {
+            "product_id": "lego_vidali_vagon",
+            "product_name": "Lego Vidali Vagon",
+            "step_sequence": 3,
+            "operation_index": 1,
+            "label": "Tornavida al",
+            "part_name": "Tornavida",
+            "count": 3,
+            "avg_duration_ms": 3605
+          },
+          {
+            "product_id": "lego_vidali_vagon",
+            "product_name": "Lego Vidali Vagon",
+            "step_sequence": 3,
+            "operation_index": 2,
+            "label": "Vida al",
+            "part_name": "Vida",
+            "count": 3,
+            "avg_duration_ms": 3571
+          },
+          {
+            "product_id": "lego_vidali_vagon",
+            "product_name": "Lego Vidali Vagon",
+            "step_sequence": 3,
+            "operation_index": 3,
+            "label": "Montaj yap",
+            "part_name": "Vida Baglantisi",
+            "count": 3,
+            "avg_duration_ms": 3670
+          },
+          {
+            "product_id": "lego_vidali_vagon",
+            "product_name": "Lego Vidali Vagon",
+            "step_sequence": 4,
+            "operation_index": 1,
+            "label": "Parcayi al",
+            "part_name": "Sapka Parca",
+            "count": 3,
+            "avg_duration_ms": 3917
+          },
+          {
+            "product_id": "lego_vidali_vagon",
+            "product_name": "Lego Vidali Vagon",
+            "step_sequence": 4,
+            "operation_index": 2,
+            "label": "Montaj yap",
+            "part_name": "Sapka Parca",
+            "count": 3,
+            "avg_duration_ms": 2594
+          }
+        ]
+      },
+      {
+        "operator_id": "OP002",
+        "operator_name": "Ayse",
+        "operation_count": 0,
+        "completed_products": 0,
+        "undo_count": 0,
+        "last_cycle_ms": null,
+        "avg_cycle_ms": null,
+        "step_breakdown": []
+      },
+      {
+        "operator_id": "OP003",
+        "operator_name": "Mehmet",
+        "operation_count": 0,
+        "completed_products": 0,
+        "undo_count": 0,
+        "last_cycle_ms": null,
+        "avg_cycle_ms": null,
+        "step_breakdown": []
+      }
+    ],
+    "sequence_breakdown": [
+      {
+        "product_id": "lego_vidali_vagon",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 1,
+        "operation_index": 1,
+        "label": "Parcayi al",
+        "part_name": "Tekerlekli Parca",
+        "count": 3,
+        "avg_duration_ms": 11018
+      },
+      {
+        "product_id": "lego_vidali_vagon",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 1,
+        "operation_index": 2,
+        "label": "Montaj yap",
+        "part_name": "Tekerlekli Parca",
+        "count": 3,
+        "avg_duration_ms": 2842
+      },
+      {
+        "product_id": "lego_vidali_vagon",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 2,
+        "operation_index": 1,
+        "label": "Parcayi al",
+        "part_name": "4x2 Parca",
+        "count": 3,
+        "avg_duration_ms": 8213
+      },
+      {
+        "product_id": "lego_vidali_vagon",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 2,
+        "operation_index": 2,
+        "label": "Montaj yap",
+        "part_name": "4x2 Parca",
+        "count": 3,
+        "avg_duration_ms": 11243
+      },
+      {
+        "product_id": "lego_vidali_vagon",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 3,
+        "operation_index": 1,
+        "label": "Tornavida al",
+        "part_name": "Tornavida",
+        "count": 3,
+        "avg_duration_ms": 3605
+      },
+      {
+        "product_id": "lego_vidali_vagon",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 3,
+        "operation_index": 2,
+        "label": "Vida al",
+        "part_name": "Vida",
+        "count": 3,
+        "avg_duration_ms": 3571
+      },
+      {
+        "product_id": "lego_vidali_vagon",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 3,
+        "operation_index": 3,
+        "label": "Montaj yap",
+        "part_name": "Vida Baglantisi",
+        "count": 3,
+        "avg_duration_ms": 3670
+      },
+      {
+        "product_id": "lego_vidali_vagon",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 4,
+        "operation_index": 1,
+        "label": "Parcayi al",
+        "part_name": "Sapka Parca",
+        "count": 3,
+        "avg_duration_ms": 3917
+      },
+      {
+        "product_id": "lego_vidali_vagon",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 4,
+        "operation_index": 2,
+        "label": "Montaj yap",
+        "part_name": "Sapka Parca",
+        "count": 3,
+        "avg_duration_ms": 2594
+      }
+    ],
+    "recent_operations": [
+      {
+        "event_id": "36d3b0a9-0229-4003-99a9-7a9c802fb3a7",
+        "event_time": "2026-03-31T15:55:15+03:00",
+        "operator_id": "OP001",
+        "operator_name": "Ali",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 4,
+        "operation_index": 2,
+        "label": "Montaj yap",
+        "part_name": "Sapka Parca",
+        "duration_ms": 2309
+      },
+      {
+        "event_id": "a2e653dc-d75a-4e8e-9f2b-43f363b0d28b",
+        "event_time": "2026-03-31T15:55:13+03:00",
+        "operator_id": "OP001",
+        "operator_name": "Ali",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 4,
+        "operation_index": 1,
+        "label": "Parcayi al",
+        "part_name": "Sapka Parca",
+        "duration_ms": 3441
+      },
+      {
+        "event_id": "b12e62f3-92a9-4dca-8384-3640f86c502c",
+        "event_time": "2026-03-31T15:55:10+03:00",
+        "operator_id": "OP001",
+        "operator_name": "Ali",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 3,
+        "operation_index": 3,
+        "label": "Montaj yap",
+        "part_name": "Vida Baglantisi",
+        "duration_ms": 2646
+      },
+      {
+        "event_id": "ec679d66-c62f-4fef-80fc-f35e9fd4579e",
+        "event_time": "2026-03-31T15:55:08+03:00",
+        "operator_id": "OP001",
+        "operator_name": "Ali",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 3,
+        "operation_index": 2,
+        "label": "Vida al",
+        "part_name": "Vida",
+        "duration_ms": 5590
+      },
+      {
+        "event_id": "479062f8-c370-4872-9131-42b6fd1755ad",
+        "event_time": "2026-03-31T15:55:03+03:00",
+        "operator_id": "OP001",
+        "operator_name": "Ali",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 3,
+        "operation_index": 1,
+        "label": "Tornavida al",
+        "part_name": "Tornavida",
+        "duration_ms": 4797
+      },
+      {
+        "event_id": "2bedb03f-e1aa-497d-9e75-03215b139e7d",
+        "event_time": "2026-03-31T15:54:59+03:00",
+        "operator_id": "OP001",
+        "operator_name": "Ali",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 2,
+        "operation_index": 2,
+        "label": "Montaj yap",
+        "part_name": "4x2 Parca",
+        "duration_ms": 22800
+      },
+      {
+        "event_id": "5a306ec5-7fff-4738-a60d-2e4652892b3e",
+        "event_time": "2026-03-31T15:54:37+03:00",
+        "operator_id": "OP001",
+        "operator_name": "Ali",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 2,
+        "operation_index": 1,
+        "label": "Parcayi al",
+        "part_name": "4x2 Parca",
+        "duration_ms": 11958
+      },
+      {
+        "event_id": "4508f65b-344f-4e7e-8a5f-1de440e3c9b0",
+        "event_time": "2026-03-31T15:54:26+03:00",
+        "operator_id": "OP001",
+        "operator_name": "Ali",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 1,
+        "operation_index": 2,
+        "label": "Montaj yap",
+        "part_name": "Tekerlekli Parca",
+        "duration_ms": 3172
+      },
+      {
+        "event_id": "7793f7a3-86d7-4f92-a9ab-a395c7725470",
+        "event_time": "2026-03-31T15:54:23+03:00",
+        "operator_id": "OP001",
+        "operator_name": "Ali",
+        "product_name": "Lego Vidali Vagon",
+        "step_sequence": 1,
+        "operation_index": 1,
+        "label": "Parcayi al",
+        "part_name": "Tekerlekli Parca",
+        "duration_ms": 20840
+      },
+      {
+        "event_id": "d09c4ba8-fa9b-4288-9a7c-d4d070ef44bf",
+        "event_time": "2026-03-31T15:53:50+03:00",
+        "operator_id": "OP001",
+        "operator_name": "Ali",
+        "product_name": "Lego Vagon",
+        "step_sequence": 6,
+        "operation_index": 2,
+        "label": "Montaj yap",
+        "part_name": "8x2 Parca",
+        "duration_ms": 3176
+      },
+      {
+        "event_id": "b27e7086-b2b7-4d61-91cc-2d7145b56f70",
+        "event_time": "2026-03-31T15:53:47+03:00",
+        "operator_id": "OP001",
+        "operator_name": "Ali",
+        "product_name": "Lego Vagon",
+        "step_sequence": 6,
+        "operation_index": 1,
+        "label": "Parcayi al",
+        "part_name": "8x2 Parca",
+        "duration_ms": 4597
+      },
+      {
+        "event_id": "38745236-7c2e-43c4-b76c-9bb1dbf6a6e3",
+        "event_time": "2026-03-31T15:53:43+03:00",
+        "operator_id": "OP001",
+        "operator_name": "Ali",
+        "product_name": "Lego Vagon",
+        "step_sequence": 5,
+        "operation_index": 2,
+        "label": "Montaj yap",
+        "part_name": "Sapka Parca",
+        "duration_ms": 4749
+      }
+    ]
+  },
   "product_catalog": [
     {
       "product_id": "lego_vagon",
@@ -117,52 +953,331 @@
           "part_id": "tekerlekli_parca",
           "part_name": "Tekerlekli Parca",
           "box_number": 1,
-          "quantity": 1
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_1_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 1,
+              "part_id": "tekerlekli_parca",
+              "part_name": "Tekerlekli Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_1_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "tekerlekli_parca",
+              "part_name": "Tekerlekli Parca",
+              "quantity": 0
+            }
+          ]
         },
         {
           "sequence": 2,
           "part_id": "4x2_parca",
           "part_name": "4x2 Parca",
           "box_number": 2,
-          "quantity": 2
+          "quantity": 2,
+          "operations": [
+            {
+              "operation_id": "op_2_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 2,
+              "part_id": "4x2_parca",
+              "part_name": "4x2 Parca",
+              "quantity": 2
+            },
+            {
+              "operation_id": "op_2_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "4x2_parca",
+              "part_name": "4x2 Parca",
+              "quantity": 0
+            }
+          ]
         },
         {
           "sequence": 3,
           "part_id": "u_parca",
           "part_name": "U Parca",
           "box_number": 3,
-          "quantity": 1
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_3_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 3,
+              "part_id": "u_parca",
+              "part_name": "U Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_3_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "u_parca",
+              "part_name": "U Parca",
+              "quantity": 0
+            }
+          ]
         },
         {
           "sequence": 4,
           "part_id": "4x2_parca",
           "part_name": "4x2 Parca",
           "box_number": 2,
-          "quantity": 1
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_4_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 2,
+              "part_id": "4x2_parca",
+              "part_name": "4x2 Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_4_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "4x2_parca",
+              "part_name": "4x2 Parca",
+              "quantity": 0
+            }
+          ]
         },
         {
           "sequence": 5,
           "part_id": "sapka_parca",
           "part_name": "Sapka Parca",
           "box_number": 3,
-          "quantity": 1
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_5_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 3,
+              "part_id": "sapka_parca",
+              "part_name": "Sapka Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_5_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "sapka_parca",
+              "part_name": "Sapka Parca",
+              "quantity": 0
+            }
+          ]
         },
         {
           "sequence": 6,
           "part_id": "8x2_parca",
           "part_name": "8x2 Parca",
           "box_number": 4,
-          "quantity": 1
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_6_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 4,
+              "part_id": "8x2_parca",
+              "part_name": "8x2 Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_6_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "8x2_parca",
+              "part_name": "8x2 Parca",
+              "quantity": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "product_id": "lego_vidali_vagon",
+      "product_name": "Lego Vidali Vagon",
+      "description": "Tornavida ve vida akisi iceren ornek montaj urunu",
+      "steps": [
+        {
+          "sequence": 1,
+          "part_id": "tekerlekli_parca",
+          "part_name": "Tekerlekli Parca",
+          "box_number": 1,
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_1_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 1,
+              "part_id": "tekerlekli_parca",
+              "part_name": "Tekerlekli Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_1_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "tekerlekli_parca",
+              "part_name": "Tekerlekli Parca",
+              "quantity": 0
+            }
+          ]
+        },
+        {
+          "sequence": 2,
+          "part_id": "4x2_parca",
+          "part_name": "4x2 Parca",
+          "box_number": 2,
+          "quantity": 2,
+          "operations": [
+            {
+              "operation_id": "op_2_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 2,
+              "part_id": "4x2_parca",
+              "part_name": "4x2 Parca",
+              "quantity": 2
+            },
+            {
+              "operation_id": "op_2_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "4x2_parca",
+              "part_name": "4x2 Parca",
+              "quantity": 0
+            }
+          ]
+        },
+        {
+          "sequence": 3,
+          "part_id": "vida_parca",
+          "part_name": "Vida",
+          "box_number": 4,
+          "quantity": 2,
+          "operations": [
+            {
+              "operation_id": "op_3_1",
+              "action": "tool_pick",
+              "label": "Tornavida al",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "tornavida",
+              "part_name": "Tornavida",
+              "quantity": 0
+            },
+            {
+              "operation_id": "op_3_2",
+              "action": "pick",
+              "label": "Vida al",
+              "consumes_inventory": true,
+              "box_number": 4,
+              "part_id": "vida_parca",
+              "part_name": "Vida",
+              "quantity": 2
+            },
+            {
+              "operation_id": "op_3_3",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "vida_parca",
+              "part_name": "Vida Baglantisi",
+              "quantity": 0
+            }
+          ]
+        },
+        {
+          "sequence": 4,
+          "part_id": "sapka_parca",
+          "part_name": "Sapka Parca",
+          "box_number": 3,
+          "quantity": 1,
+          "operations": [
+            {
+              "operation_id": "op_4_1",
+              "action": "pick",
+              "label": "Parcayi al",
+              "consumes_inventory": true,
+              "box_number": 3,
+              "part_id": "sapka_parca",
+              "part_name": "Sapka Parca",
+              "quantity": 1
+            },
+            {
+              "operation_id": "op_4_2",
+              "action": "assemble",
+              "label": "Montaj yap",
+              "consumes_inventory": false,
+              "box_number": null,
+              "part_id": "sapka_parca",
+              "part_name": "Sapka Parca",
+              "quantity": 0
+            }
+          ]
         }
       ]
     }
   ],
+  "operator_catalog": [
+    {
+      "operator_id": "OP001",
+      "operator_name": "Ali"
+    },
+    {
+      "operator_id": "OP002",
+      "operator_name": "Ayse"
+    },
+    {
+      "operator_id": "OP003",
+      "operator_name": "Mehmet"
+    }
+  ],
   "display_lines": [
-    "Lego Vagon",
-    "Kutu 1 AL",
+    "Lego Vidali Va",
+    "Op Ali",
+    "Kutu 1 x1",
+    "Parcayi al",
     "Tekerlekli Par",
-    "Adet 1",
-    "Tamam 2",
     "Butona bas"
   ]
 }

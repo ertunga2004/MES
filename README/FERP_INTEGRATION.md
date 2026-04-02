@@ -1,90 +1,56 @@
-# FERP Integration Boundary
+# FERP Integration
 
 ## Mevcut Durum
 
-Bu repoda FERP entegrasyonu icin resmi API veya dogrudan veritabani kontrati henuz net degildir. Bu nedenle ilk entegrasyon siniri iki CSV dosyasi uzerinden tanimlanmistir:
+FERP entegrasyonu icin bugunku birincil veri siniri gunluk Excel workbook'tur. Sistem artik CSV merkezli dusunulmez. Backend, operasyon ve OEE olaylarini workbook sheet'lerine yazar; sonraki FERP katmani bu workbook'tan veya workbook'tan turetilen normalize JSON cikisindan beslenecektir.
 
-- `production_events.csv`
-- `production_completed.csv`
+## Neden Workbook Merkezli
 
-Bu iki dosya, entegrasyon netlesene kadar gecici ama baglayici veri siniri kabul edilmelidir.
+- saha operasyonu zaten Excel tabanli veritabani beklentisine kaymistir
+- workbook, operator ve muhendis tarafinda dogrudan acilip kontrol edilebilir
+- tek dosya icinde olay, olcum, tamamlanan urun ve vision akisini bir arada tutar
+- FERP'e gidecek alanlari sheet bazli ve kontrollu sekilde tasimaya izin verir
 
-## `production_events.csv`
+## Aktif Veri Sinirlari
 
-Bu dosya append-only olay kaydidir. Olay bazli geriye donuk izleme icin kullanilir.
+- `logs\MES_Konveyor_Veritabani_GG-AA-YYYY.xlsx`
+- `logs\oee_runtime_state.json`
 
-Alanlar:
+Yardimci legacy referanslar:
 
-- `event_time`
-- `item_id`
-- `measure_id`
-- `source`
-- `event_type`
-- `color`
-- `decision_source`
-- `queue_depth`
-- `mega_state`
-- `raw_r`
-- `raw_g`
-- `raw_b`
-- `confidence`
-- `vision_track_id`
-- `notes`
+- `logs\log_YYYY-MM-DD.txt`
+- `logs\tablet_log_YYYY-MM-DD.txt`
+- eski Node-RED akisini yerel arsivden anlamak
 
-Beklenen kaynaklar ve tipik olaylar:
+## Onerilen Entegrasyon Akisi
 
-- `mega`
-  - `measurement_decision`
-  - `queue_enq`
-  - `arm_position_reached`
-  - `pickplace_done`
-- `vision`
-  - `box_confirmed`
-  - `box_lost`
-  - `line_crossed`
+1. `mes_web` workbook'u gunluk olarak doldurur.
+2. Workbook icindeki ilgili sheet ve kolonlar normalize veri siniri olarak kabul edilir.
+3. Ayrica gerekiyorsa workbook'tan FERP icin JSON cikti uretilir.
+4. FERP import katmani bu JSON veya workbook uzerinden calisir.
 
-## `production_completed.csv`
+## Sheet Bazli Roller
 
-Bu dosya FERP'ye aktarilabilecek ozet uretim kaydini temsil eder.
+- `1_Olay_Logu`
+  - operasyon olaylarinin normalize edilmis akisi
+- `2_Olcumler`
+  - olcum ve siniflandirma metrikleri
+- `4_Uretim_Tamamlanan`
+  - tamamlanan urun kayitlari
+- `6_Vision`
+  - pasif vision capraz kontrolu
+- `7_Raw_Logs`
+  - ham satirlarin denetim izi
 
-Alanlar:
+## FERP Icın Hazirlik Kurallari
 
-- `item_id`
-- `detected_at`
-- `completed_at`
-- `color`
-- `status`
-- `travel_ms`
-- `cycle_ms`
-- `decision_source`
-
-## Alan Esleme Taslagi
-
-FERP tarafinda resmi alan isimleri netlesene kadar asagidaki esleme taslagi kullanilmalidir:
-
-- `item_id` -> uretim kaydinin benzersiz anahtari
-- `completed_at` -> uretim tamamlama zamani
-- `color` -> urun varyanti veya renk kodu
-- `status` -> tamamlandi / inceleme gerekli gibi sonuc bilgisi
-- `cycle_ms` -> operasyon suresi
-- `decision_source` -> karar kaynagi veya siniflandirma izi
-
-## Degisiklik Kurallari
-
-- Mevcut kolon adlari keyfi olarak degistirilmemelidir.
-- Yeni alan eklemek gerekiyorsa once bu alanin FERP'de bir karsiligi olup olmadigi yazilmalidir.
-- Kesin kontrat olusana kadar append-only mantigi korunmalidir.
-- Entegrasyon sinirinda ana veri kaynagi CSV dosyalaridir; MQTT mesajlari yardimci telemetry olarak ele alinmalidir.
+- workbook sheet adlari keyfi degistirilmemelidir
+- kolonlar eklenebilir ama mevcut anlami bozulmamalidir
+- tarih ve saat alanlari tek formatta tutulmalidir
+- bir urun kaydi tamamlanmis urun sheet'i ile olay logu arasinda izlenebilir olmalidir
 
 ## Sonraki Adimlar
 
-- FERP tarafinda resmi import formati veya API tanimini almak
-- Alan bazli dogrulama kurallarini netlestirmek
-- CSV -> JSON -> FERP akisinda hangi katmanin donusum yapacagini belirlemek
-- Hata durumlari icin retry ve reconciliation kuralini tanimlamak
-
-## AI Icin Notlar
-
-- AI'dan entegrasyon isi isterken mutlaka hedef FERP cikti formatini veya eldeki ornekleri ekleyin.
-- Yeni kolon, durum kodu veya event tipi onerileri bu dosya ile birlikte degerlendirilmelidir.
-- "FERP'ye gonder" gibi belirsiz bir gorev yerine hangi alanlardan hangi kayda donusum beklendigi yazilmalidir.
+- workbook -> FERP JSON kontratini tanimlamak
+- hangi sheet/kolonlarin FERP import'a gidecegini sabitlemek
+- replay veya rebuild araciyla workbook tutarliligini yeniden uretebilmek

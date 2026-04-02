@@ -1,4 +1,4 @@
-# Guncel Durum
+# Pick-to-Light Guncel Durum
 
 ## Tamamlananlar
 
@@ -8,10 +8,17 @@
 4. Operator secimi GUI'ye eklendi.
 5. Her operasyon ve cevrim icin sure takibi eklendi.
 6. Operator bazli performans ekrani eklendi.
-7. `Tornavida al -> Vida al -> Montaj yap` gibi cok operasyonlu adim akisi desteklendi.
+7. Cok operasyonlu adim akisi desteklendi.
 
-## Sonraki Olası Adimlar
+## Siradaki Mantikli Adimlar
 
-1. Performans ekranina tarih araligi filtresi eklenebilir.
-2. Operator girisi barkod veya kart okutma ile otomatiklestirilebilir.
-3. ERP aktarimi icin olay loglarina ek siparis numarasi ve vardiya alanlari eklenebilir.
+1. Performans ekranina tarih araligi filtresi eklemek.
+2. Operator girisini barkod veya kart okutma ile otomatiklestirmek.
+3. ERP aktarimina siparis, vardiya ve istasyon alanlari eklemek.
+4. Ana `mes_web` modul mimarisi ile ortaklasabilecek veri kontratlarini netlestirmek.
+
+## Acik Sorular
+
+- Performans ekraninin kalici rapor ciktisi JSON mi olacak, workbook mu olacak
+- Istasyon olaylari ana MES workbook'una ne zaman baglanacak
+- Fiziksel buton ve GUI butonu ayni anda aktifken cakisacak bir durum var mi

@@ -2,121 +2,196 @@
 
 ## Amac
 
-Bu dokuman, projedeki veri yapilarini iki seviyede aciklar:
+Bu dokuman, projede bugun gercekten uretilen veri yapilarini aciklar. Eski CSV odakli model yerine aktif veri katmanlari, runtime state ve workbook sheet'leri uzerinden dusunulmelidir.
 
-- su anda gercekten uretilen calisan veri kaynaklari
-- ileride MES seviyesine tasinmasi planlanan kavramsal varliklar
+## Canli Veri Kaynaklari
 
-## Aktif Veri Kaynaklari
+### 1. MQTT Text ve JSON Akisi
 
-### 1. `production_events.csv`
+Ana hat topicleri:
 
-Append-only olay kaydidir. Hattaki ham operasyonel olaylar burada tutulur.
-
-Ana alanlar:
-
-- `event_time`: olay zamani
-- `item_id`: urun veya kutu kimligi
-- `measure_id`: olcum/karar kimligi
-- `source`: olay kaynagi (`mega`, `vision`)
-- `event_type`: olay tipi
-- `color`: renk veya varyant bilgisi
-- `decision_source`: karar kaynagi
-- `queue_depth`: kuyruk derinligi
-- `mega_state`: Mega durum bilgisi
-- `raw_r`, `raw_g`, `raw_b`: renk sensoru ham degerleri
-- `confidence`: siniflandirma guveni
-- `vision_track_id`: vision tarafindaki track kimligi
-- `notes`: serbest not
-
-### 2. `production_completed.csv`
-
-FERP'ye gidecek ozet uretim kaydidir.
-
-Ana alanlar:
-
-- `item_id`
-- `detected_at`
-- `completed_at`
-- `color`
 - `status`
-- `travel_ms`
-- `cycle_ms`
-- `decision_source`
+- `logs`
+- `heartbeat`
+- `bridge/status`
+- `tablet/log`
 
-### 3. MQTT Telemetry
+Vision topicleri:
 
-MQTT topicleri operasyonel gorunurluk saglar, ancak sistemin kalici veri modeli yerine gecmez. Kalici entegrasyon acisindan CSV ciktilari halen daha onceliklidir.
+- `vision/status`
+- `vision/heartbeat`
+- `vision/tracks`
+- `vision/events`
 
-## Kimlikler ve Iliskiler
+Bu veri kalici model degil, operasyonel olay ve gorunurluk katmanidir.
 
-- `item_id`: bir kutunun hatta girisinden tamamlanmasina kadar ortak kimligi olmalidir.
-- `measure_id`: belirli bir olcum veya karar anini temsil eder.
-- `vision_track_id`: sadece vision tarafindaki izleme kimligidir; `item_id` yerine gecmez.
+### 2. Dashboard Snapshot
 
-Temel iliski mantigi:
+`mes_web` tarafinda browser'a giden ana modeldir.
 
-- bir `item_id`, birden fazla `production_events` kaydina sahip olabilir
-- bir `item_id`, en fazla bir `production_completed` kaydi ile kapanmalidir
-- bir `measure_id`, olaylar ile siniflandirma adimini baglamak icin kullanilir
+Ana bloklar:
 
-## Planlanan Kavramsal Varliklar
+- `module_meta`
+- `connection`
+- `system_status`
+- `hardware_status`
+- `counts`
+- `recent_logs`
+- `command_permissions`
+- `timestamps`
+- `vision_ingest`
+- `oee`
 
-### Products
+Bu model UI kontratidir. Frontend ve backend ayni snapshot semasini kullanir.
 
-- `product_id`
-- `color`
-- `unit`
+### 3. OEE Runtime State
 
-### Work Orders
+Dosya:
 
-- `work_order_id`
-- `product_id`
-- `quantity`
-- `line`
+- `logs\oee_runtime_state.json`
 
-### Lines
+Ana alanlar:
 
-- `line_id`
-- `name`
+- `shiftSelected`
+- `performanceMode`
+- `targetQty`
+- `idealCycleSec`
+- `plannedStopMin`
+- `shift`
+- `counts`
+- `itemsById`
+- `recentItemIds`
+- `activeFault`
+- `faultHistory`
+- `unplannedDowntimeMs`
+- `trend`
+- `lastEventSummary`
+- `lastUpdatedAt`
 
-### Operators
+Bu dosya, vardiya kontrolu ve backend OEE hesabinin calisan kaynagidir.
 
-- `operator_id`
-- `name`
+### 4. Gunluk Workbook
 
-### Stations
+Dosya:
 
-- `station_id`
-- `type`
+- `logs\MES_Konveyor_Veritabani_GG-AA-YYYY.xlsx`
 
-### Downtime
+Sheet'ler:
 
-- `type`
-- `duration`
-- `start_time`
-- `end_time`
+- `1_Olay_Logu`
+- `2_Olcumler`
+- `4_Uretim_Tamamlanan`
+- `6_Vision`
+- `7_Raw_Logs`
 
-## OEE ve Raporlama Icin Turetilen Alanlar
+Bu workbook, bugunku birincil kalici veri siniridir.
 
-- planli durus
-- plansiz durus
-- toplam uretim miktari
-- hatali uretim miktari
-- ortalama cycle suresi
-- kuyruk bekleme ve tasima sureleri
+## Kimlikler
 
-Bu metriklerin bir kismi dogrudan kaydedilmiyor; event log uzerinden turetilmesi gerekiyor.
+### `item_id`
 
-## Gelecek Asama
+Bir urunun hatta girdikten sonra tamamlanana kadar tasidigi ana kimliktir.
 
-- CSV tabanli modelden iliskisel veritabani modeline gecis
-- FERP kontratina gore alan isimlerinin netlestirilmesi
-- work order ve operator bilgisinin hatta baglanmasi
-- OEE hesaplari icin standart raporlama tablolari
+### `measure_id`
 
-## AI Icin Notlar
+Olcum veya siniflandirma anini temsil eden kimliktir.
 
-- Var olan CSV kolonlarini degistirmeden once `FERP_INTEGRATION.md` ile uyumu kontrol edin.
-- Yeni alan onermeden once bunun olay seviyesi mi, ozet seviye mi oldugunu belirtin.
-- `item_id`, `measure_id` ve `vision_track_id` birbirinin yerine kullanilmamalidir.
+### `vision_track_id`
+
+Sadece vision observer tarafindaki izleme kimligidir. `item_id` yerine gecmez.
+
+## Olay Mantigi
+
+### Olcum ve Queue
+
+- `measurement_decision`
+  - renk kararinin verildigi an
+- `queue_enq`
+  - urun kuyruga alindigi an
+
+### Robot ve Tamamlanma
+
+- `arm_position_reached`
+  - robot hazirlik / konum olayi
+- `pickplace_done`
+  - tamamlanmis urun olayi
+
+Aktif vardiyada `pickplace_done`, backend tarafinda:
+
+- tamamlanan urun
+- varsayilan kalite = `GOOD`
+
+olarak sayilir.
+
+## OEE Veri Kurallari
+
+### Sayima Girme Kosulu
+
+- vardiya aktif olmadan urun OEE sayacina girmez
+
+### Varsayilan Kalite
+
+- robotun biraktigi tamamlanmis urun ilk anda `Saglam` kabul edilir
+- sonradan operator override edebilmelidir
+- bu override UI'si sonraki fazdadir
+
+### Formuller
+
+- `Availability = runtime / elapsed`
+- `runtime = elapsed - unplanned_downtime`
+- `Performance = completed / target` veya `completed / expected_by_cycle`
+- `Quality = good / total`
+- `OEE = Availability * Performance * Quality`
+
+### Fault Veri Kaynagi
+
+- aktif fault bilgisi `tablet/log` satirlarindan gelir
+
+## Workbook Sheet Modeli
+
+### `1_Olay_Logu`
+
+Amaç:
+
+- normalize olay kaydi
+- kaynak, event type, item, measure, color, decision source, queue depth gibi alanlari tutmak
+
+### `2_Olcumler`
+
+Amaç:
+
+- TCS3200 karar detaylarini
+- ham ve turetilmis olcum alanlarini
+- search hint ve vote alanlarini
+
+tutmak
+
+### `4_Uretim_Tamamlanan`
+
+Amaç:
+
+- queue'dan tamamlanmis urune gecisi kaydetmek
+- `detected_at`, `completed_at`, `travel_ms`, `cycle_ms` gibi alanlari vermek
+
+### `6_Vision`
+
+Amaç:
+
+- vision event akisini normalize etmek
+
+### `7_Raw_Logs`
+
+Amaç:
+
+- ham satiri kaybetmeden saklamak
+- replay veya analiz icin ham payload'i korumak
+
+## Eski CSV Durumu
+
+`production_events.csv` ve `production_completed.csv` yeni veri modelinin merkezi degildir. Yeni dokumanlarda bu dosyalar ancak tarihsel veya legacy referans olarak anilmalidir.
+
+## Sonraki Veri Modeli Adimlari
+
+- manuel kalite override sonucu workbook ve runtime state'e baglanacak
+- vardiya kapanis ozeti icin ayri rapor modeli netlesecek
+- FERP icin resmi JSON kontrati workbook'tan turetilecek

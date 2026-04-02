@@ -2,30 +2,35 @@
 
 ## ESP32 -> Nokia 5110
 
-ESP32 karti powerbank uzerinden USB ile beslenecek. Nokia 5110 modulunu ESP32'nin `3V3` cikisindan besle.
+ESP32 karti powerbank veya USB uzerinden beslenecekse, Nokia 5110 modulu yalnizca `3V3` hattindan beslenmelidir.
 
 | Nokia 5110 | ESP32 38 pin devkit | Not |
 | --- | --- | --- |
-| GND | GND | Ortak toprak |
+| GND | GND | ortak toprak |
 | VCC | 3V3 | 5V kullanma |
 | CLK | GPIO18 | SPI clock |
 | DIN | GPIO23 | SPI MOSI |
-| DC | GPIO27 | Data/command |
-| CE | GPIO26 | Chip enable |
+| DC | GPIO27 | data / command |
+| CE | GPIO26 | chip enable |
 | RST | GPIO33 | LCD reset |
-| BL | Opsiyonel | Modulde direnc varsa 3V3, emin degilsen bos birak |
+| BL | opsiyonel | modulde seri direnc varsa 3V3, emin degilsen bos birak |
 
-## Opsiyonel Buton
+## Opsiyonel Fiziksel Buton
 
 | Buton ucu | ESP32 |
 | --- | --- |
 | Uc 1 | GPIO25 |
 | Uc 2 | GND |
 
-Kod `INPUT_PULLUP` kullandigi icin ek direnc gerekmez.
-Kisa basma normal ilerletme, hizli cift basma son operasyonu geri alma, 3 saniye uzun basma reset komutu icindir.
+Kod `INPUT_PULLUP` kullandigi icin harici direnç gerekmez.
 
-## ASCII Cizim
+Buton davranislari:
+
+- kisa basma: normal ilerletme
+- hizli cift basma: son operasyonu geri alma
+- 3 saniye uzun basma: reset komutu
+
+## ASCII Semasi
 
 ```text
 Powerbank USB
@@ -44,8 +49,14 @@ ESP32 GPIO25 --> Buton
 ESP32 GND    --> Buton
 ```
 
-## Breadboard Yoksa Pratik Oneri
+## Breadboard Yoksa
 
-- Gecici test icin fiziksel buton yerine Python arayuzundeki turuncu butonu kullan.
-- Fiziksel buton kullanacaksan en saglikli yontem butonu iki jumper ile dogrudan karta lehimlemek veya krokodil kablo ile sabitlemek.
-- 4 bacakli klasik tactile butonda ayni taraftaki iki bacak kisa devredir; karsilikli ayak ciftini kullan.
+- Gecici test icin fiziksel buton yerine GUI butonunu kullan.
+- Fiziksel buton baglayacaksan iki jumper ile dogrudan karta veya saglam bir ara baglantiya git.
+- 4 bacakli tactile butonda ayni taraftaki iki bacak zaten kisa devredir; karsilikli cift kullan.
+
+## Guvenlik Notu
+
+- Nokia 5110 ekranini 5V ile besleme.
+- BL pinini dogrudan baglamadan once modul uzerinde direnç olup olmadigini kontrol et.
+- GND ortaklanmadan ekran kararsiz calisabilir.

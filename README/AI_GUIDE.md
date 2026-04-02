@@ -1,134 +1,62 @@
-# AI Collaboration Guide
+# AI Guide
 
-## Amac
+Bu belge, repo uzerinde calisan ekip uyelerinin ChatGPT, Codex veya benzeri araclara daha dogru baglam vermesini saglar. Amac, AI'nin eski CSV merkezli varsayimlara veya sadece Node-RED tabanli bir zihniyete kaymasini engellemektir.
 
-Bu belge, projede calisan ekip uyelerinin ChatGPT, Codex veya benzeri araclara ayni baglamla gorev verebilmesini kolaylastirmak icin hazirlandi. Hedef, daha tutarli promptlar yazmak ve AI'nin yanlis varsayimlarla repo disina tasmasini onlemektir.
+## Repo Icin Kisa Baglam
 
-## AI'ya Gorev Vermeden Once
+- ana uygulama katmani `mes_web/` altindadir
+- fiziksel kontrol otoritesi `mega.cpp` tarafindadir
+- MQTT bridge `esp32.cpp` tarafindadir
+- workbook ve OEE runtime backend tarafinda uretilir
+- Node-RED repo disi yerel arsiv olarak dusunulmelidir; yeni ana gelistirme hedefi degildir
 
-Her gorevde su 5 bilgiyi verin:
+## AI'ye Verilmesi Gereken Temel Gercekler
 
-- hedef: ne degisecek veya ne duzelecek
-- kapsam: hangi dosyalar incelenecek veya degisecek
-- sinirlar: neye dokunulmayacak
-- teslim: ne tur cikti bekleniyor
-- dogrulama: sonucu nasil kontrol edecegiz
+- MQTT root'u `sau/iot/mega/konveyor/` olarak kalir
+- `PICKPLACE_DONE` tamamlanan urun anlamina gelir
+- tamamlanan urun varsayilan olarak `good` kabul edilir
+- kalite override operator ekrani henuz tamamlanmamistir
+- `__reset_counts__` artik Mega'ya gitmez, backend icinde yerel calisir
+- OEE aktif vardiya olmadan baslamaz
+- sistem acildiginda onceki vardiya otomatik acik gelmez
+- birincil kalici veri siniri CSV degil, workbook'tur
 
-Kotu ornek:
+## AI'den Beklenen Varsayimlar
 
-```text
-Bu projeyi duzelt.
-```
+- yeni ekran veya veri akisi onerirken `mes_web` hedeflenmelidir
+- dashboard kontrati bozulmamali, mevcut snapshot alanlari korunmalidir
+- Mega tarafina yeni karar otoritesi yuklenmemelidir
+- vision verisi yardimci ve pasif katman olarak ele alinmalidir
+- workbook sheet yapisi entegrasyon siniri oldugu icin keyfi degistirilmemelidir
 
-Iyi ornek:
+## AI'nin Yapmamasi Gerekenler
 
-```text
-`mega.cpp` ve `mqtt-topics.md` uzerinde calis. Ama MQTT root'u degistirme. Amac, yeni bir alarm tipini loglara ve dokumana eklemek. Sonunda hangi topicte ne yayinlanacagini ozetle.
-```
+- MQTT root'unu degistirmek
+- Mega tarafina keyfi yeni komut eklemek
+- yerel Node-RED arsivini yeni ana ekran gibi ele almak
+- workbook'u gecici bir CSV turevi gibi yorumlamak
+- OEE hesabini aktif vardiya disinda baslatmak
 
-## Bu Repo Icin Sabit Baglam
+## Faydalı Prompt Ornekleri
 
-- `mega.cpp`, fiziksel akis ve sorting kararinin ana otoritesidir.
-- `esp32.cpp`, Mega seri cikisini MQTT'ye tasiyan bridge rolundedir.
-- Ana MQTT root: `sau/iot/mega/konveyor/`
-- Vision root: `sau/iot/mega/konveyor/vision`
-- Vision servisi pasiftir; sayim ve dogrulama icin veri uretir ama ana karari override etmez.
-- FERP entegrasyonu su anda `production_events.csv` ve `production_completed.csv` uzerinden dusunulmelidir.
-- `node-red.json`, dashboard ve veri akisini temsil eder.
+- "`mes_web` icinde yeni operator paneli bileseni ekle, mevcut dashboard snapshot kontratini bozma."
+- "Workbook sheet yapisini koruyarak yeni alanlari projector tarafinda doldur."
+- "OEE hesabini `PICKPLACE_DONE` ve fault olaylarina gore backend tarafinda guncelle."
+- "Yerel Node-RED arsivini sadece parity referansi olarak kullan."
 
-## Hangi Gorevte Hangi Dosyalari Paylasmali
+## Yanlis Prompt Ornekleri
 
-### Konveyor, robot veya renk karari
+- "Node-RED yeni ana ekran olsun."
+- "CSV uretelim, sonra belki Excel'e doneriz."
+- "Vision karari Mega kararinin yerini alsin."
+- "Vardiya acik olmasa da OEE sayimi baslasin."
 
-- `mega.cpp`
-- `architecture.md`
-- `mqtt-topics.md`
+## Dokuman Onceligi
 
-### MQTT, broker veya bridge davranisi
+Bir AI aracina repo baglami verilirken su belgeler once okunmalidir:
 
-- `esp32.cpp`
-- `mqtt-topics.md`
-- gerekiyorsa `node-red.json`
-
-### FERP veya veri aktarimi
-
-- `FERP_INTEGRATION.md`
-- `data-model.md`
-- ilgili CSV dosyalari
-
-### Vision ve kamera tarafi
-
-- `raspberry/README.md`
-- `raspberry/config/observer.example.json`
-- `raspberry/config/boxes.example.json`
-- ilgili Python dosyalari
-
-### Genel sistem yorumu
-
-- once `README.md`
-- sonra `architecture.md`
-
-## Prompt Sablonu
-
-Asagidaki sablon, ekip ici kullanima uygundur:
-
-```text
-Amac:
-<tek cumlede hedef>
-
-Kapsam:
-<degisecek veya incelenecek dosyalar>
-
-Sinirlar:
-<dokunulmayacak kisimlar, isimler, topicler, kolonlar>
-
-Beklenen cikti:
-<kod, dokuman, analiz, refactor, test vb.>
-
-Dogrulama:
-<hangi komut, hangi senaryo, hangi kontrol>
-```
-
-## AI'ya Verilebilecek Iyi Gorev Ornekleri
-
-- `production_completed.csv` kolonlarini temel alarak FERP import mapper taslagi hazirla.
-- `raspberry/observer/tracker.py` icin `line_crossed` olayini aciklayan teknik dokuman yaz.
-- `esp32.cpp` icindeki `bridge/status` payload'ini dokumanla eslestir.
-- `mega.cpp` log formatlarina gore Node-RED tarafi icin parser kurallari oner.
-
-## Riskli Istekler
-
-Asagidaki tipte istemler AI'nin fazla varsayim yapmasina neden olur:
-
-- "Tum sistemi yeniden tasarla"
-- "ERP entegrasyonunu tamamla" fakat kontrat vermeden
-- "MQTT tarafini modernize et" fakat topic uyumlulugunu belirtmeden
-- "Vision ile sorting'i yonet" fakat mevcut pasif rol kararini degistirdigini soylemeden
-
-## AI'dan Beklenen Cikti Formati
-
-Ekip ici standart olarak AI'dan su 4 basligi istemek faydalidir:
-
-- hangi dosyalari inceledi veya degistirdi
-- neyi neden degistirdi
-- nasil dogruladi veya neden dogrulayamadi
-- acik kalan riskler veya varsayimlar
-
-## Dokuman Kullanma Sirasi
-
-Projeye yeni giren biri veya bir AI araci icin onerilen okuma sirasi:
-
-1. `README.md`
-2. `architecture.md`
-3. goreve gore ilgili teknik dokuman
-4. ilgili kod dosyasi
-
-## Kisa Kontrol Listesi
-
-AI gorevi gondermeden once sunu kontrol edin:
-
-- ilgili dosyalar eklendi mi
-- topic, kolon veya event isimleri acik yazildi mi
-- degismemesi gereken kisimlar belirtildi mi
-- cikti beklentisi net mi
-- dogrulama sekli yazildi mi
+1. [README.md](/Users/acer/Documents/.CODE/codex/MES/README/README.md)
+2. [architecture.md](/Users/acer/Documents/.CODE/codex/MES/README/architecture.md)
+3. [data-model.md](/Users/acer/Documents/.CODE/codex/MES/README/data-model.md)
+4. [mes_web/README.md](/Users/acer/Documents/.CODE/codex/MES/mes_web/README.md)
+5. [mqtt-topics.md](/Users/acer/Documents/.CODE/codex/MES/README/mqtt-topics.md)

@@ -1,25 +1,35 @@
 # Raspberry Observer
 
-## Amac
+`raspberry/`, konveyor hattina yardimci pasif vision observer katmanidir. Amaci ana sorting kararini degistirmek degil, goruntu tabanli izleme ve capraz kontrol verisi uretmektir.
 
-`raspberry/` klasoru, konveyor uzerindeki kutulari goruntu ile gozlemleyen pasif observer servisini icerir. Bu servis ana sorting kararini degistirmez; sayim, dogrulama ve sapma takibi icin ek veri uretir.
+## Rol
+
+- kutu tespiti
+- track atama
+- line crossing sayimi
+- renk ve sayim capraz kontrolu
+- operator ekranina ozet veri saglama
+
+Yeni yapida bu veri `mes_web` tarafinda pasif ingest olarak okunur ve operasyon ekraninda vision ozeti olarak gosterilebilir.
+
+## Ne Yapmaz
+
+- Mega'nin sorting kararini override etmez
+- `item_id` otoritesi gibi davranmaz
+- OEE tamamlanma sayimini dogrudan belirlemez
 
 ## Dosya Haritasi
 
-- `run_observer.py`: uygulamanin ana giris noktasi
-- `calibrate_hsv.py`: HSV ve LAB profil cikarimi icin yardimci arac
-- `kamera.py`: tek dosyalik eski HSV denemesi
-- `config/observer.example.json`: kamera, ROI, tracker ve MQTT ayarlari
-- `config/boxes.example.json`: kutu profilleri ve renk araliklari
-- `observer/`: algilama, takip, MQTT ve uygulama modulleri
-
-## Ne Yapar
-
-- JSON ile kutu profilleri tanimlar
-- HSV maske ve istege bagli LAB kisiti ile kutu tespiti yapar
-- Track bazli izleme ile ayni kutuya tutarli `track_id` atar
-- Dikey sayim cizgisi gecislerini sayar
-- MQTT uzerinden durum, heartbeat, track ve event yayini yapar
+- `run_observer.py`
+  - ana giris noktasi
+- `calibrate_hsv.py`
+  - saha kalibrasyon araci
+- `config/observer.example.json`
+  - kamera, ROI, tracker ve MQTT ayarlari
+- `config/boxes.example.json`
+  - kutu profilleri
+- `observer/`
+  - detection, tracking, mqtt ve uygulama modulleri
 
 ## MQTT Yayinlari
 
@@ -34,23 +44,24 @@ Topicler:
 - `tracks`
 - `events`
 
-Tipik `events` olaylari:
+Tipik event tipleri:
 
 - `box_confirmed`
 - `box_lost`
 - `line_crossed`
 
-Bu yayinlar JSON formatindadir.
+Payload tipi JSON'dir.
 
 ## Kurulum
 
-`raspberry/` klasorunde:
-
 ```bash
+cd raspberry
 python -m pip install -r requirements.txt
 ```
 
-## Ilk Calistirma
+## Calistirma
+
+GUI ile:
 
 ```bash
 cd raspberry
@@ -64,7 +75,7 @@ cd raspberry
 python run_observer.py --config config/observer.example.json --boxes config/boxes.example.json --no-gui
 ```
 
-Video dosyasi ile test:
+Video kaynagi ile:
 
 ```bash
 cd raspberry
@@ -73,22 +84,20 @@ python run_observer.py --config config/observer.example.json --boxes config/boxe
 
 ## Kalibrasyon Akisi
 
-1. `python calibrate_hsv.py --source 0 --profile-id red_box --label "Red Box" --color-name red --overlay-bgr 0,0,255` ile araci acin.
-2. Kutuyu merkez ROI icine getirin.
-3. `c` ile profil cikartin.
-4. Gerekirse trackbar ile deneme yapip `s` ile HSV araligini alin.
-5. Uretilen JSON parcasini `config/boxes.example.json` icine tasiyin.
-6. `min_area`, `max_area` ve `aspect_ratio` alanlarini sahaya gore ince ayarlayin.
+1. `calibrate_hsv.py` ile hedef kutu icin profil cikar.
+2. Kutuyu merkez ROI icinde konumlandir.
+3. HSV / LAB araliklarini dene.
+4. Uretilen profili `boxes.example.json` mantigina tası.
+5. Sahada isik ve kamera acisi degisince tekrar kontrol et.
 
-## Dikkat Edilecek Sinirlar
+## Saha Notlari
 
-- Observer pasif calisir; Mega kararini override etmez.
-- Track kimligi `item_id` yerine gecmez.
-- Isik kosulu degistiginde sari ve benzeri renkler tekrar kalibre edilmelidir.
-- Pi 3 gibi sinirli cihazlarda ROI'yi dar tutmak ve cozunurlugu dusurmek daha stabildir.
+- sari gibi zor renkler isik degisiminden daha cok etkilenir
+- Pi 3 gibi cihazlarda ROI dar tutulursa performans daha stabil olur
+- track kaybi, item kimligi kaybi ile ayni sey degildir
 
-## AI Icin Notlar
+## Bu Modulu Degistirirken
 
-- Vision ile ilgili bir gorev verirken mutlaka `config/observer.example.json` ve `config/boxes.example.json` da paylasilmalidir.
-- "Tespiti iyilestir" gibi genel ifadeler yerine hangi renk, hangi isik kosulu ve hangi hata tipi oldugu yazilmalidir.
-- MQTT topic veya event degisikligi oneriliyorsa `mqtt-topics.md` ile uyum kontrol edilmelidir.
+- [README/mqtt-topics.md](/Users/acer/Documents/.CODE/codex/MES/README/mqtt-topics.md) ile topic uyumunu koru
+- ana karar zincirini vision'a tasimaya calisma
+- event isimlerini degistirirsen `mes_web/parsers.py` ve ilgili UI etkilerini birlikte dusun

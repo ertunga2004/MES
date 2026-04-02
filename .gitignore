@@ -1,13 +1,6 @@
-desktop.ini
-
 # Python caches
 __pycache__/
 *.pyc
-
-# Runtime outputs
-logs/
-production_events.csv
-production_completed.csv
 
 # Local scratch files
 _css_dump.txt
@@ -20,3 +13,9 @@ MES_Konveyor_Veritabani_Sablonu_v2.xlsx
 # OS/editor noise
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Local runtime outputs and archives
+logs/
+Node-red/
+*.bak.xlsx

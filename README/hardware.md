@@ -1,47 +1,51 @@
-# Hardware
+# Hardware Notes
 
-## Kontrol Kartlari
+## Ana Bilesenler
 
-- Arduino Mega 2560: ana kontrol katmani
-- ESP32 DevKit: Wi-Fi ve MQTT baglantisi
-- Raspberry Pi 3 veya benzeri: vision observer calisma ortami
+- Mega tabanli kontrol karti
+- ESP32 bridge karti
+- renk sensori
+- limit switch'ler
+- konveyor surucu ve motoru
+- robot kol
+- `mes_web` calistiran operator bilgisayari
+- opsiyonel Raspberry vision observer
 
-## Hareket Bilesenleri
+## Rol Dagilimi
 
-- DC motor: konveyor hareketi
-- NEMA17 step motor: lineer veya eksen hareketi
-- Servo motorlar:
-  - MG996R
-  - MG995
-  - SG90 gripper
+### Mega
 
-## Sensorler
+- fiziksel karar ve hareket otoritesi
+- queue ve sorting mantigi
+- log ve status satirlarinin ana kaynagi
 
-- TCS3200: renk algilama
-- 2 adet limit switch: alma ve birakma konumu
+### ESP32
 
-## Vision Tarafi
+- seri -> MQTT bridge
+- komut geri tasima
+- baglanti telemetry'si
 
-- Kamera + Raspberry Pi kombinasyonu
-- Beklenen gorevler:
-  - kutu tespiti
-  - renk dogrulama
-  - sayim
-  - sapma takibi
+### Operator Bilgisayari
 
-## Guc
+- `mes_web` backend ve web UI
+- workbook yazimi
+- OEE runtime state tutma
 
-- 5V SMPS
-- 12V SMPS
+### Raspberry
 
-## Pratik Notlar
+- pasif vision gozlem
+- crossing ve renk capraz kontrolu
 
-- Servo beslemesi Mega uzerinden verilmemelidir; harici guc kullanilmalidir.
-- Limit switch mantigi kodda `INPUT_PULLUP` ile dusunulmustur; elektriksel baglanti buna gore degerlendirilmelidir.
-- Vision tarafinda sahaya cikmadan once isik, ROI ve kamera sabitlemesi ayrica dogrulanmalidir.
+## Saha Notlari
 
-## AI Icin Notlar
+- OEE icin vardiya operator tarafindan baslatilmalidir
+- sistem acilinca acik vardiya otomatik surdurulmez
+- `__reset_counts__` backend yerel aksiyonudur
+- gecis doneminde yerel legacy Node-RED ekranina erisim ihtiyaci olabilir
 
-- Donanimla ilgili oneriler verirken hangi karta veya hatta dokundugunuzu acik yazin.
-- Pin veya guc varsayimi yapmayin; `mega.cpp` icindeki mevcut tanimlari referans alin.
-- Vision donanimi ile ana kontrol devresini ayni karar zinciri gibi ele almayin.
+## Bakim ve Dikkat Noktalari
+
+- Mega reset veya serial kopmasi, dashboard'da durum dususu olarak gorulmelidir
+- ESP32 offline ise komut hattina guvenilmemelidir
+- workbook yazimi operator PC disk erisimi gerektirir
+- vision offline olsa bile ana hat calismaya devam eder

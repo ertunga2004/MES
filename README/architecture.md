@@ -1,95 +1,155 @@
 # System Architecture
 
-## Kapsam
+## Mimari Amac
 
-Bu proje, mini konveyor hattinda fiziksel hareketten ERP'ye veri tasimaya kadar olan zinciri kapsayan bir MES prototipidir. Mimari; kontrol, haberlesme, izleme ve entegrasyon katmanlarina bilincli olarak ayrilmistir.
+Bu proje, saha cihazlarindan gelen text telemetry'yi canli operator ekranina ve kalici workbook kaydina donusturen katmanli bir MES prototipidir. Mimari, kontrol tarafini uygulama ve raporlama tarafindan ayirmak icin bilerek parcali tasarlanmistir.
 
 ## Katmanlar
 
 ### 1. Physical Layer
 
-- Konveyor
-- Robot kol
-- Renk sensori ve limit switch'ler
+- konveyor
+- robot kol
+- renk sensori
+- limit switch'ler
+
+Bu katman dogrudan fiziksel harekettir. Buradaki gercek karar ve emniyet mantigi uygulama katmanina degil, kontrol katmanina aittir.
 
 ### 2. Control Layer
 
 - `mega.cpp`
-- Gercek zamanli durum makinesi
-- Renk olcumu, queue ve pick-place akisi
 
-### 3. Edge Layer
+Sorumluluklari:
+
+- obje algilama ve olcum akisini yonetmek
+- queue mantigini isletmek
+- robot kol tetikleme sirasini belirlemek
+- durum ve olay satirlarini uretmek
+
+Bu katman, sorting kararinin tek ana otoritesidir.
+
+### 3. Edge / Bridge Layer
 
 - `esp32.cpp`
-- Mega UART cikisini MQTT'ye tasiyan bridge
+
+Sorumluluklari:
+
+- Mega seri cikisini okumak
+- MQTT'ye publish etmek
+- komutlari `cmd` topic'inden alip Mega'ya iletmek
+- Wi-Fi, MQTT ve queue telemetry'sini raporlamak
 
 ### 4. Communication Layer
 
 - MQTT broker
-- Topic root: `sau/iot/mega/konveyor/`
+- root: `sau/iot/mega/konveyor/`
+
+Bu katman veri tasir. Karar vermez. Text topicler ana hat icin, JSON topicler vision ve yardimci moduller icin kullanilir.
 
 ### 5. Application Layer
 
-- `node-red.json`
-- Dashboard, veri toplama ve entegrasyon akislari
+#### Legacy Application
+
+- repo disi Node-RED arsivi
+
+Rol:
+
+- gecis doneminde eski ekran ve akislari referans almak
+- parity karsilastirmasi yapmak
+- gerekirse saha gecmisini incelemek
+
+#### Yeni Application
+
 - `mes_web/`
-- Shadow modda yeni web UI + FastAPI backend + WebSocket snapshot katmani
-- Gerekirse operator arayuzu veya kiosk katmani
+
+Rol:
+
+- MQTT ingest
+- normalize dashboard snapshot
+- REST bootstrap + WebSocket canli yayin
+- komut publish
+- OEE runtime ve vardiya kontrolu
+- workbook tabanli kalici veri yazimi
+
+Bugunku ana gelistirme hedefi bu katmandir.
 
 ### 6. Observation Layer
 
-- `raspberry/` altindaki observer servisi
-- Vision tabanli sayim, track ve capraz kontrol
-- Pasif gozlemci rolunde calisir
+- `raspberry/`
+
+Rol:
+
+- kutu tespiti
+- track atama
+- line crossing sayimi
+- sari / diger renk capraz kontrolu
+
+Bu katman pasiftir. Mega kararini override etmez.
 
 ### 7. Data and Integration Layer
 
-- `production_events.csv`
-- `production_completed.csv`
-- `MES_Konveyor_Veritabani_Canli.xlsx`
-- JSON veya ERP import ciktilari
+Aktif veri katmanlari:
 
-## Calisma Sorumluluklari
+- `logs\MES_Konveyor_Veritabani_GG-AA-YYYY.xlsx`
+- `logs\oee_runtime_state.json`
+- `logs\log_YYYY-MM-DD.txt`
+- `logs\tablet_log_YYYY-MM-DD.txt`
 
-- Mega: fiziksel surecin ana otoritesi
-- ESP32: haberlesme koprusu, komut iletimi ve telemetry forwarding
-- Node-RED: mevcut operator gorunurlugu, veri akisi ve entegrasyon duzeni
-- `mes_web`: yeni ekranin shadow gelistirme alani ve gelecekteki operator arayuzu adayi
-- Raspberry observer: goruntu tabanli dogrulama ve sayim
-- FERP entegrasyonu: CSV tabanli gecici sinir
+Planlanan sonraki katman:
 
-## Ana Veri Akislari
+- workbook'tan turetilen FERP JSON cikisi
 
-### Kontrol Akisi
+## Canli Veri Akislari
 
-1. Sensor veya durum degisikligi Mega tarafinda algilanir.
-2. Mega, konveyor ve robot kol davranisini belirler.
-3. Mega log ve status satirlarini seri hat uzerinden ESP32'ye yollar.
-4. ESP32 bunlari uygun MQTT topiclerine yayar.
+### Operasyon Akisi
 
-### Entegrasyon Akisi
+1. Mega olay uretir.
+2. ESP32 bunu `status`, `logs`, `heartbeat`, `bridge/status` topiclerine tasir.
+3. `mes_web` bu topicleri dinler.
+4. Browser ilk olarak `GET /api/modules/{module_id}/dashboard` cagirir.
+5. Sonra `WS /ws/modules/{module_id}` ile canli snapshot alir.
+6. WebSocket koparsa son snapshot korunur ve istemci reconnect dener.
 
-1. Node-RED aktif kaldigi surece gecis doneminde CSV ciktilari uretmeye devam edebilir.
-2. `mes_web`, normalize edilen olaylari dogrudan `MES_Konveyor_Veritabani_Canli.xlsx` workbook'una yazar.
-3. Tamamlanan urun, olcum, vision ve raw log kayitlari ayni workbook icinde ayri sheet'lerde tutulur.
-4. Sonraki entegrasyon katmani bu workbook'u veya bundan turetilen JSON ciktilarini FERP'ye hazirlar.
+### OEE Akisi
 
-### Vision Akisi
+1. OEE runtime state `logs/oee_runtime_state.json` icinde tutulur.
+2. Vardiya secimi ve baslatma/bitirme komutlari web UI'dan gelir.
+3. Aktif vardiyada `PICKPLACE_DONE` olayi tamamlanan urun sayilir.
+4. Tamamlanan urun varsayilan olarak `good` kabul edilir.
+5. Fault verisi `tablet/log` satirlarindan okunur.
+6. Availability, Performance, Quality ve OEE backend tarafinda hesaplanir.
+7. Sonuc hem UI snapshot'ina hem trend dizisine yansir.
 
-1. Observer, kameradan ROI icinde kutulari tespit eder.
-2. Tracker, kutulara `track_id` atar.
-3. `status`, `heartbeat`, `tracks` ve `events` topicleri uzerinden JSON yayinlar.
-4. Bu veri, ana karar mekanizmasini degistirmeden capraz kontrol icin kullanilir.
+### Persistence Akisi
 
-## Tasarim Sinirlari
+1. `mes_web` MQTT log ve eventlerini normalize eder.
+2. Excel sink bu olaylari workbook icindeki sheet'lere yazar.
+3. Template workbook asla dogrudan ezilmez.
+4. Her gun icin `logs/` altinda yeni tarihli workbook olusur.
 
-- MQTT, kontrol katmaninin yerine gecmez; tasima ve gorunurluk amaciyla kullanilir.
-- Vision servisi yardimci katmandir; sorting karari Mega'da kalir.
-- Gecis doneminde CSV akisi korunabilir; yeni shadow yapinin kalici veri hedefi workbook tabanli Excel katmanidir.
-- Yeni bir bilesen eklenirken mevcut topic root ve veri akisi bozulmamalidir.
+## Kaynak Dogruluk Sirasi
 
-## AI Icin Notlar
+Bir alan cakisiyorsa su oncelik sirasini kullan:
 
-- Mimari degisikligi onerirken hangi katmanin sahipligini degistirdiginizi acik yazin.
-- Yeni topic, event veya CSV kolonu oneriyorsaniz bunun hangi katmanda uretilecegini belirtin.
-- "Tum sistemi yeniden tasarla" yerine mevcut katmanlari koruyan kucuk degisiklikler tercih edilmelidir.
+1. fiziksel karar ve olaylar icin `mega.cpp`
+2. vardiya ve OEE runtime ayarlari icin `oee_runtime_state.json`
+3. kalici olay ve rapor kaydi icin gunluk workbook
+4. legacy parity icin yerel Node-RED arsivi
+
+## Tasarim Kurallari
+
+- MQTT tasima katmanidir; kontrol otoritesi degildir.
+- Vision yardimci gozlem katmanidir; sorting karari vermez.
+- Node-RED repo icinde tutulmaz; yeni ana ekran ve veri katmani `mes_web` olarak kabul edilmelidir.
+- Excel workbook su anda birincil kalici veri siniridir.
+- OEE sayimi aktif vardiya olmadan baslamaz.
+- Sistem acilisinda daha once acik kalan vardiya otomatik devam ettirilmez.
+
+## Mimaride Bilincli Olarak Geciktilen Parcalar
+
+- manuel kalite override operator ekrani
+- workbook replay / rebuild araci
+- resmi FERP JSON kontrati
+- yerel Node-RED arsivine bagimliligin sifirlanmasi
+
+Bu basliklar roadmap'te ayri is kalemleri olarak ele alinmalidir.

@@ -55,6 +55,20 @@ const TOKEN_LABELS = {
   reconnecting: "Reconnect",
 };
 
+const OEE_TREND_METRICS = [
+  { key: "availability", label: "Kullanilabilirlik", shortLabel: "KULL", color: "#58a6ff", glow: "rgba(88, 166, 255, 0.28)" },
+  { key: "performance", label: "Performans", shortLabel: "PERF", color: "#ff8a3d", glow: "rgba(255, 138, 61, 0.28)" },
+  { key: "quality", label: "Kalite", shortLabel: "KLT", color: "#24c78d", glow: "rgba(36, 199, 141, 0.28)" },
+  { key: "oee", label: "OEE", shortLabel: "OEE", color: "#f8bf4f", glow: "rgba(248, 191, 79, 0.28)" },
+];
+
+const OEE_TREND_CHART = {
+  width: 640,
+  height: 220,
+  padding: { top: 18, right: 18, bottom: 24, left: 18 },
+  gridValues: [100, 75, 50, 25, 0],
+};
+
 const state = {
   moduleId: new URLSearchParams(window.location.search).get("module") || DEFAULT_MODULE_ID,
   activeTab: new URLSearchParams(window.location.search).get("tab") || "operations",
@@ -141,6 +155,204 @@ function formatTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleString("tr-TR", { hour12: false });
+}
+
+function formatTrendTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleTimeString("tr-TR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function clampPercent(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.max(0, Math.min(100, numeric));
+}
+
+function formatTrendIndex(index, total) {
+  const offset = total - index - 1;
+  return offset <= 0 ? "N" : `N-${offset}`;
+}
+
+function formatTrendDelta(current, previous) {
+  if (current === null || previous === null) {
+    return { text: "Ilk veri", tone: "flat" };
+  }
+
+  const delta = current - previous;
+  if (Math.abs(delta) < 0.05) {
+    return { text: "Degisim yok", tone: "flat" };
+  }
+
+  const prefix = delta > 0 ? "+" : "";
+  return {
+    text: `${prefix}${delta.toFixed(1)} puan`,
+    tone: delta > 0 ? "up" : "down",
+  };
+}
+
+function buildTrendChartGeometry(values) {
+  const { width, height, padding } = OEE_TREND_CHART;
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+
+  return values.map((value, index) => {
+    const x = values.length === 1
+      ? padding.left + plotWidth / 2
+      : padding.left + (index / (values.length - 1)) * plotWidth;
+    const y = value === null ? null : padding.top + ((100 - value) / 100) * plotHeight;
+    return { index, x, y, value };
+  });
+}
+
+function buildSvgPath(points) {
+  let path = "";
+  let started = false;
+
+  points.forEach((point) => {
+    if (point.value === null || point.y === null) {
+      started = false;
+      return;
+    }
+    path += `${started ? " L" : "M"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
+    started = true;
+  });
+
+  return path.trim();
+}
+
+function buildSvgArea(points) {
+  const finitePoints = points.filter((point) => point.value !== null && point.y !== null);
+  if (!finitePoints.length) return "";
+
+  const baseline = OEE_TREND_CHART.height - OEE_TREND_CHART.padding.bottom;
+  const linePath = buildSvgPath(finitePoints);
+  return `${linePath} L ${finitePoints[finitePoints.length - 1].x.toFixed(2)} ${baseline.toFixed(2)} L ${finitePoints[0].x.toFixed(2)} ${baseline.toFixed(2)} Z`;
+}
+
+function renderTrendMetricCard(metric, rows) {
+  const values = rows.map((row) => clampPercent(row[metric.key]));
+  const points = buildTrendChartGeometry(values);
+  const linePath = buildSvgPath(points);
+  const areaPath = buildSvgArea(points);
+  const validValues = values.filter((value) => value !== null);
+  const latest = validValues.length ? validValues[validValues.length - 1] : null;
+  const previous = validValues.length > 1 ? validValues[validValues.length - 2] : null;
+  const delta = formatTrendDelta(latest, previous);
+  const low = validValues.length ? Math.min(...validValues).toFixed(1) : "-";
+  const high = validValues.length ? Math.max(...validValues).toFixed(1) : "-";
+  const rangeText = validValues.length ? `${low}% - ${high}%` : "-";
+  const gradientId = `oee-trend-gradient-${metric.key}`;
+
+  const gridLines = OEE_TREND_CHART.gridValues
+    .map((gridValue) => {
+      const y = OEE_TREND_CHART.padding.top
+        + ((100 - gridValue) / 100) * (OEE_TREND_CHART.height - OEE_TREND_CHART.padding.top - OEE_TREND_CHART.padding.bottom);
+      const className = gridValue === 0 ? "oee-trend-svg-baseline" : "oee-trend-svg-grid";
+      return `
+        <g>
+          <line class="${className}" x1="${OEE_TREND_CHART.padding.left}" y1="${y.toFixed(2)}" x2="${(OEE_TREND_CHART.width - OEE_TREND_CHART.padding.right).toFixed(2)}" y2="${y.toFixed(2)}"></line>
+          <text class="oee-trend-svg-label" x="${(OEE_TREND_CHART.width - OEE_TREND_CHART.padding.right - 4).toFixed(2)}" y="${(y - 6).toFixed(2)}" text-anchor="end">${gridValue}%</text>
+        </g>
+      `;
+    })
+    .join("");
+
+  const circles = points
+    .filter((point) => point.value !== null && point.y !== null)
+    .map((point, index, visiblePoints) => {
+      const isLatest = index === visiblePoints.length - 1;
+      return `
+        ${isLatest ? `<circle cx="${point.x.toFixed(2)}" cy="${point.y.toFixed(2)}" r="11" fill="${metric.color}" opacity="0.14"></circle>` : ""}
+        <circle cx="${point.x.toFixed(2)}" cy="${point.y.toFixed(2)}" r="${isLatest ? "5.5" : "3.5"}" fill="${metric.color}" stroke="#08131f" stroke-width="${isLatest ? "4" : "2"}">
+          <title>${metric.label} | ${formatTrendTime(rows[point.index].time)} | ${formatPercent(point.value)}</title>
+        </circle>
+      `;
+    })
+    .join("");
+
+  return `
+    <article class="oee-trend-card" style="--metric-color: ${metric.color}; --metric-glow: ${metric.glow};">
+      <div class="oee-trend-card-head">
+        <div class="oee-trend-card-title">
+          <span>${metric.shortLabel}</span>
+          <strong>${metric.label}</strong>
+        </div>
+        <div class="oee-trend-card-stats">
+          <strong>${formatPercent(latest)}</strong>
+          <span class="oee-trend-delta" data-tone="${delta.tone}">${delta.text}</span>
+        </div>
+      </div>
+
+      <svg class="oee-trend-chart" viewBox="0 0 ${OEE_TREND_CHART.width} ${OEE_TREND_CHART.height}" role="img" aria-label="${metric.label} icin son 10 kayitlik cizgi grafigi">
+        <defs>
+          <linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="${metric.color}" stop-opacity="0.28"></stop>
+            <stop offset="100%" stop-color="${metric.color}" stop-opacity="0.02"></stop>
+          </linearGradient>
+        </defs>
+        ${gridLines}
+        ${areaPath ? `<path d="${areaPath}" fill="url(#${gradientId})"></path>` : ""}
+        ${linePath ? `<path d="${linePath}" fill="none" stroke="${metric.color}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"></path>` : ""}
+        ${circles}
+      </svg>
+
+      <div class="oee-trend-card-foot">
+        <span>Aralik ${rangeText}</span>
+        <span>${rows.length} kayit</span>
+      </div>
+    </article>
+  `;
+}
+
+function renderOeeTrend(trendRows) {
+  const rows = (trendRows || []).slice(-10);
+  if (!rows.length) {
+    els.oeeTrendList.innerHTML = `<p class="empty-state">Henuz OEE trend kaydi yok.</p>`;
+    return;
+  }
+
+  const firstTime = formatTrendTime(rows[0].time);
+  const lastTime = formatTrendTime(rows[rows.length - 1].time);
+  const tickColumns = Math.max(rows.length, 1);
+  const tickStyle = `--trend-axis-columns: ${tickColumns};`;
+
+  els.oeeTrendList.innerHTML = `
+    <div class="oee-trend-band">
+      <div class="oee-trend-band-copy">
+        <strong>Canli kayan trend</strong>
+        <span>Her yeni veri sagdan eklenir, pencere son 10 kayitla sinirli kalir.</span>
+      </div>
+      <div class="oee-trend-band-meta">
+        <strong>${rows.length}/10</strong>
+        <span>${firstTime} -> ${lastTime}</span>
+      </div>
+    </div>
+
+    <div class="oee-trend-grid">
+      ${OEE_TREND_METRICS.map((metric) => renderTrendMetricCard(metric, rows)).join("")}
+    </div>
+
+    <div class="oee-trend-axis" style="${tickStyle}">
+      ${rows
+        .map(
+          (row, index) => `
+            <article class="oee-trend-tick">
+              <strong>${formatTrendIndex(index, rows.length)}</strong>
+              <span>${formatTrendTime(row.time)}</span>
+            </article>
+          `
+        )
+        .join("")}
+    </div>
+  `;
 }
 
 function runtimeBannerText() {
@@ -562,26 +774,7 @@ function renderOee(snapshot) {
     )
     .join("");
 
-  if (!oee.trend.length) {
-    els.oeeTrendList.innerHTML = `<p class="empty-state">Henuz OEE trend kaydi yok.</p>`;
-    return;
-  }
-  els.oeeTrendList.innerHTML = oee.trend
-    .slice()
-    .reverse()
-    .map(
-      (row) => `
-        <article class="oee-trend-row">
-          <span>${formatTime(row.time)}</span>
-          <strong>OEE ${formatPercent(row.oee)}</strong>
-          <span>Kalite ${formatPercent(row.quality)}</span>
-          <span>Perf ${formatPercent(row.performance)}</span>
-          <span>Kull ${formatPercent(row.availability)}</span>
-          <span>Loss ${formatPercent(row.loss)}</span>
-        </article>
-      `
-    )
-    .join("");
+  renderOeeTrend(oee.trend);
 }
 
 function render(snapshot) {

@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MES Kontrol Paneli</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">MES Kontrol Paneli</p>
+          <h1 id="module-title">Konveyor Ana Hat</h1>
+          <p id="module-subtitle" class="subtitle">Canli operator paneli ve kalici veri kaydi.</p>
+        </div>
+        <div class="hero-status">
+          <span id="runtime-badge" class="runtime-badge runtime-bootstrapping">Bootstrapping</span>
+          <span id="snapshot-at" class="timestamp">Son snapshot: -</span>
+        </div>
+      </header>
+
+      <div id="connection-banner" class="connection-banner hidden"></div>
+
+      <nav class="tab-bar">
+        <button class="tab-button is-active" data-tab="operations" type="button">Operasyon</button>
+        <button class="tab-button" data-tab="oee" type="button">OEE</button>
+      </nav>
+
+      <main class="tab-shell">
+        <section id="tab-operations" class="dashboard-grid tab-panel">
+          <section class="panel overview-panel panel-span-12">
+            <div id="overview-meta" class="overview-meta"></div>
+            <div id="connection-cards" class="connection-grid"></div>
+            <div class="count-strip">
+              <div class="panel-head count-strip-head">
+                <h2>Renk Sayaclari</h2>
+                <span class="panel-note">`AUTO|QUEUE=ENQ` olaylarindan turetilir</span>
+              </div>
+              <div id="count-cards" class="count-grid count-grid-compact"></div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Sistem Durumu</h2>
+              <span class="panel-note">MQTT `status` topic'inden beslenir</span>
+            </div>
+            <div id="system-grid" class="status-grid"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Donanim Durumu</h2>
+              <span class="panel-note">Heartbeat ve bridge telemetry ozeti</span>
+            </div>
+            <div id="hardware-grid" class="status-grid"></div>
+          </section>
+
+          <section id="vision-panel" class="panel panel-span-12">
+            <div class="panel-head">
+              <h2>Vision Durumu</h2>
+              <span class="panel-note">Pasif ingest ve capraz kontrol ozeti</span>
+            </div>
+            <div id="vision-grid" class="vision-grid"></div>
+          </section>
+
+          <section class="panel command-panel panel-span-12">
+            <div class="panel-head">
+              <h2>Komut Paneli</h2>
+              <span id="command-mode" class="panel-note">-</span>
+            </div>
+            <div id="preset-buttons" class="button-grid"></div>
+            <form id="manual-command-form" class="manual-command-form">
+              <label for="manual-command-input">Serbest Komut</label>
+              <div class="manual-command-row">
+                <input id="manual-command-input" type="text" autocomplete="off" placeholder="custom raw command" />
+                <button id="manual-command-submit" type="submit">Gonder</button>
+              </div>
+            </form>
+            <p id="command-feedback" class="command-feedback">Komutlar beklemede.</p>
+          </section>
+
+          <section class="panel logs-panel panel-span-12">
+            <div class="panel-head">
+              <h2>Canli Log</h2>
+              <span class="panel-note">Son 50 satir</span>
+            </div>
+            <div id="log-list" class="log-list"></div>
+          </section>
+        </section>
+
+        <section id="tab-oee" class="dashboard-grid tab-panel hidden">
+          <section class="panel panel-span-12">
+            <div class="panel-head">
+              <h2>Vardiya Ayarlari</h2>
+              <span id="oee-control-summary" class="panel-note">OEE kontrol paneli hazir.</span>
+            </div>
+            <div class="oee-control-layout">
+              <div class="oee-control-column">
+                <div class="oee-control-block">
+                  <span class="oee-control-label">Sonraki Vardiya</span>
+                  <div id="oee-shift-options" class="oee-choice-grid"></div>
+                  <p id="oee-selected-window" class="oee-control-note">-</p>
+                </div>
+
+                <div class="oee-control-block">
+                  <span class="oee-control-label">Performans Modu</span>
+                  <div id="oee-mode-options" class="oee-choice-grid oee-choice-grid-2"></div>
+                </div>
+
+                <div class="oee-action-row">
+                  <button id="oee-shift-start" class="oee-primary-button" type="button">Vardiya Baslat</button>
+                  <button id="oee-shift-stop" class="oee-danger-button" type="button">Vardiya Bitir</button>
+                </div>
+              </div>
+
+              <div class="oee-control-column">
+                <div id="oee-control-stats" class="oee-mini-stat-grid"></div>
+
+                <div class="oee-input-grid">
+                  <label class="oee-input-card">
+                    <span>Toplam Hedef (adet)</span>
+                    <div class="oee-input-row">
+                      <input id="oee-target-qty" type="number" min="0" step="1" inputmode="numeric" />
+                      <button id="oee-target-apply" type="button">Uygula</button>
+                    </div>
+                  </label>
+
+                  <label class="oee-input-card">
+                    <span>Ideal Cycle (sn)</span>
+                    <div class="oee-input-row">
+                      <input id="oee-ideal-cycle" type="number" min="0" step="0.1" inputmode="decimal" />
+                      <button id="oee-ideal-cycle-apply" type="button">Uygula</button>
+                    </div>
+                  </label>
+
+                  <label class="oee-input-card">
+                    <span>Planli Durus (dk)</span>
+                    <div class="oee-input-row">
+                      <input id="oee-planned-stop" type="number" min="0" step="0.1" inputmode="decimal" />
+                      <button id="oee-planned-stop-apply" type="button">Uygula</button>
+                    </div>
+                  </label>
+                </div>
+
+                <div id="oee-control-current" class="status-grid"></div>
+              </div>
+            </div>
+            <p id="oee-control-feedback" class="oee-control-feedback">OEE ayarlari beklemede.</p>
+          </section>
+
+          <section class="panel panel-span-12">
+            <div class="panel-head">
+              <h2>OEE Ozet</h2>
+              <span id="oee-updated-at" class="panel-note">Son guncelleme: -</span>
+            </div>
+            <div id="oee-summary" class="oee-summary"></div>
+          </section>
+
+          <section class="panel panel-span-12">
+            <div class="panel-head">
+              <h2>OEE KPI</h2>
+              <span id="oee-source" class="panel-note">Kaynak: -</span>
+            </div>
+            <div id="oee-kpi-grid" class="oee-kpi-grid"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Uretim Ozet</h2>
+              <span class="panel-note">Toplam, saglam ve kayip dagilimi</span>
+            </div>
+            <div id="oee-production-grid" class="status-grid"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Fault ve Vardiya</h2>
+              <span class="panel-note">Tablet fault ve runtime state ozeti</span>
+            </div>
+            <div id="oee-fault-grid" class="status-grid"></div>
+          </section>
+
+          <section class="panel panel-span-12">
+            <div class="panel-head">
+              <h2>Renk Performansi</h2>
+              <span class="panel-note">Renk bazli saglam, rework ve hurda</span>
+            </div>
+            <div id="oee-color-grid" class="oee-color-grid"></div>
+          </section>
+
+          <section class="panel panel-span-12">
+            <div class="panel-head">
+              <h2>Son Trend</h2>
+              <span class="panel-note">Son 10 OEE kaydi</span>
+            </div>
+            <div id="oee-trend-list" class="oee-trend-list"></div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -32,6 +32,8 @@ Bu proje, mini konveyor hattinda fiziksel hareketten ERP'ye veri tasimaya kadar 
 
 - `node-red.json`
 - Dashboard, veri toplama ve entegrasyon akislari
+- `mes_web/`
+- Shadow modda yeni web UI + FastAPI backend + WebSocket snapshot katmani
 - Gerekirse operator arayuzu veya kiosk katmani
 
 ### 6. Observation Layer
@@ -44,13 +46,15 @@ Bu proje, mini konveyor hattinda fiziksel hareketten ERP'ye veri tasimaya kadar 
 
 - `production_events.csv`
 - `production_completed.csv`
+- `MES_Konveyor_Veritabani_Canli.xlsx`
 - JSON veya ERP import ciktilari
 
 ## Calisma Sorumluluklari
 
 - Mega: fiziksel surecin ana otoritesi
 - ESP32: haberlesme koprusu, komut iletimi ve telemetry forwarding
-- Node-RED: operator gorunurlugu, veri akisi ve entegrasyon duzeni
+- Node-RED: mevcut operator gorunurlugu, veri akisi ve entegrasyon duzeni
+- `mes_web`: yeni ekranin shadow gelistirme alani ve gelecekteki operator arayuzu adayi
 - Raspberry observer: goruntu tabanli dogrulama ve sayim
 - FERP entegrasyonu: CSV tabanli gecici sinir
 
@@ -65,9 +69,10 @@ Bu proje, mini konveyor hattinda fiziksel hareketten ERP'ye veri tasimaya kadar 
 
 ### Entegrasyon Akisi
 
-1. Olaylar `production_events.csv` tarafinda birikir.
-2. Tamamlanan urunler `production_completed.csv` icine yazilir.
-3. Node-RED veya sonraki bir entegrasyon katmani bu verileri FERP'ye hazirlar.
+1. Node-RED aktif kaldigi surece gecis doneminde CSV ciktilari uretmeye devam edebilir.
+2. `mes_web`, normalize edilen olaylari dogrudan `MES_Konveyor_Veritabani_Canli.xlsx` workbook'una yazar.
+3. Tamamlanan urun, olcum, vision ve raw log kayitlari ayni workbook icinde ayri sheet'lerde tutulur.
+4. Sonraki entegrasyon katmani bu workbook'u veya bundan turetilen JSON ciktilarini FERP'ye hazirlar.
 
 ### Vision Akisi
 
@@ -80,7 +85,7 @@ Bu proje, mini konveyor hattinda fiziksel hareketten ERP'ye veri tasimaya kadar 
 
 - MQTT, kontrol katmaninin yerine gecmez; tasima ve gorunurluk amaciyla kullanilir.
 - Vision servisi yardimci katmandir; sorting karari Mega'da kalir.
-- FERP kontrati kesinlesene kadar CSV yapisi korunmalidir.
+- Gecis doneminde CSV akisi korunabilir; yeni shadow yapinin kalici veri hedefi workbook tabanli Excel katmanidir.
 - Yeni bir bilesen eklenirken mevcut topic root ve veri akisi bozulmamalidir.
 
 ## AI Icin Notlar

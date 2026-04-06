@@ -116,8 +116,5 @@ Bu dosya, repo genelindeki tum acik isleri tek yerde toplar. Her madde, en cok h
 
 ## Teknik Borc ve Repo Temizligi
 
-- [ ] [tools] `tools/generate_mes_excel_template.py` durumu netlestir.
-  Hedef: bu arac bilincli olarak mi kaldirildi, yoksa yeni template uretecine mi donusturulecek karar verilsin.
-
 - [ ] [repo] Runtime output, arsiv ve generated dosyalar icin repo hijyenini koru.
   Hedef: `logs/`, yerel workbook'lar, `desktop.ini` benzeri dosyalar repoya tekrar girmesin.

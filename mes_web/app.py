@@ -110,6 +110,35 @@ def create_app() -> FastAPI:
             "summary": str(result.get("summary") or ""),
         }
 
+    @app.post("/api/modules/{module_id}/oee/quality-override")
+    async def apply_oee_quality_override(module_id: str, payload: dict[str, Any]) -> dict[str, str]:
+        if module_id != config.module_id:
+            raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+
+        item_id = str(payload.get("item_id") or "").strip()
+        classification = str(payload.get("classification") or "").strip().upper()
+        try:
+            result = oee_state_manager.apply_quality_override(item_id, classification)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+
+        store.refresh_oee_runtime_state(module_id, force=True)
+        override = result.get("override") if isinstance(result.get("override"), dict) else None
+        if override is not None:
+            runtime_service.excel_sink.record_quality_override(
+                str(override.get("item_id") or item_id),
+                str(override.get("classification") or classification),
+                str(override.get("applied_at") or utc_now_text()),
+            )
+        return {
+            "status": "accepted",
+            "item_id": item_id,
+            "classification": classification,
+            "summary": str(result.get("summary") or ""),
+        }
+
     @app.websocket("/ws/modules/{module_id}")
     async def module_stream(websocket: WebSocket, module_id: str) -> None:
         if module_id != config.module_id:

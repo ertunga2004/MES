@@ -148,6 +148,7 @@ class CentroidTracker:
                 if self._has_crossed_line(track.previous_centroid, track.centroid):
                     track.counted = True
                     self.total_crossings += 1
+                    confidence, confidence_components = self._crossing_confidence(track)
                     events.append(
                         {
                             "event": "line_crossed",
@@ -167,6 +168,8 @@ class CentroidTracker:
                             "line_x": self.line_counter.x,
                             "direction": self.line_counter.direction,
                             "total_crossings": self.total_crossings,
+                            "confidence": round(confidence, 3),
+                            "confidence_components": confidence_components,
                             "metadata": track.metadata,
                         }
                     )
@@ -188,7 +191,7 @@ class CentroidTracker:
                     continue
                 max_distance = self.config.max_distance * (1.0 + min(track.missed_frames, 3) * 0.25)
                 predicted_centroid = track.predicted_centroid()
-                distance = math.dist(predicted_centroid, detection.centroid)
+                distance = self._centroid_distance(predicted_centroid, detection.centroid)
                 if distance > max_distance:
                     continue
 
@@ -211,6 +214,15 @@ class CentroidTracker:
             matches.append((track_id, detection_index))
 
         return matches
+
+    def _centroid_distance(
+        self,
+        first: tuple[float, float],
+        second: tuple[int, int] | tuple[float, float],
+    ) -> float:
+        delta_x = float(first[0]) - float(second[0])
+        delta_y = float(first[1]) - float(second[1])
+        return math.sqrt((delta_x * delta_x) + (delta_y * delta_y))
 
     def _direction_is_valid(self, track: TrackState, detection: Detection) -> bool:
         direction = self.config.expected_direction
@@ -278,6 +290,26 @@ class CentroidTracker:
             "age": track.age,
             "metadata": track.metadata,
         }
+
+    def _crossing_confidence(self, track: TrackState) -> tuple[float, dict[str, float]]:
+        contour_confidence = max(0.0, min(1.0, float(track.confidence)))
+        track_continuity = max(0.0, min(1.0, track.hits / max(3.0, float(self.config.min_confirmed_frames + 2))))
+        crossing_consistency = 1.0
+        if track.previous_centroid is not None:
+            previous_x = track.previous_centroid[0]
+            current_x = track.centroid[0]
+            delta_x = abs(current_x - previous_x)
+            crossing_consistency = max(0.0, min(1.0, delta_x / max(1.0, self.config.direction_slack * 2.0)))
+
+        combined = (contour_confidence * 0.45) + (track_continuity * 0.35) + (crossing_consistency * 0.20)
+        return (
+            max(0.0, min(1.0, combined)),
+            {
+                "color_contour": round(contour_confidence, 3),
+                "track_continuity": round(track_continuity, 3),
+                "crossing_consistency": round(crossing_consistency, 3),
+            },
+        )
 
     def _has_crossed_line(
         self,

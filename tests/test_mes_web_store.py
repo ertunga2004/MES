@@ -39,6 +39,10 @@ class DashboardStoreTests(unittest.TestCase):
         self.assertEqual(snapshot["vision_ingest"]["compare"]["vision"]["red"], 1)
         self.assertEqual(snapshot["vision_ingest"]["compare"]["diff"]["yellow"], 1)
 
+    def test_utc_now_text_preserves_local_offset(self) -> None:
+        local_time = datetime(2026, 4, 3, 9, 30, 0, tzinfo=timezone(timedelta(hours=3)))
+        self.assertEqual(utc_now_text(local_time), "2026-04-03T09:30:00+03:00")
+
     def test_reset_counts(self) -> None:
         self.store.apply_log_line(self.module_id, "MEGA|AUTO|QUEUE=ENQ|COLOR=MAVI")
         self.store.reset_counts(self.module_id, received_at="2026-04-02T10:15:30Z")
@@ -176,6 +180,54 @@ class DashboardStoreTests(unittest.TestCase):
             self.assertEqual(snapshot["oee"]["colors"]["blue"]["good"], 2)
             self.assertEqual(snapshot["oee"]["kpis"]["quality"], 100.0)
             self.assertEqual(snapshot["oee"]["kpis"]["performance"], 40.0)
+
+    def test_runtime_state_exposes_recent_items_for_quality_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "oee_runtime_state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"shiftSelected":"SHIFT-A","performanceMode":"TARGET",'
+                    '"itemsById":{"42":{"item_id":"42","measure_id":"7","color":"blue","classification":"REWORK","completed_at":"2026-04-02T08:01:05Z","updated_at":"2026-04-02T08:02:00Z","decision_source":"CORE_STABLE","review_required":false}},'
+                    '"recentItemIds":["42"],'
+                    '"counts":{"total":1,"good":0,"rework":1,"scrap":0,"byColor":{"red":{"total":0,"good":0,"rework":0,"scrap":0},"yellow":{"total":0,"good":0,"rework":0,"scrap":0},"blue":{"total":1,"good":0,"rework":1,"scrap":0}}}}'
+                )
+
+            with patch.dict(os.environ, {"MES_WEB_OEE_RUNTIME_STATE_PATH": state_path}, clear=False):
+                config = AppConfig.from_env()
+                store = DashboardStore(config)
+                snapshot = store.get_dashboard_snapshot(config.module_id)
+
+            self.assertEqual(snapshot["oee"]["recent_items"][0]["item_id"], "42")
+            self.assertEqual(snapshot["oee"]["recent_items"][0]["classification"], "REWORK")
+            self.assertEqual(snapshot["oee"]["controls"]["quality_override_options"], ["GOOD", "REWORK", "SCRAP"])
+
+    def test_runtime_state_exposes_vision_runtime_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "oee_runtime_state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"shiftSelected":"SHIFT-A","performanceMode":"TARGET",'
+                    '"itemsById":{"42":{"item_id":"42","measure_id":"7","sensor_color":"yellow","vision_color":"red","final_color":"red","color":"red","classification":"GOOD","completed_at":"2026-04-02T08:01:05Z","updated_at":"2026-04-02T08:02:00Z","decision_source":"VISION","finalization_reason":"VISION_CORRECTED_MISMATCH","correlation_status":"MATCHED","pick_trigger_source":"EARLY"}},'
+                    '"recentItemIds":["42"],'
+                    '"vision":{"healthState":"online","lastRejectReason":"HEAD_CHANGED","metrics":{"mismatchCount":1,"earlyAcceptedCount":2,"earlyRejectedCount":3,"lateAuditCount":4}},'
+                    '"counts":{"total":1,"good":1,"rework":0,"scrap":0,"byColor":{"red":{"total":1,"good":1,"rework":0,"scrap":0},"yellow":{"total":0,"good":0,"rework":0,"scrap":0},"blue":{"total":0,"good":0,"rework":0,"scrap":0}}}}'
+                )
+
+            with patch.dict(os.environ, {"MES_WEB_OEE_RUNTIME_STATE_PATH": state_path}, clear=False):
+                config = AppConfig.from_env()
+                store = DashboardStore(config)
+                snapshot = store.get_dashboard_snapshot(config.module_id)
+
+            runtime = snapshot["vision_ingest"]["runtime"]
+            self.assertEqual(runtime["health_state"], "online")
+            self.assertEqual(runtime["mismatch_count"], 1)
+            self.assertEqual(runtime["early_accepted_count"], 2)
+            self.assertEqual(runtime["early_rejected_count"], 3)
+            self.assertEqual(runtime["last_reject_reason"], "HEAD_CHANGED")
+            self.assertEqual(runtime["last_item"]["sensor_color"], "yellow")
+            self.assertEqual(runtime["last_item"]["vision_color"], "red")
+            self.assertEqual(runtime["last_item"]["final_color"], "red")
+            self.assertEqual(runtime["last_item"]["correlation_status"], "MATCHED")
 
 
 if __name__ == "__main__":

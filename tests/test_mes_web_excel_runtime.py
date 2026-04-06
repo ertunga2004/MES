@@ -66,6 +66,128 @@ class WorkbookProjectorTests(unittest.TestCase):
         self.assertEqual(rows["1_Olay_Logu"][0]["raw_line"], "SYSTEM|COUNTS|RESET")
         self.assertEqual(rows["7_Raw_Logs"][0]["source_topic"], "local/system")
 
+    def test_vision_correction_and_early_pick_flow_reaches_completed_row(self) -> None:
+        self.projector.consume_mega_log(
+            "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=42|MEASURE_ID=8|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|REVIEW=0|TRAVEL_MS=640",
+            "2026-04-02T10:15:26Z",
+        )
+        self.projector.consume_vision_event(
+            {
+                "event": "line_crossed",
+                "item_id": "42",
+                "measure_id": "8",
+                "color_name": "blue",
+                "track_id": 17,
+                "confidence": 0.91,
+                "confidence_tier": "high",
+                "correlation_status": "MATCHED",
+                "decision_applied": True,
+                "review_required": False,
+                "observed_at": "2026-04-02T10:15:27Z",
+                "published_at": "2026-04-02T10:15:27.040Z",
+            },
+            "2026-04-02T10:15:27.080Z",
+        )
+        early_rows = self.projector.consume_early_pick_request("42", "2026-04-02T10:15:27.100Z")
+        self.projector.consume_mega_log(
+            "MEGA|AUTO|STATE=WAIT_ARM|EVENT=ARM_POSITION_REACHED|ITEM_ID=42|MEASURE_ID=8|COLOR=MAVI|DECISION_SOURCE=CORE_STABLE|REVIEW=0|TRIGGER=EARLY",
+            "2026-04-02T10:15:27.150Z",
+        )
+        completed_rows = self.projector.consume_mega_log(
+            "MEGA|AUTO|STATE=SEARCHING|EVENT=PICKPLACE_DONE|ITEM_ID=42|MEASURE_ID=8|COLOR=MAVI|DECISION_SOURCE=CORE_STABLE|REVIEW=0|TRIGGER=EARLY|PENDING=0",
+            "2026-04-02T10:15:29Z",
+        )
+
+        self.assertEqual(early_rows["1_Olay_Logu"][0]["event_type_code"], "early_pick_request")
+        row = completed_rows["4_Uretim_Tamamlanan"][0]
+        self.assertEqual(row["sensor_color_code"], "red")
+        self.assertEqual(row["vision_color_code"], "blue")
+        self.assertEqual(row["final_color_code"], "blue")
+        self.assertEqual(row["decision_source_code"], "VISION")
+        self.assertEqual(row["finalization_reason"], "VISION_CORRECTED_MISMATCH")
+        self.assertEqual(row["correlation_status"], "matched")
+        self.assertEqual(row["mismatch_flag"], 1)
+        self.assertEqual(row["pick_trigger_source"], "EARLY")
+        self.assertEqual(row["early_pick_triggered"], 1)
+        self.assertEqual(row["early_pick_request_sent_at"], "2026-04-02T10:15:27.100Z")
+        self.assertEqual(row["early_pick_accepted_at"], "2026-04-02T10:15:27.150Z")
+
+    def test_late_vision_event_marks_audit_columns(self) -> None:
+        rows = self.projector.consume_vision_event(
+            {
+                "event": "line_crossed",
+                "item_id": "42",
+                "measure_id": "8",
+                "color_name": "yellow",
+                "track_id": 21,
+                "confidence": 0.95,
+                "confidence_tier": "high",
+                "correlation_status": "LATE",
+                "late_vision_audit_flag": True,
+                "decision_applied": False,
+                "review_required": True,
+                "observed_at": "2026-04-02T10:15:27Z",
+                "published_at": "2026-04-02T10:15:27.040Z",
+            },
+            "2026-04-02T10:15:27.500Z",
+        )
+
+        row = rows["6_Vision"][0]
+        self.assertEqual(row["correlation_status"], "late")
+        self.assertEqual(row["late_vision_audit_flag"], 1)
+        self.assertEqual(row["vision_observed_at"], "2026-04-02T10:15:27Z")
+        self.assertEqual(row["vision_published_at"], "2026-04-02T10:15:27.040Z")
+        self.assertEqual(row["vision_received_at"], "2026-04-02T10:15:27.500Z")
+
+    def test_quality_override_updates_completed_row_final_quality(self) -> None:
+        self.projector.consume_mega_log(
+            "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=42|MEASURE_ID=8|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=640",
+            "2026-04-02T10:15:26Z",
+        )
+        completed_rows = self.projector.consume_mega_log(
+            "MEGA|AUTO|EVENT=PICKPLACE_DONE|ITEM_ID=42|MEASURE_ID=8|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE",
+            "2026-04-02T10:15:29Z",
+        )
+
+        self.projector.apply_quality_override("42", "SCRAP", "2026-04-02T10:18:00Z")
+
+        row = completed_rows["4_Uretim_Tamamlanan"][0]
+        self.assertEqual(row["status_code"], "COMPLETED_SCRAP")
+        self.assertEqual(row["final_quality_code"], "SCRAP")
+        self.assertEqual(row["override_flag"], 1)
+        self.assertEqual(row["override_source_code"], "MANUAL")
+
+    def test_quality_override_writes_back_to_workbook_row(self) -> None:
+        try:
+            from openpyxl import Workbook
+        except ModuleNotFoundError:
+            self.skipTest("openpyxl is not installed")
+        from mes_web.excel_runtime import COMPLETED_COLUMNS, ExcelRuntimeSink
+
+        self.projector.consume_mega_log(
+            "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=42|MEASURE_ID=8|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=640",
+            "2026-04-02T10:15:26+03:00",
+        )
+        completed_rows = self.projector.consume_mega_log(
+            "MEGA|AUTO|EVENT=PICKPLACE_DONE|ITEM_ID=42|MEASURE_ID=8|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE",
+            "2026-04-02T10:15:29+03:00",
+        )
+        row = self.projector.apply_quality_override("42", "SCRAP", "2026-04-02T10:18:00+03:00")
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "4_Uretim_Tamamlanan"
+        for col_index, header in enumerate(COMPLETED_COLUMNS, start=1):
+            sheet.cell(1, col_index, header)
+            sheet.cell(2, col_index, completed_rows["4_Uretim_Tamamlanan"][0].get(header, ""))
+
+        sink = ExcelRuntimeSink.__new__(ExcelRuntimeSink)
+        sink._update_completed_sheet_row(sheet, row)
+
+        self.assertEqual(sheet.cell(2, COMPLETED_COLUMNS.index("status_code") + 1).value, "COMPLETED_SCRAP")
+        self.assertEqual(sheet.cell(2, COMPLETED_COLUMNS.index("final_quality_code") + 1).value, "SCRAP")
+        self.assertEqual(sheet.cell(2, COMPLETED_COLUMNS.index("override_applied_at") + 1).value, "2026-04-02T10:18:00+03:00")
+
 
 if __name__ == "__main__":
     unittest.main()

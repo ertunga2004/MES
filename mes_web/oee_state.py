@@ -5,7 +5,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .parsers import parse_mega_event_from_log, parse_tablet_fault_line
+from .parsers import (
+    parse_mega_event_from_log,
+    parse_tablet_fault_line,
+    parse_vision_event,
+    parse_vision_heartbeat,
+    parse_vision_status,
+    parse_vision_tracks,
+)
 
 
 SHIFT_PRESETS: dict[str, dict[str, str]] = {
@@ -32,7 +39,7 @@ def shift_options() -> list[dict[str, str]]:
 
 def default_runtime_state() -> dict[str, Any]:
     return {
-        "version": 2,
+        "version": 3,
         "shiftSelected": "SHIFT-A",
         "performanceMode": "TARGET",
         "targetQty": 0,
@@ -63,11 +70,36 @@ def default_runtime_state() -> dict[str, Any]:
             },
         },
         "itemsById": {},
+        "queueOrder": [],
         "recentItemIds": [],
+        "processedVisionEventKeys": [],
         "activeFault": None,
         "faultHistory": [],
         "unplannedDowntimeMs": 0,
         "trend": [],
+        "qualityOverrideLog": [],
+        "earlyPickRejectLog": [],
+        "vision": {
+            "healthState": "offline",
+            "badWindows": 0,
+            "goodWindows": 0,
+            "fps": 0.0,
+            "eventLatencyMs": None,
+            "lastStatusAt": "",
+            "lastTracksAt": "",
+            "lastHeartbeatAt": "",
+            "lastEventAt": "",
+            "lastObservedAt": "",
+            "lastPublishedAt": "",
+            "lastReceivedAt": "",
+            "lastRejectReason": "",
+            "metrics": {
+                "mismatchCount": 0,
+                "earlyAcceptedCount": 0,
+                "earlyRejectedCount": 0,
+                "lateAuditCount": 0,
+            },
+        },
         "lastSnapshotLoggedAt": "",
         "lastEventSummary": "Vardiya secimi bekleniyor.",
         "lastTabletLine": "",
@@ -103,8 +135,8 @@ def _parse_clock(value: str) -> tuple[int, int, int]:
 
 
 def _pseudo_iso_text(value: datetime) -> str:
-    base = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-    return base.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    base = value if value.tzinfo is not None else value.astimezone()
+    return base.astimezone().isoformat(timespec="milliseconds")
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -123,7 +155,7 @@ def _short_time(value: str) -> str:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return "-"
-    return parsed.strftime("%H:%M:%S")
+    return parsed.astimezone().strftime("%H:%M:%S")
 
 
 def _full_time(value: str) -> str:
@@ -133,7 +165,7 @@ def _full_time(value: str) -> str:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return "-"
-    return parsed.strftime("%d.%m.%Y %H:%M:%S")
+    return parsed.astimezone().strftime("%d.%m.%Y %H:%M:%S")
 
 
 def _merge_clock_with_stamp(time_text: str | None, stamp: str) -> str:
@@ -215,11 +247,36 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     }
 
     base["itemsById"] = candidate.get("itemsById") if isinstance(candidate.get("itemsById"), dict) else {}
+    base["queueOrder"] = candidate.get("queueOrder") if isinstance(candidate.get("queueOrder"), list) else []
     base["recentItemIds"] = candidate.get("recentItemIds") if isinstance(candidate.get("recentItemIds"), list) else []
+    base["processedVisionEventKeys"] = candidate.get("processedVisionEventKeys") if isinstance(candidate.get("processedVisionEventKeys"), list) else []
     base["activeFault"] = candidate.get("activeFault") if isinstance(candidate.get("activeFault"), dict) else None
     base["faultHistory"] = candidate.get("faultHistory") if isinstance(candidate.get("faultHistory"), list) else []
     base["unplannedDowntimeMs"] = max(0, round(_numeric(candidate.get("unplannedDowntimeMs"))))
     base["trend"] = candidate.get("trend") if isinstance(candidate.get("trend"), list) else []
+    base["qualityOverrideLog"] = candidate.get("qualityOverrideLog") if isinstance(candidate.get("qualityOverrideLog"), list) else []
+    base["earlyPickRejectLog"] = candidate.get("earlyPickRejectLog") if isinstance(candidate.get("earlyPickRejectLog"), list) else []
+    vision = candidate.get("vision") if isinstance(candidate.get("vision"), dict) else {}
+    base["vision"]["healthState"] = str(vision.get("healthState") or "offline")
+    base["vision"]["badWindows"] = max(0, round(_numeric(vision.get("badWindows"))))
+    base["vision"]["goodWindows"] = max(0, round(_numeric(vision.get("goodWindows"))))
+    base["vision"]["fps"] = max(0.0, _numeric(vision.get("fps")))
+    base["vision"]["eventLatencyMs"] = None if vision.get("eventLatencyMs") in (None, "") else max(0.0, _numeric(vision.get("eventLatencyMs")))
+    base["vision"]["lastStatusAt"] = str(vision.get("lastStatusAt") or "")
+    base["vision"]["lastTracksAt"] = str(vision.get("lastTracksAt") or "")
+    base["vision"]["lastHeartbeatAt"] = str(vision.get("lastHeartbeatAt") or "")
+    base["vision"]["lastEventAt"] = str(vision.get("lastEventAt") or "")
+    base["vision"]["lastObservedAt"] = str(vision.get("lastObservedAt") or "")
+    base["vision"]["lastPublishedAt"] = str(vision.get("lastPublishedAt") or "")
+    base["vision"]["lastReceivedAt"] = str(vision.get("lastReceivedAt") or "")
+    base["vision"]["lastRejectReason"] = str(vision.get("lastRejectReason") or "")
+    metrics = vision.get("metrics") if isinstance(vision.get("metrics"), dict) else {}
+    base["vision"]["metrics"] = {
+        "mismatchCount": max(0, round(_numeric(metrics.get("mismatchCount")))),
+        "earlyAcceptedCount": max(0, round(_numeric(metrics.get("earlyAcceptedCount")))),
+        "earlyRejectedCount": max(0, round(_numeric(metrics.get("earlyRejectedCount")))),
+        "lateAuditCount": max(0, round(_numeric(metrics.get("lateAuditCount")))),
+    }
     base["lastSnapshotLoggedAt"] = str(candidate.get("lastSnapshotLoggedAt") or "")
     base["lastEventSummary"] = str(candidate.get("lastEventSummary") or base["lastEventSummary"])
     base["lastTabletLine"] = str(candidate.get("lastTabletLine") or "")
@@ -270,6 +327,190 @@ def _summary_counts(state: dict[str, Any]) -> dict[str, int]:
         "rework": max(0, round(_numeric(counts.get("rework")))),
         "scrap": max(0, round(_numeric(counts.get("scrap")))),
     }
+
+
+def _normalize_classification(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"GOOD", "REWORK", "SCRAP"}:
+        return text
+    return "GOOD"
+
+
+def _classification_bucket_name(value: str) -> str:
+    return _normalize_classification(value).lower()
+
+
+def _recompute_item_counts(state: dict[str, Any]) -> None:
+    counts = {
+        "total": 0,
+        "good": 0,
+        "rework": 0,
+        "scrap": 0,
+        "byColor": {
+            "red": empty_color_counts(),
+            "yellow": empty_color_counts(),
+            "blue": empty_color_counts(),
+        },
+    }
+    items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
+    for item in items.values():
+        if not isinstance(item, dict) or not item.get("completed_at") or not bool(item.get("count_in_oee")):
+            continue
+        classification = _normalize_classification(item.get("classification"))
+        bucket_name = _classification_bucket_name(classification)
+        color = str(item.get("final_color") or item.get("color") or "").strip().lower()
+        if color not in counts["byColor"]:
+            continue
+        counts["total"] += 1
+        counts[bucket_name] += 1
+        counts["byColor"][color]["total"] += 1
+        counts["byColor"][color][bucket_name] += 1
+    state["counts"] = counts
+
+
+def _queue_order(state: dict[str, Any]) -> list[str]:
+    queue_order = state.get("queueOrder")
+    if not isinstance(queue_order, list):
+        queue_order = []
+        state["queueOrder"] = queue_order
+    return queue_order
+
+
+def _vision_state(state: dict[str, Any]) -> dict[str, Any]:
+    vision = state.get("vision")
+    if not isinstance(vision, dict):
+        vision = default_runtime_state()["vision"]
+        state["vision"] = vision
+    metrics = vision.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = default_runtime_state()["vision"]["metrics"]
+        vision["metrics"] = metrics
+    return vision
+
+
+def _append_recent_id(state: dict[str, Any], item_key: str) -> None:
+    if not item_key:
+        return
+    recent_ids = state.get("recentItemIds")
+    if not isinstance(recent_ids, list):
+        recent_ids = []
+    recent_ids = [item_key] + [value for value in recent_ids if value != item_key]
+    state["recentItemIds"] = recent_ids[:10]
+
+
+def _head_item_key(state: dict[str, Any]) -> str:
+    for item_key in list(_queue_order(state)):
+        if item_key:
+            return item_key
+    return ""
+
+
+def _remove_queue_item(state: dict[str, Any], item_key: str) -> None:
+    state["queueOrder"] = [value for value in _queue_order(state) if value != item_key]
+
+
+def _processed_vision_keys(state: dict[str, Any]) -> list[str]:
+    keys = state.get("processedVisionEventKeys")
+    if not isinstance(keys, list):
+        keys = []
+        state["processedVisionEventKeys"] = keys
+    return keys
+
+
+def _remember_processed_vision_key(state: dict[str, Any], key: str) -> None:
+    if not key:
+        return
+    keys = [value for value in _processed_vision_keys(state) if value != key]
+    keys.insert(0, key)
+    state["processedVisionEventKeys"] = keys[:100]
+
+
+def _vision_confidence_tier(confidence: Any) -> str:
+    score = _numeric(confidence)
+    if score >= 0.8:
+        return "high"
+    if score >= 0.6:
+        return "medium"
+    return "low"
+
+
+def _remaining_travel_ms(item: dict[str, Any], *, now: datetime) -> int:
+    queued_at = _parse_iso(str(item.get("queued_at") or item.get("detected_at") or ""))
+    travel_ms = max(0, round(_numeric(item.get("travel_ms_initial") or item.get("travel_ms") or 0)))
+    if queued_at is None or travel_ms <= 0:
+        return travel_ms
+    elapsed_ms = max(0, int((now - queued_at).total_seconds() * 1000))
+    return max(0, travel_ms - elapsed_ms)
+
+
+def _desired_vision_health(
+    vision: dict[str, Any],
+    *,
+    now: datetime,
+    heartbeat_timeout_sec: int,
+    degraded_fps: float,
+    degraded_latency_ratio: float,
+    decision_deadline_ms: int,
+) -> str:
+    last_heartbeat = _parse_iso(str(vision.get("lastHeartbeatAt") or ""))
+    if last_heartbeat is None or (now - last_heartbeat).total_seconds() > max(1, heartbeat_timeout_sec * 2):
+        return "offline"
+
+    fps = max(0.0, _numeric(vision.get("fps")))
+    latency_ms = vision.get("eventLatencyMs")
+    if fps and fps < degraded_fps:
+        return "degraded"
+    if latency_ms not in (None, "") and _numeric(latency_ms) > (decision_deadline_ms * degraded_latency_ratio):
+        return "degraded"
+    return "online"
+
+
+def _update_vision_health(
+    state: dict[str, Any],
+    *,
+    now: datetime,
+    heartbeat_timeout_sec: int,
+    degraded_fps: float,
+    degraded_latency_ratio: float,
+    decision_deadline_ms: int,
+    bad_window_threshold: int,
+    recovery_window_threshold: int,
+) -> bool:
+    vision = _vision_state(state)
+    desired = _desired_vision_health(
+        vision,
+        now=now,
+        heartbeat_timeout_sec=heartbeat_timeout_sec,
+        degraded_fps=degraded_fps,
+        degraded_latency_ratio=degraded_latency_ratio,
+        decision_deadline_ms=decision_deadline_ms,
+    )
+    current = str(vision.get("healthState") or "offline")
+    changed = False
+
+    if desired == "online":
+        vision["badWindows"] = 0
+        vision["goodWindows"] = max(0, round(_numeric(vision.get("goodWindows")))) + 1
+        if current != "online" and vision["goodWindows"] >= recovery_window_threshold:
+            vision["healthState"] = "online"
+            changed = True
+    else:
+        vision["goodWindows"] = 0
+        vision["badWindows"] = max(0, round(_numeric(vision.get("badWindows")))) + 1
+        if current == "online" and vision["badWindows"] >= bad_window_threshold:
+            vision["healthState"] = desired
+            changed = True
+        elif current == "degraded" and desired == "offline" and vision["badWindows"] >= bad_window_threshold:
+            vision["healthState"] = "offline"
+            changed = True
+        elif current not in {"online", "degraded", "offline"} and vision["badWindows"] >= bad_window_threshold:
+            vision["healthState"] = desired
+            changed = True
+
+    if current == "offline" and desired == "degraded":
+        # Offline durumdan kismi toparlanma tek pencereyle kabul edilmez.
+        vision["goodWindows"] = 0
+    return changed
 
 
 def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
@@ -385,8 +626,26 @@ def _system_log_line(kind: str, state: dict[str, Any], *, now: datetime) -> str:
 
 
 class OeeRuntimeStateManager:
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        heartbeat_timeout_sec: int = 10,
+        vision_decision_deadline_ms: int = 300,
+        min_remaining_travel_ms_for_early_pick: int = 400,
+        vision_degraded_fps: float = 8.0,
+        vision_degraded_latency_ratio: float = 0.5,
+        vision_bad_window_threshold: int = 2,
+        vision_recovery_window_threshold: int = 3,
+    ) -> None:
         self.path = path
+        self.heartbeat_timeout_sec = heartbeat_timeout_sec
+        self.vision_decision_deadline_ms = vision_decision_deadline_ms
+        self.min_remaining_travel_ms_for_early_pick = min_remaining_travel_ms_for_early_pick
+        self.vision_degraded_fps = vision_degraded_fps
+        self.vision_degraded_latency_ratio = vision_degraded_latency_ratio
+        self.vision_bad_window_threshold = vision_bad_window_threshold
+        self.vision_recovery_window_threshold = vision_recovery_window_threshold
 
     def read_state(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -496,12 +755,25 @@ class OeeRuntimeStateManager:
                         "blue": empty_color_counts(),
                     },
                 }
-                state["itemsById"] = {}
+                items = state["itemsById"] if isinstance(state.get("itemsById"), dict) else {}
+                for item in items.values():
+                    if isinstance(item, dict):
+                        item["count_in_oee"] = False
                 state["recentItemIds"] = []
                 state["activeFault"] = None
                 state["faultHistory"] = []
                 state["unplannedDowntimeMs"] = 0
                 state["trend"] = []
+                state["qualityOverrideLog"] = []
+                state["earlyPickRejectLog"] = []
+                vision = _vision_state(state)
+                vision["metrics"] = {
+                    "mismatchCount": 0,
+                    "earlyAcceptedCount": 0,
+                    "earlyRejectedCount": 0,
+                    "lateAuditCount": 0,
+                }
+                vision["lastRejectReason"] = ""
                 state["lastSnapshotLoggedAt"] = ""
                 state["lastTabletLine"] = ""
                 _set_summary(state, f"{state['shift']['code']} basladi. OEE sayaclari sifirlandi.", now=stamp)
@@ -534,8 +806,6 @@ class OeeRuntimeStateManager:
         if parsed is None:
             return False
         state = self.read_state()
-        if not state["shift"]["active"]:
-            return False
 
         changed = False
         now = _parse_iso(received_at) or datetime.now().astimezone()
@@ -543,9 +813,8 @@ class OeeRuntimeStateManager:
         measure_id = str(parsed.get("measure_id") or "").strip()
         item_key = item_id or (f"measure:{measure_id}" if measure_id else "")
         items = state["itemsById"] if isinstance(state.get("itemsById"), dict) else {}
-        recent_ids = state["recentItemIds"] if isinstance(state.get("recentItemIds"), list) else []
         color = str(parsed.get("color") or "unknown")
-        by_color = state["counts"]["byColor"]
+        head_key = _head_item_key(state)
 
         if parsed["event_type"] == "queue_enq" and item_key:
             item = items.get(item_key, {})
@@ -553,57 +822,444 @@ class OeeRuntimeStateManager:
                 {
                     "item_id": item_id or item.get("item_id") or item_key,
                     "measure_id": measure_id or item.get("measure_id") or "",
-                    "color": color,
-                    "decision_source": str(parsed.get("decision_source") or item.get("decision_source") or ""),
+                    "sensor_color": color,
+                    "vision_color": str(item.get("vision_color") or ""),
+                    "final_color": str(item.get("final_color") or color),
+                    "color": str(item.get("final_color") or color),
+                    "decision_source": str(item.get("decision_source") or "SENSOR"),
+                    "finalization_reason": str(item.get("finalization_reason") or "SENSOR_NO_VISION"),
+                    "sensor_decision_source": str(parsed.get("decision_source") or item.get("sensor_decision_source") or ""),
+                    "mismatch_flag": bool(item.get("mismatch_flag")),
+                    "correlation_status": str(item.get("correlation_status") or ""),
                     "review_required": bool(parsed.get("review_required")),
                     "detected_at": received_at,
                     "queued_at": received_at,
                     "travel_ms": parsed.get("travel_ms"),
+                    "travel_ms_initial": parsed.get("travel_ms"),
+                    "queue_status": "waiting_travel",
+                    "pick_started": False,
+                    "pick_trigger_source": str(item.get("pick_trigger_source") or ""),
+                    "early_pick_triggered": bool(item.get("early_pick_triggered")),
+                    "late_vision_audit_flag": bool(item.get("late_vision_audit_flag")),
+                    "count_in_oee": bool(item.get("count_in_oee")) or bool(state["shift"]["active"]),
                 }
             )
             items[item_key] = item
-            recent_ids = [item_key] + [value for value in recent_ids if value != item_key]
-            state["recentItemIds"] = recent_ids[:5]
+            if item_key not in _queue_order(state):
+                _queue_order(state).append(item_key)
+            changed = True
+
+        elif parsed["event_type"] == "arm_position_reached":
+            resolved_key = item_key or head_key
+            if not resolved_key:
+                return False
+            item = items.get(resolved_key, {})
+            if item.get("pick_started"):
+                return False
+            trigger_source = str(parsed.get("trigger_source") or item.get("pick_trigger_source") or "TIMER").upper()
+            item.update(
+                {
+                    "item_id": item_id or item.get("item_id") or resolved_key,
+                    "measure_id": measure_id or item.get("measure_id") or "",
+                    "pick_started": True,
+                    "picked_at": received_at,
+                    "queue_status": "picked",
+                    "pick_trigger_source": trigger_source,
+                }
+            )
+            if trigger_source == "EARLY" and not item.get("early_pick_accepted_at"):
+                item["early_pick_accepted_at"] = received_at
+                item["early_pick_triggered"] = True
+                _vision_state(state)["metrics"]["earlyAcceptedCount"] = max(
+                    0,
+                    round(_numeric(_vision_state(state)["metrics"].get("earlyAcceptedCount"))),
+                ) + 1
+            items[resolved_key] = item
+            changed = True
+
+        elif parsed["event_type"] == "pick_command_rejected":
+            resolved_key = item_key or head_key
+            if not resolved_key:
+                return False
+            item = items.get(resolved_key, {})
+            reject_reason = str(parsed.get("reject_reason") or "SAFETY_BLOCK").upper()
+            item.update(
+                {
+                    "item_id": item_id or item.get("item_id") or resolved_key,
+                    "measure_id": measure_id or item.get("measure_id") or "",
+                    "last_reject_reason": reject_reason,
+                    "last_reject_at": received_at,
+                    "queue_status": "waiting_travel",
+                }
+            )
+            if reject_reason == "HEAD_CHANGED":
+                item["correlation_status"] = "DRIFTED"
+            items[resolved_key] = item
+            vision = _vision_state(state)
+            vision["lastRejectReason"] = reject_reason
+            vision["metrics"]["earlyRejectedCount"] = max(
+                0,
+                round(_numeric(vision["metrics"].get("earlyRejectedCount"))),
+            ) + 1
+            reject_log = state["earlyPickRejectLog"] if isinstance(state.get("earlyPickRejectLog"), list) else []
+            reject_log.insert(
+                0,
+                {
+                    "item_id": str(item.get("item_id") or resolved_key),
+                    "measure_id": str(item.get("measure_id") or ""),
+                    "reason": reject_reason,
+                    "rejected_at": received_at,
+                },
+            )
+            state["earlyPickRejectLog"] = reject_log[:20]
+            changed = True
+
+        elif parsed["event_type"] == "pick_released":
+            resolved_key = item_key or head_key
+            if not resolved_key or resolved_key not in items:
+                return False
+            items[resolved_key]["released_at"] = received_at
+            changed = True
+
+        elif parsed["event_type"] == "pick_return_started":
+            resolved_key = item_key or head_key
+            if not resolved_key or resolved_key not in items:
+                return False
+            items[resolved_key]["return_started_at"] = received_at
+            changed = True
+
+        elif parsed["event_type"] == "pick_return_reached":
+            resolved_key = item_key or head_key
+            if not resolved_key or resolved_key not in items:
+                return False
+            items[resolved_key]["return_reached_at"] = received_at
             changed = True
 
         elif parsed["event_type"] == "pickplace_done":
-            if not item_key:
+            resolved_key = item_key or head_key
+            if not resolved_key:
                 return False
-            item = items.get(item_key, {})
+            item = items.get(resolved_key, {})
             if item.get("completed_at"):
                 return False
-            normalized_color = color if color in {"red", "yellow", "blue"} else str(item.get("color") or "blue")
+            normalized_color = str(item.get("final_color") or item.get("vision_color") or item.get("sensor_color") or color).strip().lower()
+            if normalized_color not in {"red", "yellow", "blue"}:
+                normalized_color = color if color in {"red", "yellow", "blue"} else str(item.get("sensor_color") or "blue")
+            decision_source = str(item.get("decision_source") or ("VISION" if item.get("vision_color") else "SENSOR")).upper()
+            finalization_reason = str(item.get("finalization_reason") or "").strip().upper()
+            if not finalization_reason:
+                if decision_source == "VISION" and item.get("mismatch_flag"):
+                    finalization_reason = "VISION_CORRECTED_MISMATCH"
+                elif decision_source == "VISION":
+                    finalization_reason = "VISION_HIGH_CONF"
+                elif item.get("late_vision_audit_flag"):
+                    finalization_reason = "SENSOR_LATE_VISION"
+                elif item.get("correlation_status") == "IGNORED_LOW_CONF":
+                    finalization_reason = "SENSOR_LOW_CONF_VISION_IGNORED"
+                else:
+                    finalization_reason = "SENSOR_NO_VISION"
             item.update(
                 {
-                    "item_id": item_id or item.get("item_id") or item_key,
+                    "item_id": item_id or item.get("item_id") or resolved_key,
                     "measure_id": measure_id or item.get("measure_id") or "",
                     "color": normalized_color,
-                    "decision_source": str(parsed.get("decision_source") or item.get("decision_source") or ""),
-                    "review_required": bool(parsed.get("review_required")),
+                    "final_color": normalized_color,
+                    "decision_source": decision_source,
+                    "finalization_reason": finalization_reason,
+                    "review_required": bool(item.get("review_required")) or bool(parsed.get("review_required")),
                     "completed_at": received_at,
                     "classification": "GOOD",
                     "updated_at": received_at,
+                    "queue_status": "completed",
+                    "pick_started": True,
+                    "pick_trigger_source": str(item.get("pick_trigger_source") or parsed.get("trigger_source") or "TIMER").upper(),
+                    "final_color_frozen_at": received_at,
                 }
             )
-            items[item_key] = item
-            counts = state["counts"]
-            counts["total"] = max(0, round(_numeric(counts.get("total")))) + 1
-            counts["good"] = max(0, round(_numeric(counts.get("good")))) + 1
-            bucket = by_color.get(normalized_color) if isinstance(by_color.get(normalized_color), dict) else None
-            if bucket is None:
-                by_color[normalized_color] = empty_color_counts()
-                bucket = by_color[normalized_color]
-            bucket["total"] = max(0, round(_numeric(bucket.get("total")))) + 1
-            bucket["good"] = max(0, round(_numeric(bucket.get("good")))) + 1
-            recent_ids = [item_key] + [value for value in recent_ids if value != item_key]
-            state["recentItemIds"] = recent_ids[:5]
-            _set_summary(state, f"#{item.get('item_id') or item_key} tamamlandi ve varsayilan olarak saglam sayildi.", now=now)
+            items[resolved_key] = item
+            _remove_queue_item(state, resolved_key)
+            _append_recent_id(state, resolved_key)
+            _recompute_item_counts(state)
+            _set_summary(state, f"#{item.get('item_id') or resolved_key} tamamlandi ve renk {normalized_color} olarak kilitlendi.", now=now)
             changed = True
 
         if changed:
             state["itemsById"] = items
             self.write_state(state)
         return changed
+
+    def apply_quality_override(self, item_id: str, classification: Any, *, now: datetime | None = None) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        state = self.read_state()
+        normalized_item_id = str(item_id or "").strip()
+        if not normalized_item_id:
+            raise ValueError("INVALID_ITEM_ID")
+
+        items = state["itemsById"] if isinstance(state.get("itemsById"), dict) else {}
+        item = items.get(normalized_item_id)
+        if not isinstance(item, dict):
+            raise ValueError("ITEM_NOT_FOUND")
+        if not item.get("completed_at"):
+            raise ValueError("ITEM_NOT_COMPLETED")
+
+        next_classification = _normalize_classification(classification)
+        previous_classification = _normalize_classification(item.get("classification"))
+        if previous_classification == next_classification:
+            _set_summary(state, f"#{normalized_item_id} zaten {next_classification} durumunda.", now=stamp)
+            self.write_state(state)
+            return {
+                "state": state,
+                "item": item,
+                "summary": state["lastEventSummary"],
+                "override": None,
+            }
+
+        item["classification"] = next_classification
+        item["updated_at"] = _pseudo_iso_text(stamp)
+        item["override_applied_at"] = item["updated_at"]
+        item["override_source"] = "MANUAL"
+        _recompute_item_counts(state)
+        override_row = {
+            "item_id": normalized_item_id,
+            "measure_id": str(item.get("measure_id") or ""),
+            "previous_classification": previous_classification,
+            "classification": next_classification,
+            "applied_at": item["updated_at"],
+            "color": str(item.get("color") or ""),
+        }
+        history = state["qualityOverrideLog"] if isinstance(state.get("qualityOverrideLog"), list) else []
+        history.insert(0, override_row)
+        state["qualityOverrideLog"] = history[:20]
+        _set_summary(state, f"#{normalized_item_id} kalite karari {previous_classification} -> {next_classification} olarak guncellendi.", now=stamp)
+        self.write_state(state)
+        return {
+            "state": state,
+            "item": item,
+            "summary": state["lastEventSummary"],
+            "override": override_row,
+        }
+
+    def apply_early_pick_request(self, item_id: str, sent_at: str) -> bool:
+        state = self.read_state()
+        items = state["itemsById"] if isinstance(state.get("itemsById"), dict) else {}
+        item = items.get(str(item_id or "").strip())
+        if not isinstance(item, dict):
+            return False
+        if item.get("early_pick_request_sent_at"):
+            return False
+        item["early_pick_request_sent_at"] = sent_at
+        item["queue_status"] = "early_pick_requested"
+        items[str(item_id or "").strip()] = item
+        state["itemsById"] = items
+        self.write_state(state)
+        return True
+
+    def apply_vision_status(self, payload: Any, received_at: str) -> bool:
+        parsed = parse_vision_status(payload)
+        if parsed is None:
+            return False
+        state = self.read_state()
+        vision = _vision_state(state)
+        vision["fps"] = max(0.0, _numeric(parsed.get("fps")))
+        vision["lastStatusAt"] = received_at
+        changed = _update_vision_health(
+            state,
+            now=_parse_iso(received_at) or datetime.now().astimezone(),
+            heartbeat_timeout_sec=self.heartbeat_timeout_sec,
+            degraded_fps=self.vision_degraded_fps,
+            degraded_latency_ratio=self.vision_degraded_latency_ratio,
+            decision_deadline_ms=self.vision_decision_deadline_ms,
+            bad_window_threshold=self.vision_bad_window_threshold,
+            recovery_window_threshold=self.vision_recovery_window_threshold,
+        )
+        self.write_state(state)
+        return True
+
+    def apply_vision_tracks(self, payload: Any, received_at: str) -> bool:
+        parsed = parse_vision_tracks(payload)
+        if parsed is None:
+            return False
+        state = self.read_state()
+        vision = _vision_state(state)
+        vision["lastTracksAt"] = received_at
+        vision["activeTracks"] = int(parsed.get("active_tracks") or 0)
+        vision["pendingTracks"] = int(parsed.get("pending_tracks") or 0)
+        vision["totalCrossings"] = int(parsed.get("total_crossings") or 0)
+        self.write_state(state)
+        return True
+
+    def apply_vision_heartbeat(self, payload: Any, received_at: str) -> bool:
+        parsed = parse_vision_heartbeat(payload)
+        if parsed is None:
+            return False
+        state = self.read_state()
+        vision = _vision_state(state)
+        vision["lastHeartbeatAt"] = str(parsed.get("timestamp") or received_at)
+        changed = _update_vision_health(
+            state,
+            now=_parse_iso(received_at) or datetime.now().astimezone(),
+            heartbeat_timeout_sec=self.heartbeat_timeout_sec,
+            degraded_fps=self.vision_degraded_fps,
+            degraded_latency_ratio=self.vision_degraded_latency_ratio,
+            decision_deadline_ms=self.vision_decision_deadline_ms,
+            bad_window_threshold=self.vision_bad_window_threshold,
+            recovery_window_threshold=self.vision_recovery_window_threshold,
+        )
+        self.write_state(state)
+        return True
+
+    def apply_vision_event(self, payload: Any, received_at: str) -> dict[str, Any]:
+        parsed = parse_vision_event(payload)
+        if parsed is None:
+            return {"changed": False, "publish_command": None, "item_id": "", "payload": payload}
+
+        state = self.read_state()
+        items = state["itemsById"] if isinstance(state.get("itemsById"), dict) else {}
+        now = _parse_iso(received_at) or datetime.now().astimezone()
+        vision = _vision_state(state)
+        vision["lastEventAt"] = received_at
+        vision["lastObservedAt"] = str(parsed.get("vision_observed_at") or "")
+        vision["lastPublishedAt"] = str(parsed.get("vision_published_at") or parsed.get("vision_observed_at") or "")
+        vision["lastReceivedAt"] = received_at
+
+        observed_at = _parse_iso(str(parsed.get("vision_observed_at") or ""))
+        if observed_at is not None:
+            vision["eventLatencyMs"] = max(0, int((now - observed_at).total_seconds() * 1000))
+
+        _update_vision_health(
+            state,
+            now=now,
+            heartbeat_timeout_sec=self.heartbeat_timeout_sec,
+            degraded_fps=self.vision_degraded_fps,
+            degraded_latency_ratio=self.vision_degraded_latency_ratio,
+            decision_deadline_ms=self.vision_decision_deadline_ms,
+            bad_window_threshold=self.vision_bad_window_threshold,
+            recovery_window_threshold=self.vision_recovery_window_threshold,
+        )
+        changed = True
+
+        track_id = str(parsed.get("track_id") or "").strip()
+        dedupe_key = f"{parsed['event_type']}:{track_id}" if track_id else ""
+        if dedupe_key and dedupe_key in _processed_vision_keys(state):
+            enriched = dict(parsed["raw"])
+            enriched.update(
+                {
+                    "confidence": parsed.get("confidence", 0.0),
+                    "confidence_tier": parsed.get("confidence_tier") or _vision_confidence_tier(parsed.get("confidence")),
+                    "correlation_status": "MATCHED" if parsed.get("item_id") else "",
+                    "observed_at": parsed.get("vision_observed_at"),
+                    "published_at": parsed.get("vision_published_at"),
+                    "received_at": received_at,
+                    "duplicate_ignored": True,
+                }
+            )
+            self.write_state(state)
+            return {"changed": changed, "publish_command": None, "item_id": "", "payload": enriched}
+
+        confidence_tier = str(parsed.get("confidence_tier") or _vision_confidence_tier(parsed.get("confidence")))
+        head_key = _head_item_key(state)
+        item = items.get(head_key) if head_key else None
+        publish_command: str | None = None
+
+        enriched = dict(parsed["raw"])
+        enriched.update(
+            {
+                "confidence": parsed.get("confidence", 0.0),
+                "confidence_tier": confidence_tier,
+                "observed_at": parsed.get("vision_observed_at"),
+                "published_at": parsed.get("vision_published_at"),
+                "received_at": received_at,
+                "duplicate_ignored": False,
+            }
+        )
+
+        if parsed["event_type"] != "line_crossed":
+            self.write_state(state)
+            return {"changed": changed, "publish_command": None, "item_id": "", "payload": enriched}
+
+        if not isinstance(item, dict):
+            enriched["correlation_status"] = "DRIFTED"
+            _remember_processed_vision_key(state, dedupe_key)
+            changed = True
+        else:
+            remaining_ms = _remaining_travel_ms(item, now=now)
+            is_late = bool(vision.get("eventLatencyMs") not in (None, "") and _numeric(vision.get("eventLatencyMs")) > self.vision_decision_deadline_ms)
+            if item.get("pick_started") or remaining_ms <= 0:
+                is_late = True
+
+            item.update(
+                {
+                    "vision_track_id": track_id,
+                    "vision_confidence": parsed.get("confidence", 0.0),
+                    "vision_observed_at": parsed.get("vision_observed_at"),
+                    "vision_published_at": parsed.get("vision_published_at"),
+                    "vision_received_at": received_at,
+                    "queue_status": "in_pick_zone" if not item.get("pick_started") else str(item.get("queue_status") or ""),
+                }
+            )
+
+            if confidence_tier == "low":
+                item["correlation_status"] = "IGNORED_LOW_CONF"
+                item["finalization_reason"] = "SENSOR_LOW_CONF_VISION_IGNORED"
+            elif is_late:
+                item["correlation_status"] = "LATE"
+                item["late_vision_audit_flag"] = True
+                item["finalization_reason"] = "SENSOR_LATE_VISION"
+                item["review_required"] = True
+                vision["metrics"]["lateAuditCount"] = max(0, round(_numeric(vision["metrics"].get("lateAuditCount")))) + 1
+            elif confidence_tier == "medium":
+                item["correlation_status"] = "AMBIGUOUS"
+                item["review_required"] = True
+            else:
+                sensor_color = str(item.get("sensor_color") or "")
+                vision_color = str(parsed.get("color") or "")
+                item["vision_color"] = vision_color
+                item["final_color"] = vision_color
+                item["color"] = vision_color
+                item["decision_source"] = "VISION"
+                item["queue_status"] = "vision_confirmed"
+                item["correlation_status"] = "MATCHED"
+                item["decision_applied_at"] = received_at
+                if sensor_color and sensor_color != vision_color:
+                    was_mismatch = bool(item.get("mismatch_flag"))
+                    item["mismatch_flag"] = True
+                    item["finalization_reason"] = "VISION_CORRECTED_MISMATCH"
+                    if not was_mismatch:
+                        vision["metrics"]["mismatchCount"] = max(0, round(_numeric(vision["metrics"].get("mismatchCount")))) + 1
+                else:
+                    item["finalization_reason"] = "VISION_HIGH_CONF"
+
+                if (
+                    str(vision.get("healthState") or "") == "online"
+                    and remaining_ms >= self.min_remaining_travel_ms_for_early_pick
+                    and not item.get("early_pick_request_sent_at")
+                    and not item.get("pick_started")
+                ):
+                    publish_command = f"epick {item.get('item_id') or head_key}"
+
+            items[head_key] = item
+            enriched.update(
+                {
+                    "item_id": item.get("item_id") or head_key,
+                    "measure_id": item.get("measure_id") or "",
+                    "correlation_status": item.get("correlation_status") or "",
+                    "late_vision_audit_flag": bool(item.get("late_vision_audit_flag")),
+                    "decision_applied": bool(item.get("decision_source") == "VISION" and item.get("correlation_status") == "MATCHED"),
+                    "review_required": bool(item.get("review_required")),
+                }
+            )
+            _append_recent_id(state, head_key)
+            _remember_processed_vision_key(state, dedupe_key)
+            changed = True
+
+        state["itemsById"] = items
+        self.write_state(state)
+        return {
+            "changed": changed,
+            "publish_command": publish_command,
+            "item_id": str((items.get(head_key) or {}).get("item_id") or head_key or ""),
+            "payload": enriched,
+        }
 
     def apply_tablet_fault_log(self, line: str, received_at: str) -> bool:
         parsed = parse_tablet_fault_line(line)
@@ -640,13 +1296,29 @@ class OeeRuntimeStateManager:
 
     def tick(self, *, now: datetime | None = None) -> bool:
         state = self.read_state()
-        if not state["shift"]["active"]:
-            return False
-
         stamp = now or datetime.now().astimezone()
+        changed = _update_vision_health(
+            state,
+            now=stamp,
+            heartbeat_timeout_sec=self.heartbeat_timeout_sec,
+            degraded_fps=self.vision_degraded_fps,
+            degraded_latency_ratio=self.vision_degraded_latency_ratio,
+            decision_deadline_ms=self.vision_decision_deadline_ms,
+            bad_window_threshold=self.vision_bad_window_threshold,
+            recovery_window_threshold=self.vision_recovery_window_threshold,
+        )
+        if not state["shift"]["active"]:
+            if changed:
+                state["lastUpdatedAt"] = _pseudo_iso_text(stamp)
+                self.write_state(state)
+            return changed
+
         last_logged = _parse_iso(str(state.get("lastSnapshotLoggedAt") or ""))
         if last_logged is not None and (stamp - last_logged).total_seconds() < 5:
-            return False
+            if changed:
+                state["lastUpdatedAt"] = _pseudo_iso_text(stamp)
+                self.write_state(state)
+            return changed
 
         snapshot = build_live_snapshot(state, now=stamp)
         trend = state["trend"] if isinstance(state.get("trend"), list) else []

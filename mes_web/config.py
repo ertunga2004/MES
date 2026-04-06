@@ -54,6 +54,12 @@ class AppConfig:
     log_store_size: int = 200
     log_response_size: int = 50
     vision_event_store_size: int = 50
+    vision_decision_deadline_ms: int = 300
+    min_remaining_travel_ms_for_early_pick: int = 400
+    vision_degraded_fps: float = 8.0
+    vision_degraded_latency_ratio: float = 0.5
+    vision_bad_window_threshold: int = 2
+    vision_recovery_window_threshold: int = 3
     excel_enabled: bool = True
     excel_flush_interval_sec: float = 1.0
     excel_batch_size: int = 25
@@ -148,6 +154,12 @@ class AppConfig:
             log_store_size=int(os.getenv("MES_WEB_LOG_STORE_SIZE", "200")),
             log_response_size=int(os.getenv("MES_WEB_LOG_RESPONSE_SIZE", "50")),
             vision_event_store_size=int(os.getenv("MES_WEB_VISION_EVENT_STORE_SIZE", "50")),
+            vision_decision_deadline_ms=int(os.getenv("MES_WEB_VISION_DECISION_DEADLINE_MS", "300")),
+            min_remaining_travel_ms_for_early_pick=int(os.getenv("MES_WEB_MIN_REMAINING_TRAVEL_MS_FOR_EARLY_PICK", "400")),
+            vision_degraded_fps=float(os.getenv("MES_WEB_VISION_DEGRADED_FPS", "8.0")),
+            vision_degraded_latency_ratio=float(os.getenv("MES_WEB_VISION_DEGRADED_LATENCY_RATIO", "0.5")),
+            vision_bad_window_threshold=int(os.getenv("MES_WEB_VISION_BAD_WINDOW_THRESHOLD", "2")),
+            vision_recovery_window_threshold=int(os.getenv("MES_WEB_VISION_RECOVERY_WINDOW_THRESHOLD", "3")),
             excel_enabled=_env_bool("MES_WEB_EXCEL_ENABLED", True),
             excel_flush_interval_sec=float(os.getenv("MES_WEB_EXCEL_FLUSH_INTERVAL_SEC", "1.0")),
             excel_batch_size=int(os.getenv("MES_WEB_EXCEL_BATCH_SIZE", "25")),

@@ -125,6 +125,7 @@ const els = {
   oeeProductionGrid: document.getElementById("oee-production-grid"),
   oeeFaultGrid: document.getElementById("oee-fault-grid"),
   oeeColorGrid: document.getElementById("oee-color-grid"),
+  oeeQualityOverrideList: document.getElementById("oee-quality-override-list"),
   oeeTrendList: document.getElementById("oee-trend-list"),
 };
 
@@ -504,12 +505,25 @@ function renderVision(snapshot) {
     els.visionPanel.classList.add("hidden");
     return;
   }
+  const runtime = vision.runtime || {};
+  const lastItem = runtime.last_item || null;
+  const lastItemSummary = lastItem
+    ? `#${lastItem.item_id} | ${formatToken(lastItem.sensor_color)} / ${formatToken(lastItem.vision_color)} / ${formatToken(lastItem.final_color)}`
+    : "-";
+  const lastCorrelation = lastItem ? formatToken(lastItem.correlation_status) : "-";
 
   const cards = [
     ["Vision State", formatToken(vision.status.state)],
+    ["Health", formatToken(runtime.health_state)],
     ["FPS", formatNumber(vision.status.fps)],
     ["Active Tracks", formatNumber(vision.tracks.active_tracks)],
     ["Crossings", formatNumber(vision.tracks.total_crossings)],
+    ["Mismatch", formatNumber(runtime.mismatch_count)],
+    ["Early OK", formatNumber(runtime.early_accepted_count)],
+    ["Early Rej", formatNumber(runtime.early_rejected_count)],
+    ["Son Reject", formatToken(runtime.last_reject_reason)],
+    ["Son Corr", lastCorrelation],
+    ["Son Item", lastItemSummary],
     ["Sari Diff", formatNumber(vision.compare.diff.yellow)],
     ["Alarm", formatToken(vision.compare.yellow_alarm)],
     ["Vizyon K", formatNumber(vision.compare.vision.red)],
@@ -774,6 +788,26 @@ function renderOee(snapshot) {
     )
     .join("");
 
+  const overrideOptions = oee.controls.quality_override_options || ["GOOD", "REWORK", "SCRAP"];
+  const recentItems = oee.recent_items || [];
+  if (!recentItems.length) {
+    els.oeeQualityOverrideList.innerHTML = `<p class="empty-state">Override icin tamamlanan urun yok.</p>`;
+  } else {
+    els.oeeQualityOverrideList.innerHTML = recentItems
+      .map((item) => `
+        <article class="status-row">
+          <span>#${item.item_id} | ${formatToken(item.color)} | ${formatTime(item.completed_at)}</span>
+          <strong>
+            <select class="oee-quality-select" data-item-id="${item.item_id}" ${state.oeeControlBusy ? "disabled" : ""}>
+              ${overrideOptions.map((option) => `<option value="${option}" ${option === item.classification ? "selected" : ""}>${formatToken(option)}</option>`).join("")}
+            </select>
+            <button class="preset-button" type="button" data-oee-override-item="${item.item_id}" ${state.oeeControlBusy ? "disabled" : ""}>Kaydet</button>
+          </strong>
+        </article>
+      `)
+      .join("");
+  }
+
   renderOeeTrend(oee.trend);
 }
 
@@ -911,6 +945,29 @@ async function sendOeeControl(action, value = null) {
   }
 }
 
+async function sendQualityOverride(itemId, classification) {
+  state.oeeControlBusy = true;
+  setOeeFeedback("Kalite override gonderiliyor...", "neutral");
+  if (state.snapshot) renderOee(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/oee/quality-override`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ item_id: itemId, classification }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    setOeeFeedback(payload.summary || `Kalite guncellendi: ${itemId}`, "success");
+  } catch (error) {
+    setOeeFeedback(`Kalite override hatasi: ${error.message}`, "error");
+  } finally {
+    state.oeeControlBusy = false;
+    if (state.snapshot) renderOee(state.snapshot);
+  }
+}
+
 els.tabButtons.forEach((button) => {
   button.addEventListener("click", () => setActiveTab(button.dataset.tab));
 });
@@ -954,6 +1011,15 @@ els.oeeIdealCycleApply.addEventListener("click", () => {
 
 els.oeePlannedStopApply.addEventListener("click", () => {
   sendOeeControl("set_planned_stop_min", els.oeePlannedStop.value.trim());
+});
+
+els.oeeQualityOverrideList.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-oee-override-item]");
+  if (!button || button.disabled) return;
+  const itemId = button.dataset.oeeOverrideItem;
+  const select = els.oeeQualityOverrideList.querySelector(`select[data-item-id="${itemId}"]`);
+  if (!select) return;
+  sendQualityOverride(itemId, select.value);
 });
 
 async function bootstrap() {

@@ -1,3 +1,14 @@
-opencv-python>=4.9
-numpy>=1.26
-paho-mqtt>=1.6
+# x86 / normal desktop installs can use pip wheels directly.
+opencv-python>=4.9,<4.11; platform_machine != "armv6l" and platform_machine != "armv7l" and platform_machine != "aarch64" and platform_machine != "arm64"
+numpy>=1.26,<2; platform_machine != "armv6l" and platform_machine != "armv7l" and platform_machine != "aarch64" and platform_machine != "arm64"
+
+# Raspberry Pi OS:
+# 1. sudo apt install -y python3-opencv python3-numpy
+# 2. recreate venv with system packages visible:
+#    python3 -m venv --system-site-packages .venv
+# 3. source .venv/bin/activate && python -m pip install -r requirements.txt
+#
+# Python 3.7 tabanli Pi kurulumlarinda paho-mqtt 2.x ek typing backport ister.
+# Bu projede 1.6.1 yeterli oldugu icin 3.8 alti icin 1.x'e sabitliyoruz.
+paho-mqtt==1.6.1; python_version < "3.8"
+paho-mqtt>=1.6,<3; python_version >= "3.8"

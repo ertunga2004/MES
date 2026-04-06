@@ -37,6 +37,29 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable OpenCV windows and run headless.",
     )
+    parser.add_argument("--width", type=int, help="Override camera width.")
+    parser.add_argument("--height", type=int, help="Override camera height.")
+    parser.add_argument("--fps", type=int, help="Override camera fps.")
+    parser.add_argument(
+        "--rotate-ccw-90",
+        action="store_true",
+        help="Rotate incoming camera frames 90 degrees counterclockwise.",
+    )
+    parser.add_argument(
+        "--flip-horizontal",
+        action="store_true",
+        help="Force horizontal flip on preview/capture.",
+    )
+    parser.add_argument(
+        "--preview-scale",
+        type=float,
+        help="Scale GUI preview window independently from camera resolution.",
+    )
+    parser.add_argument(
+        "--raw-preview",
+        action="store_true",
+        help="Show only camera view in GUI, without ROI/track overlays.",
+    )
     return parser
 
 
@@ -46,9 +69,24 @@ def main(argv: list[str] | None = None) -> int:
     try:
         import cv2
     except ImportError as exc:
-        raise RuntimeError("opencv-python is not installed. Run: pip install -r requirements.txt") from exc
+        raise RuntimeError(
+            "OpenCV is not installed. On Raspberry Pi use: "
+            "sudo apt install -y python3-opencv python3-numpy && "
+            "python3 -m venv --system-site-packages .venv && "
+            "python -m pip install -r requirements.txt"
+        ) from exc
 
     config = load_observer_config(args.config)
+
+    override_width = args.width if args.width is not None else config.camera.width
+    override_height = args.height if args.height is not None else config.camera.height
+    override_fps = args.fps if args.fps is not None else config.camera.fps
+    override_flip = True if args.flip_horizontal else config.camera.flip_horizontal
+    override_rotate_ccw_90 = True if args.rotate_ccw_90 else config.camera.rotate_ccw_90
+    override_preview_scale = (
+        max(0.1, float(args.preview_scale)) if args.preview_scale is not None else config.ui.preview_scale
+    )
+    override_show_overlay = False if args.raw_preview else config.ui.show_overlay
 
     if args.source is not None:
         source = int(args.source) if args.source.isdigit() else args.source
@@ -56,10 +94,11 @@ def main(argv: list[str] | None = None) -> int:
             device_name=config.device_name,
             camera=CameraConfig(
                 source=source,
-                width=config.camera.width,
-                height=config.camera.height,
-                fps=config.camera.fps,
-                flip_horizontal=config.camera.flip_horizontal,
+                width=override_width,
+                height=override_height,
+                fps=override_fps,
+                flip_horizontal=override_flip,
+                rotate_ccw_90=override_rotate_ccw_90,
             ),
             processing=config.processing,
             tracker=config.tracker,
@@ -69,17 +108,32 @@ def main(argv: list[str] | None = None) -> int:
                 show_windows=False if args.no_gui else config.ui.show_windows,
                 show_masks=False if args.no_gui else config.ui.show_masks,
                 show_pending_tracks=False if args.no_gui else config.ui.show_pending_tracks,
+                preview_scale=override_preview_scale,
+                show_overlay=override_show_overlay,
             ),
         )
-    elif args.no_gui:
+    elif args.no_gui or args.width is not None or args.height is not None or args.fps is not None or args.rotate_ccw_90 or args.flip_horizontal or args.preview_scale is not None or args.raw_preview:
         config = ObserverConfig(
             device_name=config.device_name,
-            camera=config.camera,
+            camera=CameraConfig(
+                source=config.camera.source,
+                width=override_width,
+                height=override_height,
+                fps=override_fps,
+                flip_horizontal=override_flip,
+                rotate_ccw_90=override_rotate_ccw_90,
+            ),
             processing=config.processing,
             tracker=config.tracker,
             line_counter=config.line_counter,
             mqtt=config.mqtt,
-            ui=UiConfig(show_windows=False, show_masks=False, show_pending_tracks=False),
+            ui=UiConfig(
+                show_windows=False if args.no_gui else config.ui.show_windows,
+                show_masks=False if args.no_gui else config.ui.show_masks,
+                show_pending_tracks=False if args.no_gui else config.ui.show_pending_tracks,
+                preview_scale=override_preview_scale,
+                show_overlay=override_show_overlay,
+            ),
         )
 
     profiles = load_box_profiles(args.boxes)
@@ -98,6 +152,12 @@ def main(argv: list[str] | None = None) -> int:
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, config.camera.height)
     if config.camera.fps:
         capture.set(cv2.CAP_PROP_FPS, config.camera.fps)
+    _print_camera_runtime(capture, config)
+
+    if config.ui.show_windows:
+        cv2.namedWindow("Observer", cv2.WINDOW_NORMAL)
+        if config.ui.show_masks:
+            cv2.namedWindow("Masks", cv2.WINDOW_NORMAL)
 
     frame_times: deque[float] = deque(maxlen=20)
     last_publish_at = 0.0
@@ -123,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
                 break
 
             started_at = time.perf_counter()
+            if config.camera.rotate_ccw_90:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
             if config.camera.flip_horizontal:
                 frame = cv2.flip(frame, 1)
 
@@ -181,15 +243,20 @@ def main(argv: list[str] | None = None) -> int:
                 last_heartbeat_at = now
 
             for event in events:
-                mqtt_client.publish_json("events", event)
+                event_payload = dict(event)
+                event_payload.setdefault("observed_at", str(event.get("timestamp") or timestamp_iso))
+                event_payload["published_at"] = _utc_now()
+                mqtt_client.publish_json("events", event_payload)
 
             if config.ui.show_windows:
-                display_frame = _draw_overlay(frame.copy(), tracks, config, fps, tracker.total_crossings)
-                cv2.imshow("Observer", display_frame)
+                display_frame = frame.copy()
+                if config.ui.show_overlay:
+                    display_frame = _draw_overlay(display_frame, tracks, config, fps, tracker.total_crossings)
+                cv2.imshow("Observer", _scale_preview(display_frame, config.ui.preview_scale))
                 if config.ui.show_masks:
                     mask_preview = _compose_mask_preview(masks)
                     if mask_preview is not None:
-                        cv2.imshow("Masks", mask_preview)
+                        cv2.imshow("Masks", _scale_preview(mask_preview, config.ui.preview_scale))
 
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
@@ -375,6 +442,32 @@ def _compose_mask_preview(masks: dict[str, "np.ndarray"]) -> "np.ndarray" | None
         )
 
     return cv2.vconcat(normalized)
+
+
+def _scale_preview(frame: "np.ndarray", scale: float) -> "np.ndarray":
+    import cv2
+
+    safe_scale = max(0.1, float(scale or 1.0))
+    if abs(safe_scale - 1.0) < 1e-6:
+        return frame
+    return cv2.resize(frame, None, fx=safe_scale, fy=safe_scale, interpolation=cv2.INTER_AREA)
+
+
+def _print_camera_runtime(capture: object, config: ObserverConfig) -> None:
+    try:
+        width = int(capture.get(3))
+        height = int(capture.get(4))
+        fps = float(capture.get(5))
+    except Exception:
+        return
+    print(
+        "Camera runtime:"
+        f" requested={config.camera.width or '-'}x{config.camera.height or '-'}@{config.camera.fps or '-'}"
+        f" actual={width}x{height}@{fps:.2f}"
+        f" rotate_ccw_90={'on' if config.camera.rotate_ccw_90 else 'off'}"
+        f" preview_scale={config.ui.preview_scale:.2f}"
+        f" overlay={'on' if config.ui.show_overlay else 'off'}"
+    )
 
 
 def _roi_to_dict(roi: ROI | None) -> dict[str, int] | None:

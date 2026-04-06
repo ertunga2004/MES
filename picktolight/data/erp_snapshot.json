@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-03-31T15:59:17+03:00",
+  "generated_at": "2026-04-03T12:15:56+03:00",
   "station": {
     "station_id": "assembly_01",
     "topic_role": "python_authority"
@@ -58,8 +58,8 @@
     "lego_vidali_vagon": 3
   },
   "completed_total": 13,
-  "current_operation_elapsed_ms": 76,
-  "current_cycle_elapsed_ms": 76,
+  "current_operation_elapsed_ms": 245799744,
+  "current_cycle_elapsed_ms": 245799744,
   "last_operation_duration_ms": 2309,
   "last_cycle_duration_ms": 72309,
   "last_event_at": "2026-03-31T15:59:17+03:00",

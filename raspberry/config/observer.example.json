@@ -5,7 +5,8 @@
     "width": 1280,
     "height": 720,
     "fps": 30,
-    "flip_horizontal": true
+    "flip_horizontal": true,
+    "rotate_ccw_90": false
   },
   "processing": {
     "roi": {
@@ -46,6 +47,8 @@
   },
   "ui": {
     "show_windows": true,
-    "show_masks": false
+    "show_masks": false,
+    "preview_scale": 0.75,
+    "show_overlay": true
   }
 }

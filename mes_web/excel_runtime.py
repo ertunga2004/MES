@@ -31,12 +31,16 @@ MEASUREMENT_COLUMNS = [
 COMPLETED_COLUMNS = [
     "production_record_id", "item_id", "measure_id", "queue_event_log_id", "completion_event_log_id", "detected_at",
     "completed_at", "color_id", "color_code", "color_raw", "status_code", "status_tr", "travel_ms", "cycle_ms",
-    "decision_source_id", "decision_source_code", "review_required",
+    "decision_source_id", "decision_source_code", "review_required", "final_quality_code", "final_quality_tr",
+    "override_flag", "override_source_code", "override_applied_at", "sensor_color_code", "vision_color_code",
+    "final_color_code", "mismatch_flag", "correlation_status", "finalization_reason", "early_pick_triggered",
+    "pick_trigger_source", "early_pick_request_sent_at", "early_pick_accepted_at", "final_color_frozen_at",
 ]
 VISION_COLUMNS = [
     "vision_event_id", "event_time", "source_code", "vision_track_id", "event_type", "color_id", "color_code", "item_id",
-    "measure_id", "confidence", "line_id", "station_id", "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2", "direction",
-    "is_placeholder", "notes",
+    "measure_id", "confidence", "confidence_tier", "correlation_status", "late_vision_audit_flag", "vision_observed_at",
+    "vision_published_at", "vision_received_at", "line_id", "station_id", "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2",
+    "direction", "is_placeholder", "notes",
 ]
 RAW_LOG_COLUMNS = [
     "raw_log_id", "logged_at", "source_topic", "source_code", "parsed_flag", "event_type_code", "item_id", "measure_id",
@@ -53,7 +57,18 @@ SHEET_COLUMNS = {
 
 SOURCE_IDS = {"mega": 1, "tablet": 2, "vision": 3, "system": 4}
 COLOR_IDS = {"red": 1, "yellow": 2, "blue": 3, "empty": 4, "uncertain": 5}
-EVENT_TYPE_IDS = {"measurement_decision": 2, "queue_enq": 3, "arm_position_reached": 4, "pickplace_done": 5, "vision_event": 11}
+EVENT_TYPE_IDS = {
+    "measurement_decision": 2,
+    "queue_enq": 3,
+    "arm_position_reached": 4,
+    "pickplace_done": 5,
+    "pick_command_rejected": 6,
+    "pick_released": 7,
+    "pick_return_started": 8,
+    "pick_return_reached": 9,
+    "vision_event": 11,
+    "early_pick_request": 12,
+}
 DECISION_SOURCE_IDS = {"CORE_STABLE": 1, "MEDIAN_STABLE": 2, "CORE_VOTE_MATCH": 3, "VISION": 4, "TABLET": 5, "SYSTEM": 6}
 MEGA_STATE_IDS = {"SEARCH": 1, "SEARCHING": 2, "MEASURING": 3, "WAIT_ARM": 4, "PAUSED": 5, "STOPPED": 6, "QUEUE": 7}
 
@@ -63,7 +78,7 @@ def _station_for_event(event_type_code: str) -> int:
         return 1
     if event_type_code == "queue_enq":
         return 2
-    if event_type_code in {"arm_position_reached", "pickplace_done"}:
+    if event_type_code in {"arm_position_reached", "pickplace_done", "pick_command_rejected", "pick_released", "pick_return_started", "pick_return_reached", "early_pick_request"}:
         return 3
     return 6 if event_type_code == "vision_event" else 5
 
@@ -123,6 +138,7 @@ class WorkbookProjector:
             "raw_log_id": 1,
         }
         self.completed_state: dict[str, dict[str, Any]] = {}
+        self.completed_rows_by_item: dict[str, dict[str, Any]] = {}
 
     def prime(self, counters: dict[str, int]) -> None:
         self.counters.update(counters)
@@ -199,6 +215,10 @@ class WorkbookProjector:
             "measurement_decision": f"Olcum karari verildi: {parsed['color']}",
             "queue_enq": f"Urun kuyruga alindi: {parsed['color']}",
             "arm_position_reached": "Robot kol hedefe ulasti",
+            "pick_command_rejected": "Erken pick komutu reddedildi",
+            "pick_released": "Urun mekanik olarak birakildi",
+            "pick_return_started": "Robot geri donuse basladi",
+            "pick_return_reached": "Robot 22 referans noktasina ulasti",
             "pickplace_done": "Pick and place tamamlandi",
         }.get(parsed["event_type"], parsed["event_type"])
         note_parts: list[str] = []
@@ -206,6 +226,10 @@ class WorkbookProjector:
             note_parts.append(f"search_hint={raw.get('SEARCH_HINT')}")
         if parsed["event_type"] == "measurement_decision" and raw.get("CONF") not in (None, ""):
             note_parts.append(f"conf={raw.get('CONF')}")
+        if parsed.get("trigger_source") not in (None, "", "unknown"):
+            note_parts.append(f"trigger={parsed['trigger_source']}")
+        if parsed.get("reject_reason") not in (None, "", "unknown"):
+            note_parts.append(f"reason={parsed['reject_reason']}")
         rows["1_Olay_Logu"] = [self._event_row(log_event_id=log_event_id, received_at=received_at, source_code="mega", event_type_code=parsed["event_type"], item_id=parsed["item_id"], measure_id=parsed["measure_id"], color_code=parsed["color"], decision_source_code=parsed["decision_source"], mega_state_code=parsed["mega_state"], queue_depth=parsed["queue_depth"], review_required=parsed["review_required"], travel_ms=parsed["travel_ms"], notes=";".join(note_parts), raw_line=raw_line, event_summary_tr=summary)]
 
         key = self._completed_key(parsed["item_id"], parsed["measure_id"])
@@ -265,9 +289,68 @@ class WorkbookProjector:
                 "measurement_error_reason": error_reason,
                 "raw_line": raw_line,
             }]
-            self.completed_state.setdefault(key, {}).update({"item_id": parsed["item_id"], "measure_id": parsed["measure_id"], "color": parsed["color"], "decision_source": parsed["decision_source"], "review_required": parsed["review_required"]})
+            self.completed_state.setdefault(key, {}).update(
+                {
+                    "item_id": parsed["item_id"],
+                    "measure_id": parsed["measure_id"],
+                    "sensor_color": parsed["color"],
+                    "final_color": parsed["color"],
+                    "decision_source": "SENSOR",
+                    "sensor_decision_source": parsed["decision_source"],
+                    "finalization_reason": "SENSOR_NO_VISION",
+                    "review_required": parsed["review_required"],
+                    "correlation_status": "",
+                    "mismatch_flag": 0,
+                    "early_pick_triggered": 0,
+                    "pick_trigger_source": "",
+                    "early_pick_request_sent_at": "",
+                    "early_pick_accepted_at": "",
+                }
+            )
         elif parsed["event_type"] == "queue_enq":
-            self.completed_state.setdefault(key, {}).update({"item_id": parsed["item_id"], "measure_id": parsed["measure_id"], "detected_at": received_at, "color": parsed["color"], "travel_ms": parsed["travel_ms"], "decision_source": parsed["decision_source"], "review_required": parsed["review_required"], "queue_event_log_id": log_event_id})
+            self.completed_state.setdefault(key, {}).update(
+                {
+                    "item_id": parsed["item_id"],
+                    "measure_id": parsed["measure_id"],
+                    "detected_at": received_at,
+                    "sensor_color": parsed["color"],
+                    "final_color": parsed["color"],
+                    "travel_ms": parsed["travel_ms"],
+                    "travel_ms_initial": parsed["travel_ms"],
+                    "decision_source": "SENSOR",
+                    "sensor_decision_source": parsed["decision_source"],
+                    "review_required": parsed["review_required"],
+                    "queue_event_log_id": log_event_id,
+                    "finalization_reason": "SENSOR_NO_VISION",
+                    "correlation_status": "",
+                    "mismatch_flag": 0,
+                    "early_pick_triggered": 0,
+                    "pick_trigger_source": "",
+                    "early_pick_request_sent_at": "",
+                    "early_pick_accepted_at": "",
+                }
+            )
+        elif parsed["event_type"] == "arm_position_reached":
+            state = self.completed_state.setdefault(key, {})
+            trigger_source = str(parsed.get("trigger_source") or "").strip().upper()
+            state.update(
+                {
+                    "pick_trigger_source": trigger_source or state.get("pick_trigger_source", ""),
+                    "picked_at": received_at,
+                }
+            )
+            if trigger_source == "EARLY":
+                state["early_pick_accepted_at"] = received_at
+                state["early_pick_triggered"] = 1
+        elif parsed["event_type"] == "pick_command_rejected":
+            state = self.completed_state.setdefault(key, {})
+            state["reject_reason"] = str(parsed.get("reject_reason") or "").strip().upper()
+        elif parsed["event_type"] == "pick_released":
+            self.completed_state.setdefault(key, {}).update({"released_at": received_at})
+        elif parsed["event_type"] == "pick_return_started":
+            self.completed_state.setdefault(key, {}).update({"return_started_at": received_at})
+        elif parsed["event_type"] == "pick_return_reached":
+            self.completed_state.setdefault(key, {}).update({"return_reached_at": received_at})
         elif parsed["event_type"] == "pickplace_done":
             state = self.completed_state.get(key, {})
             detected_at = state.get("detected_at", "")
@@ -286,9 +369,9 @@ class WorkbookProjector:
                 "completion_event_log_id": log_event_id,
                 "detected_at": detected_at,
                 "completed_at": received_at,
-                "color_id": _color_id(state.get("color", parsed["color"])),
-                "color_code": state.get("color", parsed["color"]),
-                "color_raw": state.get("color", parsed["color"]),
+                "color_id": _color_id(state.get("final_color", state.get("sensor_color", parsed["color"]))),
+                "color_code": state.get("final_color", state.get("sensor_color", parsed["color"])),
+                "color_raw": state.get("final_color", state.get("sensor_color", parsed["color"])),
                 "status_code": "COMPLETED_REVIEW" if state.get("review_required", parsed["review_required"]) else "COMPLETED",
                 "status_tr": "Inceleme gerekli" if state.get("review_required", parsed["review_required"]) else "Tamamlandi",
                 "travel_ms": _safe_int(state.get("travel_ms", parsed["travel_ms"])),
@@ -296,9 +379,86 @@ class WorkbookProjector:
                 "decision_source_id": _decision_source_id(state.get("decision_source", parsed["decision_source"])),
                 "decision_source_code": str(state.get("decision_source", parsed["decision_source"]) or "").upper(),
                 "review_required": 1 if state.get("review_required", parsed["review_required"]) else 0,
+                "final_quality_code": "GOOD",
+                "final_quality_tr": "Saglam",
+                "override_flag": 0,
+                "override_source_code": "",
+                "override_applied_at": "",
+                "sensor_color_code": state.get("sensor_color", parsed["color"]),
+                "vision_color_code": state.get("vision_color", ""),
+                "final_color_code": state.get("final_color", state.get("sensor_color", parsed["color"])),
+                "mismatch_flag": 1 if state.get("mismatch_flag") else 0,
+                "correlation_status": state.get("correlation_status", ""),
+                "finalization_reason": state.get("finalization_reason", "SENSOR_NO_VISION"),
+                "early_pick_triggered": 1 if state.get("early_pick_triggered") else 0,
+                "pick_trigger_source": state.get("pick_trigger_source", str(parsed.get("trigger_source") or "").upper()),
+                "early_pick_request_sent_at": state.get("early_pick_request_sent_at", ""),
+                "early_pick_accepted_at": state.get("early_pick_accepted_at", ""),
+                "final_color_frozen_at": received_at,
             }]
+            self.completed_rows_by_item[str(state.get("item_id", parsed["item_id"]) or key)] = rows["4_Uretim_Tamamlanan"][0]
             self.completed_state.pop(key, None)
         return rows
+
+    def apply_quality_override(self, item_id: str, classification: str, applied_at: str) -> dict[str, Any]:
+        normalized_item_id = str(item_id or "").strip()
+        target = self.completed_rows_by_item.get(normalized_item_id)
+        if not isinstance(target, dict):
+            raise KeyError("ITEM_NOT_FOUND")
+        normalized = str(classification or "").strip().upper()
+        if normalized not in {"GOOD", "REWORK", "SCRAP"}:
+            raise ValueError("INVALID_CLASSIFICATION")
+        status_map = {
+            "GOOD": ("COMPLETED", "Tamamlandi"),
+            "REWORK": ("COMPLETED_REWORK", "Rework"),
+            "SCRAP": ("COMPLETED_SCRAP", "Hurda"),
+        }
+        quality_map = {"GOOD": "Saglam", "REWORK": "Rework", "SCRAP": "Hurda"}
+        status_code, status_tr = status_map[normalized]
+        target["status_code"] = status_code
+        target["status_tr"] = status_tr
+        target["final_quality_code"] = normalized
+        target["final_quality_tr"] = quality_map[normalized]
+        target["override_flag"] = 1
+        target["override_source_code"] = "MANUAL"
+        target["override_applied_at"] = applied_at
+        return target
+
+    def consume_early_pick_request(self, item_id: str, received_at: str) -> dict[str, list[dict[str, Any]]]:
+        normalized_item_id = str(item_id or "").strip()
+        if not normalized_item_id:
+            return {}
+        for state in self.completed_state.values():
+            if str(state.get("item_id") or "").strip() != normalized_item_id:
+                continue
+            if not state.get("early_pick_request_sent_at"):
+                state["early_pick_request_sent_at"] = received_at
+            break
+        return {
+            "1_Olay_Logu": [
+                self._event_row(
+                    log_event_id=self._next("log_event_id"),
+                    received_at=received_at,
+                    source_code="system",
+                    event_type_code="early_pick_request",
+                    item_id=normalized_item_id,
+                    notes="source=mes_web",
+                    raw_line=f"SYSTEM|VISION|EARLY_PICK_REQUEST_SENT|ITEM_ID={normalized_item_id}",
+                    event_summary_tr="Erken pick komutu gonderildi",
+                )
+            ],
+            "7_Raw_Logs": [
+                self._raw_row(
+                    received_at=received_at,
+                    source_topic="local/vision",
+                    source_code="system",
+                    raw_payload=f"SYSTEM|VISION|EARLY_PICK_REQUEST_SENT|ITEM_ID={normalized_item_id}",
+                    parsed_flag=1,
+                    event_type_code="early_pick_request",
+                    item_id=normalized_item_id,
+                )
+            ],
+        }
 
     def consume_vision_event(self, payload: Any, received_at: str) -> dict[str, list[dict[str, Any]]]:
         rows = {"7_Raw_Logs": [self._raw_row(received_at=received_at, source_topic="sau/iot/mega/konveyor/vision/events", source_code="vision", raw_payload=payload, parsed_flag=0)]}
@@ -307,10 +467,20 @@ class WorkbookProjector:
             return rows
         vision_event_id = self._next("vision_event_id")
         log_event_id = self._next("log_event_id")
-        rows["7_Raw_Logs"][0].update({"parsed_flag": 1, "event_type_code": "vision_event", "color_code": parsed["color"], "notes": parsed["event_type"]})
-        rows["1_Olay_Logu"] = [self._event_row(log_event_id=log_event_id, received_at=received_at, source_code="vision", event_type_code="vision_event", color_code=parsed["color"], decision_source_code="VISION", notes=f"vision_event={parsed['event_type']};{parsed['notes']}".strip(";"), raw_line=_json_text(payload), event_summary_tr=f"Vision olayi: {parsed['event_type']}", vision_event_id=vision_event_id)]
+        rows["7_Raw_Logs"][0].update({"parsed_flag": 1, "event_type_code": "vision_event", "item_id": parsed.get("item_id") or "", "measure_id": parsed.get("measure_id") or "", "color_code": parsed["color"], "notes": parsed["event_type"]})
+        rows["1_Olay_Logu"] = [self._event_row(log_event_id=log_event_id, received_at=received_at, source_code="vision", event_type_code="vision_event", item_id=parsed.get("item_id") or "", measure_id=parsed.get("measure_id") or "", color_code=parsed["color"], decision_source_code="VISION" if parsed.get("decision_applied") else "", review_required=parsed.get("review_required"), notes=f"vision_event={parsed['event_type']};status={parsed.get('correlation_status') or ''};{parsed['notes']}".strip(";"), raw_line=_json_text(payload), event_summary_tr=f"Vision olayi: {parsed['event_type']}", vision_event_id=vision_event_id)]
         raw = parsed["raw"]
         bbox = raw.get("bbox") or {}
+        bbox_x1 = _safe_int(bbox.get("x1") if bbox.get("x1") is not None else bbox.get("x"))
+        bbox_y1 = _safe_int(bbox.get("y1") if bbox.get("y1") is not None else bbox.get("y"))
+        if bbox.get("x2") is not None:
+            bbox_x2 = _safe_int(bbox.get("x2"))
+        else:
+            bbox_x2 = _safe_int((_safe_int(bbox.get("x")) or 0) + (_safe_int(bbox.get("w")) or 0))
+        if bbox.get("y2") is not None:
+            bbox_y2 = _safe_int(bbox.get("y2"))
+        else:
+            bbox_y2 = _safe_int((_safe_int(bbox.get("y")) or 0) + (_safe_int(bbox.get("h")) or 0))
         rows["6_Vision"] = [{
             "vision_event_id": vision_event_id,
             "event_time": received_at,
@@ -319,19 +489,46 @@ class WorkbookProjector:
             "event_type": parsed["event_type"],
             "color_id": _color_id(parsed["color"]),
             "color_code": parsed["color"],
-            "item_id": "",
-            "measure_id": "",
-            "confidence": raw.get("confidence", ""),
+            "item_id": parsed.get("item_id") or "",
+            "measure_id": parsed.get("measure_id") or "",
+            "confidence": parsed.get("confidence", ""),
+            "confidence_tier": parsed.get("confidence_tier") or "",
+            "correlation_status": parsed.get("correlation_status") or "",
+            "late_vision_audit_flag": 1 if parsed.get("late_vision_audit_flag") else 0,
+            "vision_observed_at": parsed.get("vision_observed_at") or "",
+            "vision_published_at": parsed.get("vision_published_at") or "",
+            "vision_received_at": received_at,
             "line_id": 1,
             "station_id": 6,
-            "bbox_x1": _safe_int(bbox.get("x1")),
-            "bbox_y1": _safe_int(bbox.get("y1")),
-            "bbox_x2": _safe_int(bbox.get("x2")),
-            "bbox_y2": _safe_int(bbox.get("y2")),
+            "bbox_x1": bbox_x1,
+            "bbox_y1": bbox_y1,
+            "bbox_x2": bbox_x2,
+            "bbox_y2": bbox_y2,
             "direction": raw.get("direction", ""),
             "is_placeholder": 0,
             "notes": parsed["notes"],
         }]
+        key = self._completed_key(parsed.get("item_id"), parsed.get("measure_id"))
+        if key in self.completed_state:
+            state = self.completed_state[key]
+            state.update(
+                {
+                    "vision_color": parsed["color"],
+                    "vision_confidence": parsed.get("confidence", ""),
+                    "vision_track_id": parsed.get("track_id") or "",
+                    "vision_observed_at": parsed.get("vision_observed_at") or "",
+                    "vision_published_at": parsed.get("vision_published_at") or "",
+                    "vision_received_at": received_at,
+                    "correlation_status": parsed.get("correlation_status") or state.get("correlation_status", ""),
+                    "late_vision_audit_flag": 1 if parsed.get("late_vision_audit_flag") else 0,
+                    "review_required": bool(parsed.get("review_required")) or bool(state.get("review_required")),
+                }
+            )
+            if parsed.get("decision_applied"):
+                state["final_color"] = parsed["color"]
+                state["decision_source"] = "VISION"
+                state["mismatch_flag"] = 1 if str(state.get("sensor_color") or "") != parsed["color"] else 0
+                state["finalization_reason"] = "VISION_CORRECTED_MISMATCH" if state.get("mismatch_flag") else "VISION_HIGH_CONF"
         return rows
 
 
@@ -377,6 +574,26 @@ class ExcelRuntimeSink:
     def record_local_counts_reset(self, received_at: str) -> None:
         if self._enabled:
             self._queue.put(SinkEnvelope(kind="counts_reset", received_at=received_at, payload="SYSTEM|COUNTS|RESET"))
+
+    def record_quality_override(self, item_id: str, classification: str, received_at: str) -> None:
+        if self._enabled:
+            self._queue.put(
+                SinkEnvelope(
+                    kind="quality_override",
+                    received_at=received_at,
+                    payload={"item_id": item_id, "classification": classification},
+                )
+            )
+
+    def record_early_pick_request(self, item_id: str, received_at: str) -> None:
+        if self._enabled:
+            self._queue.put(
+                SinkEnvelope(
+                    kind="early_pick_request",
+                    received_at=received_at,
+                    payload={"item_id": item_id},
+                )
+            )
 
     def _worker(self) -> None:
         from openpyxl import Workbook, load_workbook
@@ -425,9 +642,19 @@ class ExcelRuntimeSink:
                     break
                 batch.append(next_envelope)
             for item in batch:
-                rows = self.projector.consume_mega_log(item.payload, item.received_at) if item.kind == "mega_log" else (
-                    self.projector.consume_vision_event(item.payload, item.received_at) if item.kind == "vision_event" else self.projector.consume_local_counts_reset(item.received_at)
-                )
+                if item.kind == "mega_log":
+                    rows = self.projector.consume_mega_log(item.payload, item.received_at)
+                elif item.kind == "vision_event":
+                    rows = self.projector.consume_vision_event(item.payload, item.received_at)
+                elif item.kind == "quality_override":
+                    row = self.projector.apply_quality_override(item.payload["item_id"], item.payload["classification"], item.received_at)
+                    self._update_completed_sheet_row(workbook["4_Uretim_Tamamlanan"], row)
+                    dirty = True
+                    rows = {}
+                elif item.kind == "early_pick_request":
+                    rows = self.projector.consume_early_pick_request(item.payload["item_id"], item.received_at)
+                else:
+                    rows = self.projector.consume_local_counts_reset(item.received_at)
                 for sheet_name, row_dicts in rows.items():
                     sheet = workbook[sheet_name]
                     headers = [sheet.cell(1, idx).value for idx in range(1, sheet.max_column + 1)]
@@ -443,6 +670,22 @@ class ExcelRuntimeSink:
                 workbook.save(workbook_path)
                 dirty = False
         workbook.save(workbook_path)
+
+    def _update_completed_sheet_row(self, sheet: Any, row: dict[str, Any]) -> None:
+        headers = [sheet.cell(1, idx).value for idx in range(1, sheet.max_column + 1)]
+        if not headers:
+            return
+        id_index = headers.index("production_record_id") + 1
+        target_id = row.get("production_record_id")
+        target_row = None
+        for row_index in range(2, sheet.max_row + 1):
+            if sheet.cell(row_index, id_index).value == target_id:
+                target_row = row_index
+                break
+        if target_row is None:
+            raise KeyError("WORKBOOK_COMPLETED_ROW_NOT_FOUND")
+        for col_index, header in enumerate(headers, start=1):
+            sheet.cell(target_row, col_index, row.get(header, ""))
 
     def _ensure_sheet_layout(self, sheet: Any, headers: list[str]) -> None:
         if sheet.freeze_panes is None:

@@ -18,6 +18,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Mirror the incoming frame.",
     )
+    parser.add_argument(
+        "--rotate-ccw-90",
+        action="store_true",
+        help="Rotate incoming camera frames 90 degrees counterclockwise.",
+    )
+    parser.add_argument("--width", type=int, help="Override camera width.")
+    parser.add_argument("--height", type=int, help="Override camera height.")
+    parser.add_argument("--fps", type=int, help="Override camera fps.")
+    parser.add_argument("--preview-scale", type=float, default=1.0, help="Scale GUI preview windows.")
     parser.add_argument("--profile-id", default="new_box", help="Profile id for generated JSON.")
     parser.add_argument("--label", default="New Box", help="Label for generated JSON.")
     parser.add_argument("--color-name", default="color", help="Color name for generated JSON.")
@@ -138,6 +147,7 @@ def _save_manual_profile(
     max_area: int,
     append: bool,
 ) -> dict[str, Any]:
+    boxes_path.parent.mkdir(parents=True, exist_ok=True)
     config = _load_boxes_config(boxes_path)
     profiles = list(config.get("profiles", []))
     preset = COLOR_PRESETS[color_key]
@@ -259,13 +269,23 @@ def main() -> int:
         import numpy as np
     except ImportError as exc:
         raise RuntimeError(
-            "opencv-python and numpy are not installed. Run: pip install -r requirements.txt"
+            "OpenCV and numpy are not installed. On Raspberry Pi use: "
+            "sudo apt install -y python3-opencv python3-numpy && "
+            "python3 -m venv --system-site-packages .venv && "
+            "python -m pip install -r requirements.txt"
         ) from exc
 
     source = int(args.source) if args.source.isdigit() else args.source
     capture = cv2.VideoCapture(source)
     if not capture.isOpened():
         raise RuntimeError(f"Video source could not be opened: {args.source}")
+
+    if args.width:
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+    if args.height:
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+    if args.fps:
+        capture.set(cv2.CAP_PROP_FPS, args.fps)
 
     cv2.namedWindow("Settings", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Settings", 420, 260)
@@ -288,6 +308,8 @@ def main() -> int:
                 print("Frame read failed, calibration is stopping.")
                 break
 
+            if args.rotate_ccw_90:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
             if args.flip_horizontal:
                 frame = cv2.flip(frame, 1)
 
@@ -323,14 +345,14 @@ def main() -> int:
                 2,
             )
 
-            cv2.imshow("Camera", display_frame)
-            cv2.imshow("Manual Mask", mask)
-            cv2.imshow("Manual Filtered", filtered)
+            cv2.imshow("Camera", _scale_preview(display_frame, args.preview_scale, cv2))
+            cv2.imshow("Manual Mask", _scale_preview(mask, args.preview_scale, cv2))
+            cv2.imshow("Manual Filtered", _scale_preview(filtered, args.preview_scale, cv2))
             if auto_profile is not None:
                 auto_mask = _build_mask_from_profile(frame, auto_profile, cv2, np)
                 auto_filtered = cv2.bitwise_and(frame, frame, mask=auto_mask)
-                cv2.imshow("Auto Mask", auto_mask)
-                cv2.imshow("Auto Filtered", auto_filtered)
+                cv2.imshow("Auto Mask", _scale_preview(auto_mask, args.preview_scale, cv2))
+                cv2.imshow("Auto Filtered", _scale_preview(auto_filtered, args.preview_scale, cv2))
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("s"):
@@ -341,28 +363,34 @@ def main() -> int:
                     )
                 )
             if key in (ord("r"), ord("y"), ord("b"), ord("R"), ord("Y"), ord("B")):
-                color_key = chr(key).lower()
-                saved_profile = _save_manual_profile(
-                    boxes_path=boxes_path,
-                    color_key=color_key,
-                    manual_range=_manual_range(lower, upper),
-                    min_area=args.min_area,
-                    max_area=args.max_area,
-                    append=chr(key).isupper(),
-                )
-                action = "appended" if chr(key).isupper() else "saved"
-                print(f"{saved_profile['id']} {action} to {boxes_path}")
-                print(json.dumps(saved_profile, indent=2, ensure_ascii=False))
+                try:
+                    color_key = chr(key).lower()
+                    saved_profile = _save_manual_profile(
+                        boxes_path=boxes_path,
+                        color_key=color_key,
+                        manual_range=_manual_range(lower, upper),
+                        min_area=args.min_area,
+                        max_area=args.max_area,
+                        append=chr(key).isupper(),
+                    )
+                    action = "appended" if chr(key).isupper() else "saved"
+                    print(f"{saved_profile['id']} {action} to {boxes_path}")
+                    print(json.dumps(saved_profile, indent=2, ensure_ascii=False))
+                except Exception as exc:
+                    print(f"SAVE ERROR: {exc}")
             if key == ord("c"):
-                auto_profile = _build_profile_from_roi(roi, args, cv2, np)
-                first_range = auto_profile["ranges"][0]
-                cv2.setTrackbarPos("H_Min", "Settings", int(first_range["lower"][0]))
-                cv2.setTrackbarPos("S_Min", "Settings", int(first_range["lower"][1]))
-                cv2.setTrackbarPos("V_Min", "Settings", int(first_range["lower"][2]))
-                cv2.setTrackbarPos("H_Max", "Settings", int(first_range["upper"][0]))
-                cv2.setTrackbarPos("S_Max", "Settings", int(first_range["upper"][1]))
-                cv2.setTrackbarPos("V_Max", "Settings", int(first_range["upper"][2]))
-                print(json.dumps(auto_profile, indent=2, ensure_ascii=False))
+                try:
+                    auto_profile = _build_profile_from_roi(roi, args, cv2, np)
+                    first_range = auto_profile["ranges"][0]
+                    cv2.setTrackbarPos("H_Min", "Settings", int(first_range["lower"][0]))
+                    cv2.setTrackbarPos("S_Min", "Settings", int(first_range["lower"][1]))
+                    cv2.setTrackbarPos("V_Min", "Settings", int(first_range["lower"][2]))
+                    cv2.setTrackbarPos("H_Max", "Settings", int(first_range["upper"][0]))
+                    cv2.setTrackbarPos("S_Max", "Settings", int(first_range["upper"][1]))
+                    cv2.setTrackbarPos("V_Max", "Settings", int(first_range["upper"][2]))
+                    print(json.dumps(auto_profile, indent=2, ensure_ascii=False))
+                except Exception as exc:
+                    print(f"AUTO SAMPLE ERROR: {exc}")
             if key == ord("q"):
                 break
     finally:
@@ -370,6 +398,13 @@ def main() -> int:
         cv2.destroyAllWindows()
 
     return 0
+
+
+def _scale_preview(frame: Any, scale: float, cv2: Any) -> Any:
+    safe_scale = max(0.1, float(scale or 1.0))
+    if abs(safe_scale - 1.0) < 1e-6:
+        return frame
+    return cv2.resize(frame, None, fx=safe_scale, fy=safe_scale, interpolation=cv2.INTER_AREA)
 
 
 if __name__ == "__main__":

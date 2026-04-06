@@ -23,6 +23,7 @@ class CameraConfig:
     height: int | None = None
     fps: int | None = None
     flip_horizontal: bool = False
+    rotate_ccw_90: bool = False
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,8 @@ class UiConfig:
     show_windows: bool = True
     show_masks: bool = False
     show_pending_tracks: bool = False
+    preview_scale: float = 1.0
+    show_overlay: bool = True
 
 
 @dataclass(frozen=True)
@@ -217,6 +220,7 @@ def load_observer_config(path: str | Path) -> ObserverConfig:
             height=int(camera_data["height"]) if camera_data.get("height") is not None else None,
             fps=int(camera_data["fps"]) if camera_data.get("fps") is not None else None,
             flip_horizontal=bool(camera_data.get("flip_horizontal", False)),
+            rotate_ccw_90=bool(camera_data.get("rotate_ccw_90", False)),
         ),
         processing=ProcessingConfig(
             roi=roi,
@@ -256,5 +260,7 @@ def load_observer_config(path: str | Path) -> ObserverConfig:
             show_windows=bool(ui_data.get("show_windows", True)),
             show_masks=bool(ui_data.get("show_masks", False)),
             show_pending_tracks=bool(ui_data.get("show_pending_tracks", False)),
+            preview_scale=max(0.1, float(ui_data.get("preview_scale", 1.0))),
+            show_overlay=bool(ui_data.get("show_overlay", True)),
         ),
     )

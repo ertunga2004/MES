@@ -24,10 +24,10 @@ from .parsers import (
 
 
 def utc_now_text(now: datetime | None = None) -> str:
-    current = now or datetime.now(timezone.utc)
+    current = now or datetime.now().astimezone()
     if current.tzinfo is None:
-        current = current.replace(tzinfo=timezone.utc)
-    return current.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        current = current.astimezone()
+    return current.astimezone().isoformat(timespec="seconds")
 
 
 def parse_iso_text(value: str | None) -> datetime | None:
@@ -104,6 +104,7 @@ class DashboardStore:
                 "target_qty": 0,
                 "ideal_cycle_sec": 0.0,
                 "planned_stop_min": 0.0,
+                "quality_override_options": ["GOOD", "REWORK", "SCRAP"],
                 "shift_options": shift_options(),
                 "can_start": True,
                 "can_stop": False,
@@ -122,6 +123,8 @@ class DashboardStore:
             },
             "colors": self._empty_color_totals(),
             "trend": [],
+            "recent_items": [],
+            "quality_override_log": [],
             "fault": {
                 "active": False,
                 "reason": "Bilinmiyor",
@@ -202,6 +205,14 @@ class DashboardStore:
                     "diff": {"red": 0, "yellow": 0, "blue": 0},
                     "yellow_alarm": "normal",
                     "last_updated_at": None,
+                },
+                "runtime": {
+                    "health_state": "offline",
+                    "mismatch_count": 0,
+                    "early_accepted_count": 0,
+                    "early_rejected_count": 0,
+                    "last_reject_reason": "",
+                    "last_item": None,
                 },
             },
             "oee": self._default_oee_state(),
@@ -353,6 +364,7 @@ class DashboardStore:
                 "target_qty": target_qty,
                 "ideal_cycle_sec": ideal_cycle_sec,
                 "planned_stop_min": planned_stop_min,
+                "quality_override_options": ["GOOD", "REWORK", "SCRAP"],
                 "shift_options": shift_options(),
                 "can_start": not bool(oee["shift"]["active"]),
                 "can_stop": bool(oee["shift"]["active"]),
@@ -394,6 +406,44 @@ class DashboardStore:
                     }
                 )
             oee["trend"] = trend
+            items = payload.get("itemsById") if isinstance(payload.get("itemsById"), dict) else {}
+            recent_item_ids = payload.get("recentItemIds") if isinstance(payload.get("recentItemIds"), list) else []
+            recent_items: list[dict[str, Any]] = []
+            for item_key in recent_item_ids:
+                item = items.get(item_key)
+                if not isinstance(item, dict) or not item.get("completed_at"):
+                    continue
+                recent_items.append(
+                    {
+                        "item_id": str(item.get("item_id") or item_key),
+                        "measure_id": str(item.get("measure_id") or ""),
+                        "color": str(item.get("color") or ""),
+                        "sensor_color": str(item.get("sensor_color") or ""),
+                        "vision_color": str(item.get("vision_color") or ""),
+                        "final_color": str(item.get("final_color") or item.get("color") or ""),
+                        "classification": str(item.get("classification") or "GOOD"),
+                        "completed_at": item.get("completed_at"),
+                        "updated_at": item.get("updated_at"),
+                        "decision_source": str(item.get("decision_source") or ""),
+                        "finalization_reason": str(item.get("finalization_reason") or ""),
+                        "correlation_status": str(item.get("correlation_status") or ""),
+                        "pick_trigger_source": str(item.get("pick_trigger_source") or ""),
+                        "review_required": bool(item.get("review_required")),
+                    }
+                )
+            oee["recent_items"] = recent_items
+            oee["quality_override_log"] = copy.deepcopy((payload.get("qualityOverrideLog") or [])[:10])
+            vision_state = payload.get("vision") if isinstance(payload.get("vision"), dict) else {}
+            vision_metrics = vision_state.get("metrics") if isinstance(vision_state.get("metrics"), dict) else {}
+            last_item = recent_items[0] if recent_items else None
+            module["vision"]["runtime"] = {
+                "health_state": str(vision_state.get("healthState") or "offline"),
+                "mismatch_count": int(vision_metrics.get("mismatchCount") or 0),
+                "early_accepted_count": int(vision_metrics.get("earlyAcceptedCount") or 0),
+                "early_rejected_count": int(vision_metrics.get("earlyRejectedCount") or 0),
+                "last_reject_reason": str(vision_state.get("lastRejectReason") or ""),
+                "last_item": copy.deepcopy(last_item) if isinstance(last_item, dict) else None,
+            }
             active_fault = payload.get("activeFault")
             if isinstance(active_fault, dict):
                 oee["fault"].update(
@@ -645,6 +695,12 @@ class DashboardStore:
                     "event_type": parsed["event_type"],
                     "color": parsed["color"],
                     "track_id": parsed["track_id"],
+                    "item_id": parsed.get("item_id"),
+                    "measure_id": parsed.get("measure_id"),
+                    "confidence": parsed.get("confidence"),
+                    "confidence_tier": parsed.get("confidence_tier"),
+                    "correlation_status": parsed.get("correlation_status"),
+                    "late_vision_audit_flag": bool(parsed.get("late_vision_audit_flag")),
                     "notes": parsed["notes"],
                     "received_at": stamp,
                 }
@@ -728,6 +784,7 @@ class DashboardStore:
             vision_status = copy.deepcopy(module["vision"]["status"])
             vision_tracks = copy.deepcopy(module["vision"]["tracks"])
             vision_compare = copy.deepcopy(module["vision"]["compare"])
+            vision_runtime = copy.deepcopy(module["vision"]["runtime"])
 
             return {
                 "module_meta": {
@@ -780,6 +837,7 @@ class DashboardStore:
                     "status": vision_status,
                     "tracks": vision_tracks,
                     "compare": vision_compare,
+                    "runtime": vision_runtime,
                 },
                 "oee": copy.deepcopy(module["oee"]),
             }

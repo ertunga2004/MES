@@ -122,17 +122,55 @@ class MqttIngestClient:
             return
         if topic == topics["vision_status"]:
             self.store.apply_vision_status(module_id, payload, received_at=stamp)
+            if self.oee_state_manager is not None and self.oee_state_manager.apply_vision_status(payload, stamp):
+                self.store.refresh_oee_runtime_state(module_id, force=True)
             return
         if topic == topics["vision_tracks"]:
             self.store.apply_vision_tracks(module_id, payload, received_at=stamp)
+            if self.oee_state_manager is not None and self.oee_state_manager.apply_vision_tracks(payload, stamp):
+                self.store.refresh_oee_runtime_state(module_id, force=True)
             return
         if topic == topics["vision_heartbeat"]:
             self.store.apply_vision_heartbeat(module_id, payload, received_at=stamp)
+            if self.oee_state_manager is not None and self.oee_state_manager.apply_vision_heartbeat(payload, stamp):
+                self.store.refresh_oee_runtime_state(module_id, force=True)
             return
         if topic == topics["vision_events"]:
-            self.store.apply_vision_event(module_id, payload, received_at=stamp)
+            vision_result = (
+                self.oee_state_manager.apply_vision_event(payload, stamp)
+                if self.oee_state_manager is not None
+                else {"changed": False, "publish_command": None, "item_id": "", "payload": payload}
+            )
+            vision_payload = vision_result.get("payload") if isinstance(vision_result, dict) else payload
+            self.store.apply_vision_event(module_id, vision_payload, received_at=stamp)
             if self.excel_sink is not None and self.config.vision_ingest_enabled:
-                self.excel_sink.record_vision_event(payload, stamp)
+                self.excel_sink.record_vision_event(vision_payload, stamp)
+            if isinstance(vision_result, dict) and vision_result.get("changed"):
+                self.store.refresh_oee_runtime_state(module_id, force=True)
+            command = str((vision_result or {}).get("publish_command") or "").strip() if isinstance(vision_result, dict) else ""
+            item_id = str((vision_result or {}).get("item_id") or "").strip() if isinstance(vision_result, dict) else ""
+            if command:
+                try:
+                    self.publish_command(command)
+                except RuntimeError as exc:
+                    self.store.append_system_log(
+                        module_id,
+                        f"SYSTEM|VISION|EARLY_PICK_REQUEST_FAILED|ITEM_ID={item_id}|ERROR={str(exc)}",
+                        topic="local/vision",
+                        received_at=stamp,
+                    )
+                else:
+                    self.store.append_system_log(
+                        module_id,
+                        f"SYSTEM|VISION|EARLY_PICK_REQUEST_SENT|ITEM_ID={item_id}|COMMAND={command}",
+                        topic="local/vision",
+                        received_at=stamp,
+                    )
+                    if self.oee_state_manager is not None and item_id:
+                        self.oee_state_manager.apply_early_pick_request(item_id, stamp)
+                        self.store.refresh_oee_runtime_state(module_id, force=True)
+                    if self.excel_sink is not None and item_id:
+                        self.excel_sink.record_early_pick_request(item_id, stamp)
 
     def publish_command(self, payload: str) -> None:
         if self.client is None or self._mqtt is None:

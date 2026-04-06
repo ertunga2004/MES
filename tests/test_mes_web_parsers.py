@@ -65,6 +65,16 @@ class ParserTests(unittest.TestCase):
                 "track_id": 17,
                 "profile_id": "blue_box",
                 "frame_index": 33,
+                "confidence": 0.91,
+                "item_id": "42",
+                "measure_id": "8",
+                "correlation_status": "MATCHED",
+                "late_vision_audit_flag": False,
+                "decision_applied": True,
+                "review_required": False,
+                "observed_at": "2026-04-02T10:15:27Z",
+                "published_at": "2026-04-02T10:15:27.050Z",
+                "received_at": "2026-04-02T10:15:27.090Z",
             }
         )
         self.assertIsNotNone(parsed)
@@ -72,7 +82,27 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed["event_type"], "line_crossed")
         self.assertEqual(parsed["color"], "blue")
         self.assertEqual(parsed["compare_color"], "blue")
+        self.assertEqual(parsed["item_id"], "42")
+        self.assertEqual(parsed["measure_id"], "8")
+        self.assertEqual(parsed["confidence"], 0.91)
+        self.assertEqual(parsed["correlation_status"], "matched")
+        self.assertTrue(parsed["decision_applied"])
+        self.assertEqual(parsed["vision_observed_at"], "2026-04-02T10:15:27Z")
+        self.assertEqual(parsed["vision_published_at"], "2026-04-02T10:15:27.050Z")
+        self.assertEqual(parsed["vision_received_at"], "2026-04-02T10:15:27.090Z")
         self.assertIn("profile=blue_box", parsed["notes"])
+
+    def test_parse_mega_early_pick_reject_event(self) -> None:
+        parsed = parse_mega_event_from_log(
+            "MEGA|AUTO|STATE=SEARCHING|EVENT=PICK_EARLY_REJECT|ITEM_ID=42|MEASURE_ID=8|TRIGGER=EARLY|REASON=HEAD_CHANGED"
+        )
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["event_type"], "pick_command_rejected")
+        self.assertEqual(parsed["item_id"], "42")
+        self.assertEqual(parsed["measure_id"], "8")
+        self.assertEqual(parsed["trigger_source"], "early")
+        self.assertEqual(parsed["reject_reason"], "head_changed")
 
     def test_parse_tablet_oee_line(self) -> None:
         parsed = parse_tablet_oee_line(

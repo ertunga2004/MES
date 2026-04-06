@@ -95,6 +95,12 @@ def parse_bool_flag(value: str | None) -> bool:
     return str(value or "").strip() == "1"
 
 
+def parse_boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def parse_int(value: str | None) -> int | None:
     text = str(value or "").strip()
     if not text:
@@ -175,6 +181,8 @@ def parse_mega_event_from_log(line: str) -> dict[str, Any] | None:
         "travel_ms": parse_int(fields.get("TRAVEL_MS")),
         "queue_depth": parse_int(fields.get("PENDING") or fields.get("QUEUE")),
         "mega_state": normalize_token(fields.get("STATE")),
+        "trigger_source": normalize_token(fields.get("TRIGGER")),
+        "reject_reason": normalize_token(fields.get("REASON")),
         "raw": fields,
         "event_type": "",
         "compare_color": None,
@@ -189,8 +197,20 @@ def parse_mega_event_from_log(line: str) -> dict[str, Any] | None:
     if module_name == "AUTO" and fields.get("EVENT") == "ARM_POSITION_REACHED":
         base["event_type"] = "arm_position_reached"
         return base
+    if module_name == "AUTO" and fields.get("EVENT") == "PICK_EARLY_REJECT":
+        base["event_type"] = "pick_command_rejected"
+        return base
     if module_name == "AUTO" and fields.get("EVENT") == "PICKPLACE_DONE":
         base["event_type"] = "pickplace_done"
+        return base
+    if module_name == "ROBOT" and fields.get("EVENT") == "RELEASED":
+        base["event_type"] = "pick_released"
+        return base
+    if module_name == "ROBOT" and fields.get("EVENT") == "RETURN_STARTED":
+        base["event_type"] = "pick_return_started"
+        return base
+    if module_name == "ROBOT" and fields.get("EVENT") == "RETURN_REACHED":
+        base["event_type"] = "pick_return_reached"
         return base
     if module_name == "TCS3200" and fields.get("STATE") == "MEASURING" and fields.get("FINAL"):
         base["event_type"] = "measurement_decision"
@@ -243,11 +263,23 @@ def parse_vision_event(payload: Any) -> dict[str, Any] | None:
     color = normalize_color(str(data.get("color_name") or data.get("label") or data.get("profile_id") or ""))
     event_type = normalize_token(str(data.get("event") or "vision_event"))
     compare_color = color if event_type == "line_crossed" and color in {"red", "yellow", "blue"} else None
+    confidence = parse_float(str(data.get("confidence") if data.get("confidence") is not None else "")) or 0.0
     return {
         "source": "vision",
         "event_type": event_type,
         "color": color,
         "track_id": str(data.get("track_id") or "").strip() or None,
+        "item_id": normalize_identifier(data.get("item_id")),
+        "measure_id": normalize_identifier(data.get("measure_id")),
+        "confidence": confidence,
+        "confidence_tier": normalize_token(str(data.get("confidence_tier") or "")) if data.get("confidence_tier") not in (None, "") else None,
+        "correlation_status": normalize_token(str(data.get("correlation_status") or "")) if data.get("correlation_status") not in (None, "") else None,
+        "late_vision_audit_flag": parse_boolish(data.get("late_vision_audit_flag")),
+        "decision_applied": parse_boolish(data.get("decision_applied")),
+        "review_required": parse_boolish(data.get("review_required")),
+        "vision_observed_at": str(data.get("observed_at") or data.get("timestamp") or "").strip() or None,
+        "vision_published_at": str(data.get("published_at") or data.get("timestamp") or "").strip() or None,
+        "vision_received_at": str(data.get("received_at") or "").strip() or None,
         "notes": ";".join(notes),
         "compare_color": compare_color,
         "raw": data,

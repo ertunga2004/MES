@@ -77,7 +77,16 @@ class RuntimeService:
         self.store = store
         self.hub = hub
         self.excel_sink = ExcelRuntimeSink(config)
-        self.oee_manager = OeeRuntimeStateManager(config.oee_runtime_state_path)
+        self.oee_manager = OeeRuntimeStateManager(
+            config.oee_runtime_state_path,
+            heartbeat_timeout_sec=config.heartbeat_timeout_sec,
+            vision_decision_deadline_ms=config.vision_decision_deadline_ms,
+            min_remaining_travel_ms_for_early_pick=config.min_remaining_travel_ms_for_early_pick,
+            vision_degraded_fps=config.vision_degraded_fps,
+            vision_degraded_latency_ratio=config.vision_degraded_latency_ratio,
+            vision_bad_window_threshold=config.vision_bad_window_threshold,
+            vision_recovery_window_threshold=config.vision_recovery_window_threshold,
+        )
         self.mqtt_client = MqttIngestClient(
             config,
             store,

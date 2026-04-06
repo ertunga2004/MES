@@ -24,6 +24,24 @@ Bu dosya, repo genelindeki tum acik isleri tek yerde toplar. Her madde, en cok h
 
 ## P1 - Sonraki Faz
 
+- [ ] [raspberry] Kamera konumunu saha yerlesimine gore sabitle.
+  Hedef: pick zone goruntusu fiziksel olarak netlessin; kalibrasyon ve line crossing ayarlari degismeyen kamera acisi uzerinden yapilsin.
+
+- [ ] [raspberry] ROI alanini saha yerlesimine gore daralt.
+  Hedef: yalnizca robotun alma bolgesi ve kisa yaklasim alani gorulsun; Pi 3 performansi korunurken false positive azaltılsin.
+
+- [ ] [raspberry] `line_counter.x` alma cizgisine gore ayarla.
+  Hedef: kutu pick zone cizgisini gectiginde tek ve dogru zamanda `line_crossed` olayi uretilebilsin.
+
+- [ ] [raspberry] Tekli gecis crossing testlerini tamamla.
+  Hedef: kirmizi, sari ve mavi kutular icin crossing olayinin bir kez, dogru renkle ve dogru zamanda uretildigi dogrulansin.
+
+- [ ] [mes_web] Raspberry vision -> `mes_web` entegrasyon testini saha akisi ile dogrula.
+  Hedef: vision health, son item, mismatch ve final_color akislarinin dashboard ve runtime state tarafinda dogru aktigi gorulsun.
+
+- [ ] [mes_web] Vision tabanli early pick akisini saha uzerinde test et.
+  Hedef: deadline, health state, reject reason ve timer fallback kurallari fiziksel hat uzerinde kontrollu olarak dogrulansin.
+
 - [ ] [tests] OEE ekrani icin saha parity testi tamamla.
   Hedef: fault, hedef gap, vardiya ozetleri ve KPI'lar saha akisiyla birebir dogrulansin.
 

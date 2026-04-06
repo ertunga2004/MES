@@ -16,7 +16,10 @@ class ColorBoxDetector:
             import numpy as np
         except ImportError as exc:
             raise RuntimeError(
-                "opencv-python and numpy are required. Run: pip install -r requirements.txt"
+                "OpenCV and numpy are required. On Raspberry Pi use: "
+                "sudo apt install -y python3-opencv python3-numpy && "
+                "python3 -m venv --system-site-packages .venv && "
+                "python -m pip install -r requirements.txt"
             ) from exc
 
         self.cv2 = cv2
@@ -25,6 +28,14 @@ class ColorBoxDetector:
         self.processing = processing
         kernel_size = max(1, processing.morph_kernel)
         self.kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+
+    def _find_contours(self, mask: "np.ndarray") -> list[object]:
+        result = self.cv2.findContours(mask, self.cv2.RETR_EXTERNAL, self.cv2.CHAIN_APPROX_SIMPLE)
+        if len(result) == 2:
+            contours, _ = result
+        else:
+            _, contours, _ = result
+        return list(contours)
 
     def detect(self, frame: "np.ndarray") -> tuple[list[Detection], dict[str, "np.ndarray"]]:
         cv2 = self.cv2
@@ -60,7 +71,7 @@ class ColorBoxDetector:
                 )
 
             masks[profile.profile_id] = mask
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours = self._find_contours(mask)
 
             for contour in contours:
                 area = float(cv2.contourArea(contour))

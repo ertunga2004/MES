@@ -1,51 +1,51 @@
 {
-  "device_name": "observer-dev",
+  "device_name": "observer-pi",
   "camera": {
-    "source": 0,
+    "source": "picamera2",
     "width": 640,
     "height": 480,
     "fps": 15,
     "flip_horizontal": true,
-    "rotate_ccw_90": true
+    "rotate_ccw_90": false
   },
   "processing": {
     "roi": {
-      "x": 4,
-      "y": 177,
-      "width": 397,
-      "height": 290
+      "x": 60,
+      "y": 90,
+      "width": 520,
+      "height": 250
     },
     "blur_kernel": 5,
     "morph_kernel": 5,
     "open_iterations": 1,
     "close_iterations": 2,
-    "min_contour_area": 1400,
-    "normalize_lighting": false,
-    "clahe_clip_limit": 0.0,
+    "min_contour_area": 900,
+    "normalize_lighting": true,
+    "clahe_clip_limit": 2.2,
     "clahe_tile_grid_size": 8,
-    "min_saturation": 30,
-    "min_value": 35
+    "min_saturation": 45,
+    "min_value": 45
   },
   "tracker": {
-    "max_distance": 150,
-    "max_missed_frames": 18,
+    "max_distance": 95,
+    "max_missed_frames": 12,
     "min_confirmed_frames": 2,
     "max_unconfirmed_missed_frames": 2,
     "expected_direction": "left_to_right",
-    "direction_slack": 25,
-    "min_area_ratio": 0.45,
-    "max_area_ratio": 2.2
+    "direction_slack": 20,
+    "min_area_ratio": 0.5,
+    "max_area_ratio": 2.0
   },
   "line_counter": {
     "enabled": true,
-    "x": 204,
+    "x": 320,
     "direction": "left_to_right"
   },
   "mqtt": {
     "enabled": true,
     "host": "broker.emqx.io",
     "port": 1883,
-    "client_id": "mes-observer-dev",
+    "client_id": "mes-observer-pi",
     "topic_root": "sau/iot/mega/konveyor/vision",
     "keepalive": 60,
     "heartbeat_interval_sec": 10,
@@ -53,10 +53,10 @@
     "qos": 0
   },
   "ui": {
-    "show_windows": true,
+    "show_windows": false,
     "show_masks": false,
-    "preview_scale": 0.75,
-    "show_overlay": true,
-    "show_pending_tracks": false
+    "show_pending_tracks": false,
+    "preview_scale": 0.7,
+    "show_overlay": true
   }
 }

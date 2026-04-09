@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 from mes_web.config import AppConfig
@@ -228,6 +229,27 @@ class DashboardStoreTests(unittest.TestCase):
             self.assertEqual(runtime["last_item"]["vision_color"], "red")
             self.assertEqual(runtime["last_item"]["final_color"], "red")
             self.assertEqual(runtime["last_item"]["correlation_status"], "MATCHED")
+
+    def test_refresh_oee_runtime_state_retries_after_transient_permission_error(self) -> None:
+        with open(self._state_path, "w", encoding="utf-8") as handle:
+            handle.write('{"lastEventSummary":"Retry edilen durum yuklendi."}')
+
+        original_read_text = Path.read_text
+        attempts = {"count": 0}
+
+        def flaky_read_text(path_obj: Path, *args: object, **kwargs: object) -> str:
+            if str(path_obj) == self._state_path and attempts["count"] == 0:
+                attempts["count"] += 1
+                raise PermissionError(5, "Access is denied", self._state_path)
+            return original_read_text(path_obj, *args, **kwargs)
+
+        with patch.object(Path, "read_text", autospec=True, side_effect=flaky_read_text):
+            refreshed = self.store.refresh_oee_runtime_state(self.module_id, force=True)
+
+        snapshot = self.store.get_dashboard_snapshot(self.module_id)
+        self.assertTrue(refreshed)
+        self.assertEqual(attempts["count"], 1)
+        self.assertEqual(snapshot["oee"]["last_event_summary"], "Retry edilen durum yuklendi.")
 
 
 if __name__ == "__main__":

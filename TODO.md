@@ -2,6 +2,17 @@
 
 Bu dosya, repo genelindeki tum acik isleri tek yerde toplar. Her madde, en cok hangi klasoru veya alani ilgilendiriyorsa onun etiketiyle baslar.
 
+## Yarin - 2026-04-10
+
+- [ ] [mes_web] `web_mes` ve veritabani katmanini is emri odakli JSON giris/cikis ile calisir hale getir.
+  Hedef: sistem ERP entegrasyonuna hazir olsun; is emri verisi normalize JSON kontratiyla alinip yine JSON cikisi uretebilsin.
+
+- [ ] [mega] Mega kodunu cihaza yukle.
+  Hedef: saha akisinda kullanilacak guncel firmware fiziksel karta basilsin.
+
+- [ ] [tests] Sistemi uctan uca calistirip tam saha testi yap.
+  Hedef: `mega + raspberry + mes_web + workbook/database` zinciri birlikte dogrulansin.
+
 ## P0 - Hemen Yapilacaklar
 
 - [ ] [mes_web] Manuel kalite override ekrani ekle.

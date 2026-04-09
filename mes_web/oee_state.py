@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import threading
+import time
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -625,6 +630,82 @@ def _system_log_line(kind: str, state: dict[str, Any], *, now: datetime) -> str:
     )
 
 
+_RUNTIME_STATE_RETRY_ATTEMPTS = 6
+_RUNTIME_STATE_RETRY_BASE_DELAY_SEC = 0.02
+_RUNTIME_STATE_LOCKS: dict[str, threading.RLock] = {}
+_RUNTIME_STATE_LOCKS_GUARD = threading.Lock()
+
+
+def _runtime_state_lock_key(path: Path) -> str:
+    try:
+        return str(path.resolve()).lower()
+    except OSError:
+        return str(path.absolute()).lower()
+
+
+def _runtime_state_file_lock(path: Path) -> threading.RLock:
+    key = _runtime_state_lock_key(path)
+    with _RUNTIME_STATE_LOCKS_GUARD:
+        lock = _RUNTIME_STATE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _RUNTIME_STATE_LOCKS[key] = lock
+        return lock
+
+
+def _runtime_state_retry_delay(attempt: int) -> float:
+    return _RUNTIME_STATE_RETRY_BASE_DELAY_SEC * (attempt + 1)
+
+
+def read_runtime_state_file(path: Path) -> dict[str, Any] | None:
+    with _runtime_state_file_lock(path):
+        for attempt in range(_RUNTIME_STATE_RETRY_ATTEMPTS):
+            if not path.exists():
+                return None
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return None
+            except (PermissionError, json.JSONDecodeError):
+                if attempt == _RUNTIME_STATE_RETRY_ATTEMPTS - 1:
+                    return None
+                time.sleep(_runtime_state_retry_delay(attempt))
+                continue
+            except OSError:
+                return None
+            return ensure_runtime_state_shape(payload)
+    return None
+
+
+def write_runtime_state_file(path: Path, state: dict[str, Any]) -> None:
+    normalized = ensure_runtime_state_shape(state)
+    payload = json.dumps(normalized, ensure_ascii=False, indent=2)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _runtime_state_file_lock(path):
+        for attempt in range(_RUNTIME_STATE_RETRY_ATTEMPTS):
+            temp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            try:
+                temp_path.write_text(payload, encoding="utf-8")
+                temp_path.replace(path)
+                return
+            except PermissionError:
+                if attempt == _RUNTIME_STATE_RETRY_ATTEMPTS - 1:
+                    raise
+                time.sleep(_runtime_state_retry_delay(attempt))
+            finally:
+                with contextlib.suppress(OSError):
+                    temp_path.unlink()
+
+
+def _state_locked(method: Any) -> Any:
+    @wraps(method)
+    def wrapper(self: "OeeRuntimeStateManager", *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class OeeRuntimeStateManager:
     def __init__(
         self,
@@ -639,6 +720,7 @@ class OeeRuntimeStateManager:
         vision_recovery_window_threshold: int = 3,
     ) -> None:
         self.path = path
+        self._lock = _runtime_state_file_lock(path)
         self.heartbeat_timeout_sec = heartbeat_timeout_sec
         self.vision_decision_deadline_ms = vision_decision_deadline_ms
         self.min_remaining_travel_ms_for_early_pick = min_remaining_travel_ms_for_early_pick
@@ -648,21 +730,15 @@ class OeeRuntimeStateManager:
         self.vision_recovery_window_threshold = vision_recovery_window_threshold
 
     def read_state(self) -> dict[str, Any]:
-        if not self.path.exists():
+        payload = read_runtime_state_file(self.path)
+        if payload is None:
             return default_runtime_state()
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return default_runtime_state()
-        return ensure_runtime_state_shape(payload)
+        return payload
 
     def write_state(self, state: dict[str, Any]) -> None:
-        normalized = ensure_runtime_state_shape(state)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
-        temp_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp_path.replace(self.path)
+        write_runtime_state_file(self.path, state)
 
+    @_state_locked
     def deactivate_active_shift_on_startup(self, *, now: datetime | None = None) -> bool:
         state = self.read_state()
         if not state["shift"]["active"]:
@@ -676,6 +752,7 @@ class OeeRuntimeStateManager:
         self.write_state(state)
         return True
 
+    @_state_locked
     def apply_control(self, action: str, value: Any = None, *, now: datetime | None = None) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
         state = self.read_state()
@@ -801,6 +878,7 @@ class OeeRuntimeStateManager:
             "system_line": system_line,
         }
 
+    @_state_locked
     def apply_mega_log(self, line: str, received_at: str) -> bool:
         parsed = parse_mega_event_from_log(line)
         if parsed is None:
@@ -935,6 +1013,13 @@ class OeeRuntimeStateManager:
             items[resolved_key]["return_reached_at"] = received_at
             changed = True
 
+        elif parsed["event_type"] == "pickplace_return_done":
+            resolved_key = item_key or head_key
+            if not resolved_key or resolved_key not in items:
+                return False
+            items[resolved_key]["return_done_at"] = received_at
+            changed = True
+
         elif parsed["event_type"] == "pickplace_done":
             resolved_key = item_key or head_key
             if not resolved_key:
@@ -988,6 +1073,7 @@ class OeeRuntimeStateManager:
             self.write_state(state)
         return changed
 
+    @_state_locked
     def apply_quality_override(self, item_id: str, classification: Any, *, now: datetime | None = None) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
         state = self.read_state()
@@ -1039,6 +1125,7 @@ class OeeRuntimeStateManager:
             "override": override_row,
         }
 
+    @_state_locked
     def apply_early_pick_request(self, item_id: str, sent_at: str) -> bool:
         state = self.read_state()
         items = state["itemsById"] if isinstance(state.get("itemsById"), dict) else {}
@@ -1054,6 +1141,7 @@ class OeeRuntimeStateManager:
         self.write_state(state)
         return True
 
+    @_state_locked
     def apply_vision_status(self, payload: Any, received_at: str) -> bool:
         parsed = parse_vision_status(payload)
         if parsed is None:
@@ -1075,6 +1163,7 @@ class OeeRuntimeStateManager:
         self.write_state(state)
         return True
 
+    @_state_locked
     def apply_vision_tracks(self, payload: Any, received_at: str) -> bool:
         parsed = parse_vision_tracks(payload)
         if parsed is None:
@@ -1088,6 +1177,7 @@ class OeeRuntimeStateManager:
         self.write_state(state)
         return True
 
+    @_state_locked
     def apply_vision_heartbeat(self, payload: Any, received_at: str) -> bool:
         parsed = parse_vision_heartbeat(payload)
         if parsed is None:
@@ -1108,6 +1198,7 @@ class OeeRuntimeStateManager:
         self.write_state(state)
         return True
 
+    @_state_locked
     def apply_vision_event(self, payload: Any, received_at: str) -> dict[str, Any]:
         parsed = parse_vision_event(payload)
         if parsed is None:
@@ -1261,6 +1352,7 @@ class OeeRuntimeStateManager:
             "payload": enriched,
         }
 
+    @_state_locked
     def apply_tablet_fault_log(self, line: str, received_at: str) -> bool:
         parsed = parse_tablet_fault_line(line)
         if parsed is None:
@@ -1294,6 +1386,7 @@ class OeeRuntimeStateManager:
             return True
         return False
 
+    @_state_locked
     def tick(self, *, now: datetime | None = None) -> bool:
         state = self.read_state()
         stamp = now or datetime.now().astimezone()

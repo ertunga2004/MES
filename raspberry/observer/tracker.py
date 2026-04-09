@@ -20,6 +20,7 @@ class TrackState:
     confidence: float
     overlay_bgr: tuple[int, int, int]
     metadata: dict[str, object]
+    previous_bbox: tuple[int, int, int, int] | None = None
     previous_centroid: tuple[int, int] | None = None
     velocity: tuple[float, float] = (0.0, 0.0)
     age: int = 1
@@ -32,6 +33,7 @@ class TrackState:
     def update(self, detection: Detection) -> None:
         delta_x = detection.centroid[0] - self.centroid[0]
         delta_y = detection.centroid[1] - self.centroid[1]
+        self.previous_bbox = self.bbox
         self.previous_centroid = self.centroid
         self.bbox = detection.bbox
         self.centroid = detection.centroid
@@ -143,12 +145,13 @@ class CentroidTracker:
                 self.line_counter.enabled
                 and track.confirmed
                 and not track.counted
-                and track.previous_centroid is not None
+                and track.previous_bbox is not None
             ):
-                if self._has_crossed_line(track.previous_centroid, track.centroid):
+                if self._has_crossed_line(track.previous_bbox, track.bbox):
                     track.counted = True
                     self.total_crossings += 1
                     confidence, confidence_components = self._crossing_confidence(track)
+                    leading_edge_x = self._leading_edge_x(track.bbox, self.line_counter.direction)
                     events.append(
                         {
                             "event": "line_crossed",
@@ -165,6 +168,7 @@ class CentroidTracker:
                                 "w": track.bbox[2],
                                 "h": track.bbox[3],
                             },
+                            "leading_edge_x": leading_edge_x,
                             "line_x": self.line_counter.x,
                             "direction": self.line_counter.direction,
                             "total_crossings": self.total_crossings,
@@ -295,9 +299,9 @@ class CentroidTracker:
         contour_confidence = max(0.0, min(1.0, float(track.confidence)))
         track_continuity = max(0.0, min(1.0, track.hits / max(3.0, float(self.config.min_confirmed_frames + 2))))
         crossing_consistency = 1.0
-        if track.previous_centroid is not None:
-            previous_x = track.previous_centroid[0]
-            current_x = track.centroid[0]
+        if track.previous_bbox is not None:
+            previous_x = self._leading_edge_x(track.previous_bbox, self.line_counter.direction)
+            current_x = self._leading_edge_x(track.bbox, self.line_counter.direction)
             delta_x = abs(current_x - previous_x)
             crossing_consistency = max(0.0, min(1.0, delta_x / max(1.0, self.config.direction_slack * 2.0)))
 
@@ -313,17 +317,32 @@ class CentroidTracker:
 
     def _has_crossed_line(
         self,
-        previous_centroid: tuple[int, int],
-        current_centroid: tuple[int, int],
+        previous_bbox: tuple[int, int, int, int],
+        current_bbox: tuple[int, int, int, int],
     ) -> bool:
         line_x = self.line_counter.x
         direction = self.line_counter.direction
+        previous_left = previous_bbox[0]
+        previous_right = previous_bbox[0] + previous_bbox[2]
+        current_left = current_bbox[0]
+        current_right = current_bbox[0] + current_bbox[2]
 
         if direction == "left_to_right":
-            return previous_centroid[0] < line_x <= current_centroid[0]
+            return previous_right < line_x <= current_right
         if direction == "right_to_left":
-            return previous_centroid[0] > line_x >= current_centroid[0]
+            return previous_left > line_x >= current_left
         return (
-            previous_centroid[0] != current_centroid[0]
-            and (previous_centroid[0] - line_x) * (current_centroid[0] - line_x) <= 0
+            previous_right < line_x <= current_right
+            or previous_left > line_x >= current_left
         )
+
+    def _leading_edge_x(
+        self,
+        bbox: tuple[int, int, int, int],
+        direction: str,
+    ) -> int:
+        left = bbox[0]
+        right = bbox[0] + bbox[2]
+        if direction == "right_to_left":
+            return left
+        return right

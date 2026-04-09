@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Observer Headless
+Comment=Start MES observer without GUI
+Exec=/home/pi/Documents/vision/scripts/launch_observer_headless_desktop.sh
+Path=/home/pi/Documents/vision
+Terminal=false
+StartupNotify=false
+Categories=Utility;

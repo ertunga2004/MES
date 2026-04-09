@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Observer GUI
+Comment=Start MES observer with GUI
+Exec=/home/pi/Documents/vision/scripts/launch_observer_gui_desktop.sh
+Path=/home/pi/Documents/vision
+Terminal=false
+StartupNotify=false
+Categories=Utility;

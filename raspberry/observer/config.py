@@ -34,6 +34,11 @@ class ProcessingConfig:
     open_iterations: int = 1
     close_iterations: int = 2
     min_contour_area: int = 1000
+    normalize_lighting: bool = False
+    clahe_clip_limit: float = 0.0
+    clahe_tile_grid_size: int = 8
+    min_saturation: int = 0
+    min_value: int = 0
 
 
 @dataclass(frozen=True)
@@ -93,6 +98,13 @@ def _load_json(path: Path) -> dict[str, Any]:
         return json.load(handle)
 
 
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+
+
 def _as_triplet(values: Any, field_name: str) -> tuple[int, int, int]:
     if not isinstance(values, list) or len(values) != 3:
         raise ValueError(f"{field_name} must be a list of 3 integers.")
@@ -124,6 +136,14 @@ def _normalize_kernel(value: Any, default: int) -> int:
     return kernel
 
 
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value if value is not None else default)
+    except Exception:
+        return default
+    return max(1, parsed)
+
+
 def _parse_source(raw_source: Any, base_dir: Path) -> int | str:
     if isinstance(raw_source, int):
         return raw_source
@@ -131,6 +151,8 @@ def _parse_source(raw_source: Any, base_dir: Path) -> int | str:
     source = str(raw_source).strip()
     if source.isdigit():
         return int(source)
+    if source.lower() in {"picamera2", "picam", "rpi-camera", "libcamera"}:
+        return source
     if "://" in source:
         return source
 
@@ -229,6 +251,11 @@ def load_observer_config(path: str | Path) -> ObserverConfig:
             open_iterations=int(processing_data.get("open_iterations", 1)),
             close_iterations=int(processing_data.get("close_iterations", 2)),
             min_contour_area=int(processing_data.get("min_contour_area", 1000)),
+            normalize_lighting=bool(processing_data.get("normalize_lighting", False)),
+            clahe_clip_limit=max(0.0, float(processing_data.get("clahe_clip_limit", 0.0))),
+            clahe_tile_grid_size=_positive_int(processing_data.get("clahe_tile_grid_size", 8), 8),
+            min_saturation=max(0, int(processing_data.get("min_saturation", 0))),
+            min_value=max(0, int(processing_data.get("min_value", 0))),
         ),
         tracker=TrackerConfig(
             max_distance=int(tracker_data.get("max_distance", 90)),
@@ -263,4 +290,110 @@ def load_observer_config(path: str | Path) -> ObserverConfig:
             preview_scale=max(0.1, float(ui_data.get("preview_scale", 1.0))),
             show_overlay=bool(ui_data.get("show_overlay", True)),
         ),
+    )
+
+
+def save_observer_config(path: str | Path, config: ObserverConfig) -> None:
+    config_path = Path(path).resolve()
+    existing = _load_json(config_path) if config_path.exists() else {}
+
+    camera_data = dict(existing.get("camera", {}))
+    processing_data = dict(existing.get("processing", {}))
+    tracker_data = dict(existing.get("tracker", {}))
+    line_data = dict(existing.get("line_counter", {}))
+    mqtt_data = dict(existing.get("mqtt", {}))
+    ui_data = dict(existing.get("ui", {}))
+
+    camera_data.update(
+        {
+            "source": config.camera.source,
+            "width": config.camera.width,
+            "height": config.camera.height,
+            "fps": config.camera.fps,
+            "flip_horizontal": config.camera.flip_horizontal,
+            "rotate_ccw_90": config.camera.rotate_ccw_90,
+        }
+    )
+
+    processing_data.update(
+        {
+            "blur_kernel": config.processing.blur_kernel,
+            "morph_kernel": config.processing.morph_kernel,
+            "open_iterations": config.processing.open_iterations,
+            "close_iterations": config.processing.close_iterations,
+            "min_contour_area": config.processing.min_contour_area,
+            "normalize_lighting": config.processing.normalize_lighting,
+            "clahe_clip_limit": config.processing.clahe_clip_limit,
+            "clahe_tile_grid_size": config.processing.clahe_tile_grid_size,
+            "min_saturation": config.processing.min_saturation,
+            "min_value": config.processing.min_value,
+        }
+    )
+    if config.processing.roi is None:
+        processing_data.pop("roi", None)
+    else:
+        processing_data["roi"] = {
+            "x": config.processing.roi.x,
+            "y": config.processing.roi.y,
+            "width": config.processing.roi.width,
+            "height": config.processing.roi.height,
+        }
+
+    tracker_data.update(
+        {
+            "max_distance": config.tracker.max_distance,
+            "max_missed_frames": config.tracker.max_missed_frames,
+            "min_confirmed_frames": config.tracker.min_confirmed_frames,
+            "max_unconfirmed_missed_frames": config.tracker.max_unconfirmed_missed_frames,
+            "expected_direction": config.tracker.expected_direction,
+            "direction_slack": config.tracker.direction_slack,
+            "min_area_ratio": config.tracker.min_area_ratio,
+            "max_area_ratio": config.tracker.max_area_ratio,
+        }
+    )
+
+    line_data.update(
+        {
+            "enabled": config.line_counter.enabled,
+            "x": config.line_counter.x,
+            "direction": config.line_counter.direction,
+        }
+    )
+
+    mqtt_data.update(
+        {
+            "enabled": config.mqtt.enabled,
+            "host": config.mqtt.host,
+            "port": config.mqtt.port,
+            "client_id": config.mqtt.client_id,
+            "topic_root": config.mqtt.topic_root,
+            "keepalive": config.mqtt.keepalive,
+            "heartbeat_interval_sec": config.mqtt.heartbeat_interval_sec,
+            "publish_interval_sec": config.mqtt.publish_interval_sec,
+            "qos": config.mqtt.qos,
+        }
+    )
+
+    ui_data.update(
+        {
+            "show_windows": config.ui.show_windows,
+            "show_masks": config.ui.show_masks,
+            "show_pending_tracks": config.ui.show_pending_tracks,
+            "preview_scale": config.ui.preview_scale,
+            "show_overlay": config.ui.show_overlay,
+        }
+    )
+
+    _write_json(
+        config_path,
+        {
+            **existing,
+            "device_name": config.device_name,
+            "camera": camera_data,
+            "processing": processing_data,
+            "tracker": tracker_data,
+            "line_counter": line_data,
+            "mqtt": mqtt_data,
+            "ui": ui_data,
+        },
     )

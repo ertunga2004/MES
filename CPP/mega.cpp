@@ -39,6 +39,12 @@ extern bool pickStarted;
 extern String activePickTriggerSource;
 extern unsigned long activePickItemId;
 extern unsigned long activePickMeasureId;
+extern String activePickColor;
+extern String activePickDecisionSource;
+extern bool activePickReviewRequired;
+extern bool activePickCompletedLogged;
+void logActivePickCompleted(const char* stateLabel);
+void logActivePickReturnDone(const char* stateLabel, bool useQueueLabel, uint8_t queueDepth);
 long dist3(int r1,int g1,int b1,int r2,int g2,int b2);
 const char* calibrationWorkflowExpectedLabel();
 const char* calibrationWorkflowNextLabel(uint8_t step);
@@ -198,8 +204,8 @@ void moveServoBlocking(uint8_t axis, int angle, unsigned long timeoutMs = 2500){
    (3C) ROBOT KOL SEKANSLARI
    ========================= */
 void goPickPose(){
-  // Alma konumu: s1:90,s3:20,s2:130,s4:100
-  moveServosBlocking(90, 125, 20, 100);
+  // Alma konumu: s1:90,s2:130,s3:20,s4:100
+  moveServosBlocking(90, 130, 20, 100);
 }
 
 void gripBox(){
@@ -210,16 +216,16 @@ void gripBox(){
 }
 
 void goLiftPose(){
-  // Kutuyu kaldırma: s2:150,s3:40,s1:160 (kutuyu havaya al / güvenli taşıma)
-  delayWithStep(1000);
-  moveServosBlocking(160, 150, 40, 155);
+  // Kutuyu kaldırma: s2:140,s3:30,s1:160 (kutuyu havaya al / güvenli taşıma)
+  delayWithStep(500);
+  moveServosBlocking(160, 140, 30, 155);
   delayWithStep(120);
 }
 
 void goTravelPose(){
   // Taşıma pozu: kafa YUKARIDA kalsın ki dönüşte kutuya/konveyöre çarpmasın
   // Not: s4 burada 170 (kapalı) kalsın, istersen 155 de olur.
-  moveServosBlocking(160, 150, 40, 170);
+  moveServosBlocking(160, 140, 30, 170);
   delayWithStep(120);
 }
 
@@ -301,7 +307,7 @@ unsigned long ppLimitCooldownUntil = 0;
 const long PP_ESCAPE_STEPS_22 = -90;   // 22 basiliysa kacis
 const long PP_ESCAPE_STEPS_23 = +90;   // 23 basiliysa kacis (ters yone kac)
 const unsigned long LIMIT_COOLDOWN_MS = 120;
-const unsigned long DROP_SETTLE_MS = 500;
+const unsigned long DROP_SETTLE_MS = 200;
 
 static inline bool ppElapsed(unsigned long ms){ return (millis() - ppT0) >= ms; }
 static inline void ppEnter(uint8_t s){ ppSt = (PickPlaceState)s; ppT0 = millis(); ppMoveStarted = false; }
@@ -371,7 +377,7 @@ void pickPlaceTick(){
     }
 
     case PP_PICK_POSE: {
-      setServos(90, 125, 20, 100);
+      setServos(90, 130, 20, 100);
       if(servosAtTarget()) ppEnter((uint8_t)PP_GRIP_160);
       return;
     }
@@ -389,16 +395,16 @@ void pickPlaceTick(){
 
     case PP_LIFT_WAIT: {
       // Once sadece sol servo yukari alinsin; kutuyu arkadaki parcaya surtmeden kaldirsin.
-      if(ppElapsed(1000)) ppEnter((uint8_t)PP_LIFT_S2);
+      if(ppElapsed(500)) ppEnter((uint8_t)PP_LIFT_S2);
       return;
     }
     case PP_LIFT_S2: {
-      setServos(90, 150, 20, 155);
+      setServos(90, 140, 20, 155);
       if(servoAtTarget(SERVO_S2)) ppEnter((uint8_t)PP_LIFT_SET);
       return;
     }
     case PP_LIFT_SET: {
-      setServos(160, 150, 40, 155);
+      setServos(160, 140, 30, 155);
       if(servosAtTarget()) ppEnter((uint8_t)PP_GO_23_START);
       return;
     }
@@ -463,6 +469,9 @@ void pickPlaceTick(){
             + "|MEASURE_ID=" + activePickMeasureId
             + "|TRIGGER=" + activePickTriggerSource
         );
+        if(pickStarted && !activePickCompletedLogged){
+          logActivePickCompleted("WAIT_ARM");
+        }
         ppEnter((uint8_t)PP_RELEASE_170);
       }
       return;
@@ -474,7 +483,7 @@ void pickPlaceTick(){
     }
 
     case PP_TRAVEL_POSE: {
-      setServos(160, 150, 40, 170);
+      setServos(160, 140, 30, 170);
       if(servosAtTarget()){
         logEvent(
           "ROBOT",
@@ -529,15 +538,15 @@ void pickPlaceTick(){
 
     case PP_RETURN_ALIGN: {
       // Donuste sirayi ters cevir: once s1/s3 yaklas, sonra s2 asagi insin.
-      setServos(90, 150, 20, 170);
+      setServos(90, 140, 20, 170);
       if(servosAtTarget()) ppEnter((uint8_t)PP_FINAL_PICKPOSE);
       return;
     }
 
     case PP_FINAL_PICKPOSE: {
-      setServos(90, 125, 20, 100);
+      setServos(90, 130, 20, 100);
       if(servosAtTarget()){
-        logEvent("ROBOT", "PICKPLACE=DONE");
+        logEvent("ROBOT", "PICKPLACE=RETURN_DONE");
         ppSt = PP_DONE;
       }
       return;
@@ -1432,6 +1441,41 @@ bool pickStarted = false;
 String activePickTriggerSource = "";
 unsigned long activePickItemId = 0;
 unsigned long activePickMeasureId = 0;
+String activePickColor = "";
+String activePickDecisionSource = "";
+bool activePickReviewRequired = false;
+bool activePickCompletedLogged = false;
+
+void logActivePickCompleted(const char* stateLabel){
+  String trigger = activePickTriggerSource.length() > 0 ? activePickTriggerSource : "TIMER";
+  uint8_t pendingAfterCompletion = pendingCount > 0 ? pendingCount - 1 : 0;
+  logEvent(
+    "AUTO",
+    String("STATE=") + stateLabel
+      + "|EVENT=PICKPLACE_DONE|ITEM_ID=" + activePickItemId
+      + "|MEASURE_ID=" + activePickMeasureId
+      + "|COLOR=" + activePickColor
+      + "|DECISION_SOURCE=" + activePickDecisionSource
+      + "|REVIEW=" + (activePickReviewRequired ? 1 : 0)
+      + "|TRIGGER=" + trigger
+      + "|PENDING=" + pendingAfterCompletion
+  );
+  activePickCompletedLogged = true;
+}
+
+void logActivePickReturnDone(const char* stateLabel, bool useQueueLabel, uint8_t queueDepth){
+  String trigger = activePickTriggerSource.length() > 0 ? activePickTriggerSource : "TIMER";
+  String msg = String("STATE=") + stateLabel
+    + "|EVENT=PICKPLACE_RETURN_DONE|ITEM_ID=" + activePickItemId
+    + "|MEASURE_ID=" + activePickMeasureId
+    + "|COLOR=" + activePickColor
+    + "|DECISION_SOURCE=" + activePickDecisionSource
+    + "|REVIEW=" + (activePickReviewRequired ? 1 : 0)
+    + "|TRIGGER=" + trigger;
+  if(useQueueLabel) msg += "|QUEUE=" + queueDepth;
+  else msg += "|PENDING=" + queueDepth;
+  logEvent("AUTO", msg);
+}
 
 enum MeasLabelCode : uint8_t {
   MEAS_LABEL_BOS = 0,
@@ -1708,6 +1752,10 @@ void clearPickRuntime(){
   activePickTriggerSource = "";
   activePickItemId = 0;
   activePickMeasureId = 0;
+  activePickColor = "";
+  activePickDecisionSource = "";
+  activePickReviewRequired = false;
+  activePickCompletedLogged = false;
 }
 
 bool startQueuedPick(const String& triggerSource, unsigned long requestedItemId, bool logReject){
@@ -1762,19 +1810,23 @@ bool startQueuedPick(const String& triggerSource, unsigned long requestedItemId,
 
   motorStop();
   pausePendingTravelTimer();
-  lastMeasured = headPendingColor();
-  pickPlaceResetDone();
   pickStarted = true;
+  activePickColor = headPendingColor();
+  activePickDecisionSource = headPendingDecisionSource();
+  activePickReviewRequired = headPendingReviewRequired();
+  activePickCompletedLogged = false;
   activePickTriggerSource = normalizedTrigger;
   activePickItemId = headItemId;
   activePickMeasureId = headMeasureId;
+  lastMeasured = activePickColor;
+  pickPlaceResetDone();
   logEvent(
     "AUTO",
     String("STATE=WAIT_ARM|EVENT=ARM_POSITION_REACHED|ITEM_ID=") + activePickItemId
       + "|MEASURE_ID=" + activePickMeasureId
-      + "|COLOR=" + lastMeasured
-      + "|DECISION_SOURCE=" + headPendingDecisionSource()
-      + "|REVIEW=" + (headPendingReviewRequired() ? 1 : 0)
+      + "|COLOR=" + activePickColor
+      + "|DECISION_SOURCE=" + activePickDecisionSource
+      + "|REVIEW=" + (activePickReviewRequired ? 1 : 0)
       + "|TRIGGER=" + activePickTriggerSource
   );
   pickPlaceStart();
@@ -2727,12 +2779,9 @@ void loop() {
     motorStop();
     pausePendingTravelTimer();
     if(pickPlaceDone()){
-      String completedColor = headPendingColor();
-      unsigned long completedItemId = activePickItemId != 0 ? activePickItemId : headPendingItemId();
-      unsigned long completedMeasureId = activePickMeasureId != 0 ? activePickMeasureId : headPendingMeasureId();
-      String completedDecisionSource = headPendingDecisionSource();
-      bool completedReview = headPendingReviewRequired();
-      String completedTrigger = activePickTriggerSource.length() > 0 ? activePickTriggerSource : "TIMER";
+      if(!activePickCompletedLogged){
+        logActivePickCompleted("WAIT_ARM");
+      }
       dequeuePendingItem();
       pickPlaceResetDone();
 
@@ -2740,21 +2789,10 @@ void loop() {
         if(!hasPendingItems()){
           st = STOPPED;
           stopRequested = false;
-          logEvent("AUTO", String("STATE=STOPPED|EVENT=PICKPLACE_DONE|ITEM_ID=") + completedItemId
-            + "|MEASURE_ID=" + completedMeasureId
-            + "|COLOR=" + completedColor
-            + "|DECISION_SOURCE=" + completedDecisionSource
-            + "|REVIEW=" + (completedReview ? 1 : 0)
-            + "|TRIGGER=" + completedTrigger);
+          logActivePickReturnDone("STOPPED", false, pendingCount);
         } else {
           st = SEARCHING;
-          logEvent("AUTO", String("STATE=PAUSED|EVENT=PICKPLACE_DONE|ITEM_ID=") + completedItemId
-            + "|MEASURE_ID=" + completedMeasureId
-            + "|COLOR=" + completedColor
-            + "|DECISION_SOURCE=" + completedDecisionSource
-            + "|REVIEW=" + (completedReview ? 1 : 0)
-            + "|TRIGGER=" + completedTrigger
-            + "|QUEUE=" + pendingCount);
+          logActivePickReturnDone("PAUSED", true, pendingCount);
         }
         clearPickRuntime();
         motorStop();
@@ -2763,13 +2801,7 @@ void loop() {
         return;
       }
 
-      logEvent("AUTO", String("STATE=SEARCHING|EVENT=PICKPLACE_DONE|ITEM_ID=") + completedItemId
-        + "|MEASURE_ID=" + completedMeasureId
-        + "|COLOR=" + completedColor
-        + "|DECISION_SOURCE=" + completedDecisionSource
-        + "|REVIEW=" + (completedReview ? 1 : 0)
-        + "|TRIGGER=" + completedTrigger
-        + "|PENDING=" + pendingCount);
+      logActivePickReturnDone("SEARCHING", false, pendingCount);
       clearPickRuntime();
       lastSenseMs = 0;
       detectStreak = 0;

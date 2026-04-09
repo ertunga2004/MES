@@ -4,9 +4,11 @@ numpy>=1.26,<2; platform_machine != "armv6l" and platform_machine != "armv7l" an
 
 # Raspberry Pi OS:
 # 1. sudo apt install -y python3-opencv python3-numpy
-# 2. recreate venv with system packages visible:
+# 2. if you use CSI camera / Picamera2:
+#    sudo apt install -y python3-picamera2
+# 3. recreate venv with system packages visible:
 #    python3 -m venv --system-site-packages .venv
-# 3. source .venv/bin/activate && python -m pip install -r requirements.txt
+# 4. source .venv/bin/activate && python -m pip install -r requirements.txt
 #
 # Python 3.7 tabanli Pi kurulumlarinda paho-mqtt 2.x ek typing backport ister.
 # Bu projede 1.6.1 yeterli oldugu icin 3.8 alti icin 1.x'e sabitliyoruz.

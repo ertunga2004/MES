@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from mes_web.oee_state import OeeRuntimeStateManager
 
@@ -114,6 +115,47 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(state["counts"]["byColor"]["blue"]["scrap"], 1)
             self.assertEqual(state["itemsById"]["42"]["classification"], "SCRAP")
             self.assertEqual(result["override"]["previous_classification"], "GOOD")
+
+    def test_pickplace_return_done_updates_completed_item_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            manager.apply_control("shift_start", now=datetime(2026, 4, 2, 8, 0, 0))
+            manager.apply_mega_log(
+                "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=42|MEASURE_ID=7|COLOR=MAVI|DECISION_SOURCE=CORE_STABLE|REVIEW=0|TRAVEL_MS=4500|PENDING=1",
+                "2026-04-02T08:01:00Z",
+            )
+            manager.apply_mega_log(
+                "MEGA|AUTO|STATE=WAIT_ARM|EVENT=PICKPLACE_DONE|ITEM_ID=42|MEASURE_ID=7|COLOR=MAVI|DECISION_SOURCE=CORE_STABLE|REVIEW=0|PENDING=0",
+                "2026-04-02T08:01:05Z",
+            )
+
+            changed = manager.apply_mega_log(
+                "MEGA|AUTO|STATE=SEARCHING|EVENT=PICKPLACE_RETURN_DONE|ITEM_ID=42|MEASURE_ID=7|COLOR=MAVI|DECISION_SOURCE=CORE_STABLE|REVIEW=0|PENDING=0",
+                "2026-04-02T08:01:06Z",
+            )
+
+            state = manager.read_state()
+            self.assertTrue(changed)
+            self.assertEqual(state["itemsById"]["42"]["return_done_at"], "2026-04-02T08:01:06Z")
+
+    def test_write_state_retries_after_transient_permission_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            original_replace = Path.replace
+            attempts = {"count": 0}
+
+            def flaky_replace(path_obj: Path, target: Path) -> Path:
+                if path_obj.suffix == ".tmp" and target == manager.path and attempts["count"] == 0:
+                    attempts["count"] += 1
+                    raise PermissionError(5, "Access is denied", str(target))
+                return original_replace(path_obj, target)
+
+            with patch.object(Path, "replace", autospec=True, side_effect=flaky_replace):
+                manager.apply_control("set_target_qty", "12")
+
+            state = manager.read_state()
+            self.assertEqual(attempts["count"], 1)
+            self.assertEqual(state["targetQty"], 12)
 
     def test_high_confidence_vision_can_request_and_accept_early_pick(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

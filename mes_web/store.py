@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import copy
-import json
 import threading
 import uuid
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from .config import AppConfig
-from .oee_state import build_live_snapshot, shift_options
+from .oee_state import build_live_snapshot, read_runtime_state_file, shift_options
 from .parsers import (
     parse_bridge_status_line,
     parse_mega_event_from_log,
@@ -324,9 +324,8 @@ class DashboardStore:
         if not force and self._oee_state_mtime == mtime:
             return False
 
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        payload = read_runtime_state_file(Path(path))
+        if payload is None:
             return False
 
         with self._lock:

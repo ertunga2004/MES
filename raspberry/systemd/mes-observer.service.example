@@ -1,0 +1,19 @@
+[Unit]
+Description=MES Raspberry Observer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/MES/raspberry
+Environment=PYTHONUNBUFFERED=1
+# Optional: allow MQTT time_sync payloads with {"set_system_clock":true}
+# after installing scripts/set_system_time.sh and sudoers rule.
+# Environment=MES_OBSERVER_SET_CLOCK_CMD=/usr/bin/sudo -n /home/pi/Documents/vision/scripts/set_system_time.sh
+ExecStart=/home/pi/MES/raspberry/.venv/bin/python /home/pi/MES/raspberry/run_observer.py --config /home/pi/MES/raspberry/config/observer.pi.example.json --boxes /home/pi/MES/raspberry/config/boxes.example.json --no-gui
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

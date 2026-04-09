@@ -1,0 +1,1 @@
+pi ALL=(root) NOPASSWD: /home/pi/Documents/vision/scripts/set_system_time.sh

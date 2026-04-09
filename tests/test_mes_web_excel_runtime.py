@@ -66,6 +66,18 @@ class WorkbookProjectorTests(unittest.TestCase):
         self.assertEqual(rows["1_Olay_Logu"][0]["raw_line"], "SYSTEM|COUNTS|RESET")
         self.assertEqual(rows["7_Raw_Logs"][0]["source_topic"], "local/system")
 
+    def test_pickplace_return_done_creates_parsed_event_row(self) -> None:
+        rows = self.projector.consume_mega_log(
+            "MEGA|AUTO|STATE=SEARCHING|EVENT=PICKPLACE_RETURN_DONE|ITEM_ID=42|MEASURE_ID=8|COLOR=MAVI|DECISION_SOURCE=CORE_STABLE|TRIGGER=EARLY|PENDING=0",
+            "2026-04-02T10:15:31Z",
+        )
+
+        self.assertEqual(rows["7_Raw_Logs"][0]["parsed_flag"], 1)
+        self.assertEqual(rows["7_Raw_Logs"][0]["event_type_code"], "pickplace_return_done")
+        self.assertEqual(rows["1_Olay_Logu"][0]["event_type_code"], "pickplace_return_done")
+        self.assertEqual(rows["1_Olay_Logu"][0]["event_type_id"], 10)
+        self.assertEqual(rows["1_Olay_Logu"][0]["station_id"], 3)
+
     def test_vision_correction_and_early_pick_flow_reaches_completed_row(self) -> None:
         self.projector.consume_mega_log(
             "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=42|MEASURE_ID=8|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|REVIEW=0|TRAVEL_MS=640",

@@ -66,6 +66,7 @@ EVENT_TYPE_IDS = {
     "pick_released": 7,
     "pick_return_started": 8,
     "pick_return_reached": 9,
+    "pickplace_return_done": 10,
     "vision_event": 11,
     "early_pick_request": 12,
 }
@@ -78,7 +79,7 @@ def _station_for_event(event_type_code: str) -> int:
         return 1
     if event_type_code == "queue_enq":
         return 2
-    if event_type_code in {"arm_position_reached", "pickplace_done", "pick_command_rejected", "pick_released", "pick_return_started", "pick_return_reached", "early_pick_request"}:
+    if event_type_code in {"arm_position_reached", "pickplace_done", "pick_command_rejected", "pick_released", "pick_return_started", "pick_return_reached", "pickplace_return_done", "early_pick_request"}:
         return 3
     return 6 if event_type_code == "vision_event" else 5
 
@@ -220,6 +221,7 @@ class WorkbookProjector:
             "pick_return_started": "Robot geri donuse basladi",
             "pick_return_reached": "Robot 22 referans noktasina ulasti",
             "pickplace_done": "Pick and place tamamlandi",
+            "pickplace_return_done": "Robot hazir bekleme pozisyonuna dondu",
         }.get(parsed["event_type"], parsed["event_type"])
         note_parts: list[str] = []
         if parsed["event_type"] == "measurement_decision" and raw.get("SEARCH_HINT"):

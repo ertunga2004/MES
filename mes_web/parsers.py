@@ -203,6 +203,9 @@ def parse_mega_event_from_log(line: str) -> dict[str, Any] | None:
     if module_name == "AUTO" and fields.get("EVENT") == "PICKPLACE_DONE":
         base["event_type"] = "pickplace_done"
         return base
+    if module_name == "AUTO" and fields.get("EVENT") == "PICKPLACE_RETURN_DONE":
+        base["event_type"] = "pickplace_return_done"
+        return base
     if module_name == "ROBOT" and fields.get("EVENT") == "RELEASED":
         base["event_type"] = "pick_released"
         return base

@@ -104,6 +104,18 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed["trigger_source"], "early")
         self.assertEqual(parsed["reject_reason"], "head_changed")
 
+    def test_parse_pickplace_return_done_event(self) -> None:
+        parsed = parse_mega_event_from_log(
+            "MEGA|AUTO|STATE=SEARCHING|EVENT=PICKPLACE_RETURN_DONE|ITEM_ID=42|MEASURE_ID=8|COLOR=MAVI|DECISION_SOURCE=CORE_STABLE|TRIGGER=EARLY|PENDING=0"
+        )
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["event_type"], "pickplace_return_done")
+        self.assertEqual(parsed["item_id"], "42")
+        self.assertEqual(parsed["measure_id"], "8")
+        self.assertEqual(parsed["color"], "blue")
+        self.assertEqual(parsed["queue_depth"], 0)
+
     def test_parse_tablet_oee_line(self) -> None:
         parsed = parse_tablet_oee_line(
             "[02.04.2026 12:00:00.000] |Tablet|OEE| OEE:0.5470|KULL:0.6170|PERF:1.0000|KALITE:0.9000|MAVI_S:5|MAVI_R:1|MAVI_H:0|SARI_S:4|SARI_R:0|SARI_H:1|KIRMIZI_S:3|KIRMIZI_R:0|KIRMIZI_H:2"

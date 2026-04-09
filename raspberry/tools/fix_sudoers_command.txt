@@ -1,0 +1,9 @@
+VNC icindeki terminalde asagidaki komutu calistir:
+
+pkexec /bin/sh -c 'rm -f /etc/sudoers.d/mes-observer-time-sync && printf "%s\n" "pi ALL=(root) NOPASSWD: /home/pi/Documents/vision/scripts/set_system_time.sh" >/etc/sudoers.d/mes-observer-time-sync && chmod 440 /etc/sudoers.d/mes-observer-time-sync && /usr/sbin/visudo -cf /etc/sudoers.d/mes-observer-time-sync'
+
+Sifre sorarsa:
+raspberry
+
+Beklenen cikti:
+/etc/sudoers.d/mes-observer-time-sync: parsed OK

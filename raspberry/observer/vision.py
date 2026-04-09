@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Iterable
 
 from .config import ProcessingConfig
 from .models import BoxProfile, Detection
+from .preprocess import build_color_gate_mask, preprocess_frame
 
 if TYPE_CHECKING:
     import numpy as np
@@ -41,17 +42,35 @@ class ColorBoxDetector:
         cv2 = self.cv2
         np = self.np
         working_frame = frame
+
+        working_frame = preprocess_frame(
+            working_frame,
+            normalize_lighting=self.processing.normalize_lighting,
+            clahe_clip_limit=self.processing.clahe_clip_limit,
+            clahe_tile_grid_size=self.processing.clahe_tile_grid_size,
+            cv2=cv2,
+            np=np,
+        )
+
         if self.processing.blur_kernel > 1:
             blur = self.processing.blur_kernel
             working_frame = cv2.GaussianBlur(working_frame, (blur, blur), 0)
 
         hsv = cv2.cvtColor(working_frame, cv2.COLOR_BGR2HSV)
         lab = cv2.cvtColor(working_frame, cv2.COLOR_BGR2LAB)
+        color_gate_mask = build_color_gate_mask(
+            hsv,
+            min_saturation=self.processing.min_saturation,
+            min_value=self.processing.min_value,
+            cv2=cv2,
+            np=np,
+        )
         detections: list[Detection] = []
         masks: dict[str, np.ndarray] = {}
 
         for profile in self.profiles:
             mask = self._build_mask(hsv, profile.ranges)
+            mask = cv2.bitwise_and(mask, color_gate_mask)
             if profile.lab_ranges:
                 mask = cv2.bitwise_and(mask, self._build_mask(lab, profile.lab_ranges))
 

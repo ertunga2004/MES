@@ -115,6 +115,8 @@ Sadece vision observer tarafindaki izleme kimligidir. `item_id` yerine gecmez.
   - robot hazirlik / konum olayi
 - `pickplace_done`
   - tamamlanmis urun olayi
+- `pickplace_return_done`
+  - robotun birakma sonrasi hazir bekleme pozisyonuna geri dondugu an
 
 Aktif vardiyada `pickplace_done`, backend tarafinda:
 

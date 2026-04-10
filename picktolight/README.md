@@ -19,7 +19,11 @@
 
 ## MQTT Topic Agaci
 
-Root:
+Config root:
+
+`sau/iot/mega/konveyor/picktolight`
+
+Istasyon topic prefix'i:
 
 `sau/iot/mega/konveyor/picktolight/station/`
 

@@ -21,14 +21,31 @@ Bu belge, aktif topicleri ve bugunku publisher/subscriber rollerini ozetler. Leg
 
 | Topic | Publisher | Subscriber | Payload | Amac |
 | --- | --- | --- | --- | --- |
-| `.../vision/status` | Raspberry vision observer | `mes_web` | JSON veya text | vision servis durumu |
+| `.../vision/status` | Raspberry vision observer | `mes_web` | JSON | vision servis durumu |
 | `.../vision/tracks` | Raspberry vision observer | `mes_web` | JSON | aktif track ozetleri |
-| `.../vision/heartbeat` | Raspberry vision observer | `mes_web` | text | vision yasam belirtisi |
+| `.../vision/heartbeat` | Raspberry vision observer | `mes_web` | JSON | vision yasam belirtisi |
 | `.../vision/events` | Raspberry vision observer | `mes_web`, workbook sink | JSON | crossing ve renk olaylari |
+| `.../vision/clock_status` | Raspberry vision observer | yerel diagnostik / operasyon araclari | JSON | saat offset'i ve time sync sonucu |
+| `.../vision/time_sync` | `raspberry/tools/publish_time_sync.ps1` veya operator araci | Raspberry vision observer | JSON | observer clock sync talebi |
 
 ## Pick-to-Light Topicleri
 
 Pick-to-light ayri moduldur. Kendi root'u altinda calisir ve ana konveyor root'u ile karistirilmamalidir.
+
+Prefix:
+
+- `sau/iot/mega/konveyor/picktolight/station/`
+
+| Topic | Publisher | Subscriber | Payload | Amac |
+| --- | --- | --- | --- | --- |
+| `.../display` | Python GUI | ESP32 ekran | text | ekranda gosterilecek satirlar |
+| `.../button` | ESP32 ekran / buton | Python GUI | text | kisa basma gecis istegi |
+| `.../command` | ESP32 ekran / buton | Python GUI | JSON veya text | `undo` ve `reset` gibi aksiyonlar |
+| `.../state` | Python GUI | ust sistemler / yerel izleme | JSON | retained istasyon snapshot'i |
+| `.../event` | Python GUI | ust sistemler / yerel izleme | JSON | operasyon olay akisi |
+| `.../python_status` | Python GUI | ESP32 ekran, yerel izleme | JSON | GUI baglanti / otorite durumu |
+| `.../esp32_status` | ESP32 ekran | Python GUI, yerel izleme | JSON | ekran istemcisi baglanti durumu |
+| `.../heartbeat` | Python GUI ve ESP32 ekran | yerel izleme | JSON | yasam belirtisi |
 
 ## Komut Payload Notlari
 

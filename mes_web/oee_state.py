@@ -630,6 +630,64 @@ def _system_log_line(kind: str, state: dict[str, Any], *, now: datetime) -> str:
     )
 
 
+def _complete_runtime_item(
+    state: dict[str, Any],
+    items: dict[str, dict[str, Any]],
+    *,
+    resolved_key: str,
+    item_id: str,
+    measure_id: str,
+    color: str,
+    parsed: dict[str, Any],
+    received_at: str,
+    now: datetime,
+) -> bool:
+    item = items.get(resolved_key, {})
+    if item.get("completed_at"):
+        return False
+
+    normalized_color = str(item.get("final_color") or item.get("vision_color") or item.get("sensor_color") or color).strip().lower()
+    if normalized_color not in {"red", "yellow", "blue"}:
+        normalized_color = color if color in {"red", "yellow", "blue"} else str(item.get("sensor_color") or "blue")
+    decision_source = str(item.get("decision_source") or ("VISION" if item.get("vision_color") else "SENSOR")).upper()
+    finalization_reason = str(item.get("finalization_reason") or "").strip().upper()
+    if not finalization_reason:
+        if decision_source == "VISION" and item.get("mismatch_flag"):
+            finalization_reason = "VISION_CORRECTED_MISMATCH"
+        elif decision_source == "VISION":
+            finalization_reason = "VISION_HIGH_CONF"
+        elif item.get("late_vision_audit_flag"):
+            finalization_reason = "SENSOR_LATE_VISION"
+        elif item.get("correlation_status") == "IGNORED_LOW_CONF":
+            finalization_reason = "SENSOR_LOW_CONF_VISION_IGNORED"
+        else:
+            finalization_reason = "SENSOR_NO_VISION"
+    item.update(
+        {
+            "item_id": item_id or item.get("item_id") or resolved_key,
+            "measure_id": measure_id or item.get("measure_id") or "",
+            "color": normalized_color,
+            "final_color": normalized_color,
+            "decision_source": decision_source,
+            "finalization_reason": finalization_reason,
+            "review_required": bool(item.get("review_required")) or bool(parsed.get("review_required")),
+            "completed_at": received_at,
+            "classification": "GOOD",
+            "updated_at": received_at,
+            "queue_status": "completed",
+            "pick_started": True,
+            "pick_trigger_source": str(item.get("pick_trigger_source") or parsed.get("trigger_source") or "TIMER").upper(),
+            "final_color_frozen_at": received_at,
+        }
+    )
+    items[resolved_key] = item
+    _remove_queue_item(state, resolved_key)
+    _append_recent_id(state, resolved_key)
+    _recompute_item_counts(state)
+    _set_summary(state, f"#{item.get('item_id') or resolved_key} tamamlandi ve renk {normalized_color} olarak kilitlendi.", now=now)
+    return True
+
+
 _RUNTIME_STATE_RETRY_ATTEMPTS = 6
 _RUNTIME_STATE_RETRY_BASE_DELAY_SEC = 0.02
 _RUNTIME_STATE_LOCKS: dict[str, threading.RLock] = {}
@@ -996,8 +1054,23 @@ class OeeRuntimeStateManager:
             resolved_key = item_key or head_key
             if not resolved_key or resolved_key not in items:
                 return False
-            items[resolved_key]["released_at"] = received_at
-            changed = True
+            item = items.get(resolved_key, {})
+            if item.get("released_at") != received_at:
+                item["released_at"] = received_at
+                items[resolved_key] = item
+                changed = True
+            if _complete_runtime_item(
+                state,
+                items,
+                resolved_key=resolved_key,
+                item_id=item_id,
+                measure_id=measure_id,
+                color=color,
+                parsed=parsed,
+                received_at=received_at,
+                now=now,
+            ):
+                changed = True
 
         elif parsed["event_type"] == "pick_return_started":
             resolved_key = item_key or head_key
@@ -1024,49 +1097,17 @@ class OeeRuntimeStateManager:
             resolved_key = item_key or head_key
             if not resolved_key:
                 return False
-            item = items.get(resolved_key, {})
-            if item.get("completed_at"):
-                return False
-            normalized_color = str(item.get("final_color") or item.get("vision_color") or item.get("sensor_color") or color).strip().lower()
-            if normalized_color not in {"red", "yellow", "blue"}:
-                normalized_color = color if color in {"red", "yellow", "blue"} else str(item.get("sensor_color") or "blue")
-            decision_source = str(item.get("decision_source") or ("VISION" if item.get("vision_color") else "SENSOR")).upper()
-            finalization_reason = str(item.get("finalization_reason") or "").strip().upper()
-            if not finalization_reason:
-                if decision_source == "VISION" and item.get("mismatch_flag"):
-                    finalization_reason = "VISION_CORRECTED_MISMATCH"
-                elif decision_source == "VISION":
-                    finalization_reason = "VISION_HIGH_CONF"
-                elif item.get("late_vision_audit_flag"):
-                    finalization_reason = "SENSOR_LATE_VISION"
-                elif item.get("correlation_status") == "IGNORED_LOW_CONF":
-                    finalization_reason = "SENSOR_LOW_CONF_VISION_IGNORED"
-                else:
-                    finalization_reason = "SENSOR_NO_VISION"
-            item.update(
-                {
-                    "item_id": item_id or item.get("item_id") or resolved_key,
-                    "measure_id": measure_id or item.get("measure_id") or "",
-                    "color": normalized_color,
-                    "final_color": normalized_color,
-                    "decision_source": decision_source,
-                    "finalization_reason": finalization_reason,
-                    "review_required": bool(item.get("review_required")) or bool(parsed.get("review_required")),
-                    "completed_at": received_at,
-                    "classification": "GOOD",
-                    "updated_at": received_at,
-                    "queue_status": "completed",
-                    "pick_started": True,
-                    "pick_trigger_source": str(item.get("pick_trigger_source") or parsed.get("trigger_source") or "TIMER").upper(),
-                    "final_color_frozen_at": received_at,
-                }
+            changed = _complete_runtime_item(
+                state,
+                items,
+                resolved_key=resolved_key,
+                item_id=item_id,
+                measure_id=measure_id,
+                color=color,
+                parsed=parsed,
+                received_at=received_at,
+                now=now,
             )
-            items[resolved_key] = item
-            _remove_queue_item(state, resolved_key)
-            _append_recent_id(state, resolved_key)
-            _recompute_item_counts(state)
-            _set_summary(state, f"#{item.get('item_id') or resolved_key} tamamlandi ve renk {normalized_color} olarak kilitlendi.", now=now)
-            changed = True
 
         if changed:
             state["itemsById"] = items

@@ -70,6 +70,70 @@ class DashboardStore:
             for color in ("red", "yellow", "blue")
         }
 
+    def _default_vision_status(self) -> dict[str, Any]:
+        return {
+            "state": "unknown",
+            "fps": None,
+            "last_seen_at": None,
+        }
+
+    def _default_vision_tracks(self) -> dict[str, Any]:
+        return {
+            "active_tracks": 0,
+            "pending_tracks": 0,
+            "total_crossings": 0,
+            "last_seen_at": None,
+        }
+
+    def _default_vision_heartbeat(self) -> dict[str, Any]:
+        return {
+            "timestamp": None,
+            "last_seen_at": None,
+        }
+
+    def _default_vision_compare(self) -> dict[str, Any]:
+        return {
+            "mega": {"red": 0, "yellow": 0, "blue": 0},
+            "vision": {"red": 0, "yellow": 0, "blue": 0},
+            "diff": {"red": 0, "yellow": 0, "blue": 0},
+            "yellow_alarm": "normal",
+            "last_updated_at": None,
+        }
+
+    def _default_vision_runtime(self) -> dict[str, Any]:
+        return {
+            "health_state": "offline",
+            "mismatch_count": 0,
+            "early_accepted_count": 0,
+            "early_rejected_count": 0,
+            "late_audit_count": 0,
+            "last_reject_reason": "",
+            "last_item": None,
+        }
+
+    def _default_vision_reset(self) -> dict[str, Any]:
+        return {
+            "at": None,
+            "track_crossings_baseline": 0,
+            "runtime_metrics_baseline": {
+                "mismatch_count": 0,
+                "early_accepted_count": 0,
+                "early_rejected_count": 0,
+                "late_audit_count": 0,
+            },
+        }
+
+    def _default_vision_state(self) -> dict[str, Any]:
+        return {
+            "status": self._default_vision_status(),
+            "tracks": self._default_vision_tracks(),
+            "heartbeat": self._default_vision_heartbeat(),
+            "events": deque(maxlen=self.config.vision_event_store_size),
+            "compare": self._default_vision_compare(),
+            "runtime": self._default_vision_runtime(),
+            "reset": self._default_vision_reset(),
+        }
+
     def _default_oee_state(self) -> dict[str, Any]:
         return {
             "enabled": self.config.oee_ui_visible,
@@ -182,39 +246,7 @@ class DashboardStore:
                 "last_reset_at": None,
             },
             "recent_logs": deque(maxlen=self.config.log_store_size),
-            "vision": {
-                "status": {
-                    "state": "unknown",
-                    "fps": None,
-                    "last_seen_at": None,
-                },
-                "tracks": {
-                    "active_tracks": 0,
-                    "pending_tracks": 0,
-                    "total_crossings": 0,
-                    "last_seen_at": None,
-                },
-                "heartbeat": {
-                    "timestamp": None,
-                    "last_seen_at": None,
-                },
-                "events": deque(maxlen=self.config.vision_event_store_size),
-                "compare": {
-                    "mega": {"red": 0, "yellow": 0, "blue": 0},
-                    "vision": {"red": 0, "yellow": 0, "blue": 0},
-                    "diff": {"red": 0, "yellow": 0, "blue": 0},
-                    "yellow_alarm": "normal",
-                    "last_updated_at": None,
-                },
-                "runtime": {
-                    "health_state": "offline",
-                    "mismatch_count": 0,
-                    "early_accepted_count": 0,
-                    "early_rejected_count": 0,
-                    "last_reject_reason": "",
-                    "last_item": None,
-                },
-            },
+            "vision": self._default_vision_state(),
             "oee": self._default_oee_state(),
         }
 
@@ -230,6 +262,37 @@ class DashboardStore:
             return self._modules[module_id]
         except KeyError as exc:
             raise KeyError(f"Unknown module: {module_id}") from exc
+
+    def _vision_reset_state(self, module: dict[str, Any]) -> dict[str, Any]:
+        vision = module.get("vision")
+        if not isinstance(vision, dict):
+            vision = self._default_vision_state()
+            module["vision"] = vision
+        reset = vision.get("reset")
+        if not isinstance(reset, dict):
+            reset = self._default_vision_reset()
+            vision["reset"] = reset
+        baseline = reset.get("runtime_metrics_baseline")
+        if not isinstance(baseline, dict):
+            baseline = self._default_vision_reset()["runtime_metrics_baseline"]
+            reset["runtime_metrics_baseline"] = baseline
+        return reset
+
+    def _reset_vision_state(self, module: dict[str, Any], *, reset_at: str) -> None:
+        current_tracks = module["vision"]["tracks"] if isinstance(module.get("vision"), dict) else {}
+        current_runtime = module["vision"]["runtime"] if isinstance(module.get("vision"), dict) else {}
+        reset = self._default_vision_reset()
+        reset["at"] = reset_at
+        reset["track_crossings_baseline"] = max(0, _safe_int(current_tracks.get("total_crossings")))
+        reset["runtime_metrics_baseline"] = {
+            "mismatch_count": max(0, _safe_int(current_runtime.get("mismatch_count"))),
+            "early_accepted_count": max(0, _safe_int(current_runtime.get("early_accepted_count"))),
+            "early_rejected_count": max(0, _safe_int(current_runtime.get("early_rejected_count"))),
+            "late_audit_count": max(0, _safe_int(current_runtime.get("late_audit_count"))),
+        }
+        module["last_vision_ingest_at"] = None
+        module["vision"] = self._default_vision_state()
+        module["vision"]["reset"] = reset
 
     def _capabilities(self) -> dict[str, bool]:
         return {
@@ -434,13 +497,48 @@ class DashboardStore:
             oee["quality_override_log"] = copy.deepcopy((payload.get("qualityOverrideLog") or [])[:10])
             vision_state = payload.get("vision") if isinstance(payload.get("vision"), dict) else {}
             vision_metrics = vision_state.get("metrics") if isinstance(vision_state.get("metrics"), dict) else {}
+            vision_reset = self._vision_reset_state(module)
+            metrics_baseline = vision_reset.get("runtime_metrics_baseline")
+            if not isinstance(metrics_baseline, dict):
+                metrics_baseline = self._default_vision_reset()["runtime_metrics_baseline"]
+                vision_reset["runtime_metrics_baseline"] = metrics_baseline
+            reset_at = parse_iso_text(str(vision_reset.get("at") or ""))
+            raw_mismatch_count = max(0, _safe_int(vision_metrics.get("mismatchCount")))
+            raw_early_accepted_count = max(0, _safe_int(vision_metrics.get("earlyAcceptedCount")))
+            raw_early_rejected_count = max(0, _safe_int(vision_metrics.get("earlyRejectedCount")))
+            raw_late_audit_count = max(0, _safe_int(vision_metrics.get("lateAuditCount")))
+            baseline_mismatch_count = max(0, _safe_int(metrics_baseline.get("mismatch_count")))
+            baseline_early_accepted_count = max(0, _safe_int(metrics_baseline.get("early_accepted_count")))
+            baseline_early_rejected_count = max(0, _safe_int(metrics_baseline.get("early_rejected_count")))
+            baseline_late_audit_count = max(0, _safe_int(metrics_baseline.get("late_audit_count")))
+            if raw_mismatch_count < baseline_mismatch_count:
+                baseline_mismatch_count = 0
+                metrics_baseline["mismatch_count"] = 0
+            if raw_early_accepted_count < baseline_early_accepted_count:
+                baseline_early_accepted_count = 0
+                metrics_baseline["early_accepted_count"] = 0
+            if raw_early_rejected_count < baseline_early_rejected_count:
+                baseline_early_rejected_count = 0
+                metrics_baseline["early_rejected_count"] = 0
+            if raw_late_audit_count < baseline_late_audit_count:
+                baseline_late_audit_count = 0
+                metrics_baseline["late_audit_count"] = 0
             last_item = recent_items[0] if recent_items else None
+            if isinstance(last_item, dict) and reset_at is not None:
+                item_time = parse_iso_text(str(last_item.get("updated_at") or last_item.get("completed_at") or ""))
+                if item_time is not None and item_time <= reset_at:
+                    last_item = None
+            mismatch_count = max(0, raw_mismatch_count - baseline_mismatch_count)
+            early_accepted_count = max(0, raw_early_accepted_count - baseline_early_accepted_count)
+            early_rejected_count = max(0, raw_early_rejected_count - baseline_early_rejected_count)
+            late_audit_count = max(0, raw_late_audit_count - baseline_late_audit_count)
             module["vision"]["runtime"] = {
                 "health_state": str(vision_state.get("healthState") or "offline"),
-                "mismatch_count": int(vision_metrics.get("mismatchCount") or 0),
-                "early_accepted_count": int(vision_metrics.get("earlyAcceptedCount") or 0),
-                "early_rejected_count": int(vision_metrics.get("earlyRejectedCount") or 0),
-                "last_reject_reason": str(vision_state.get("lastRejectReason") or ""),
+                "mismatch_count": mismatch_count,
+                "early_accepted_count": early_accepted_count,
+                "early_rejected_count": early_rejected_count,
+                "late_audit_count": late_audit_count,
+                "last_reject_reason": str(vision_state.get("lastRejectReason") or "") if early_rejected_count > 0 else "",
                 "last_item": copy.deepcopy(last_item) if isinstance(last_item, dict) else None,
             }
             active_fault = payload.get("activeFault")
@@ -594,6 +692,7 @@ class DashboardStore:
                 module["counts"]["yellow"] = 0
                 module["counts"]["blue"] = 0
                 module["counts"]["last_reset_at"] = stamp
+                self._reset_vision_state(module, reset_at=stamp)
             else:
                 event = parse_mega_event_from_log(normalized)
                 if event and event["event_type"] == "queue_enq":
@@ -659,7 +758,15 @@ class DashboardStore:
         with self._lock:
             module = self._touch_message(module_id, stamp)
             module["last_vision_ingest_at"] = stamp
-            module["vision"]["tracks"].update(parsed)
+            reset = self._vision_reset_state(module)
+            baseline = max(0, _safe_int(reset.get("track_crossings_baseline")))
+            raw_crossings = max(0, _safe_int(parsed.get("total_crossings")))
+            if raw_crossings < baseline:
+                baseline = 0
+                reset["track_crossings_baseline"] = 0
+            next_tracks = dict(parsed)
+            next_tracks["total_crossings"] = max(0, raw_crossings - baseline)
+            module["vision"]["tracks"].update(next_tracks)
             module["vision"]["tracks"]["last_seen_at"] = stamp
         self._notify(module_id)
 
@@ -717,6 +824,7 @@ class DashboardStore:
             module["counts"]["yellow"] = 0
             module["counts"]["blue"] = 0
             module["counts"]["last_reset_at"] = stamp
+            self._reset_vision_state(module, reset_at=stamp)
             self._append_recent_log(module, "local/system", "SYSTEM|COUNTS|RESET", stamp)
         self._notify(module_id)
 

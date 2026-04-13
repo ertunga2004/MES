@@ -93,6 +93,42 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(state["counts"]["byColor"]["blue"]["good"], 1)
             self.assertEqual(state["itemsById"]["42"]["classification"], "GOOD")
 
+    def test_pick_released_counts_completed_item_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            manager.apply_control("shift_start", now=datetime(2026, 4, 2, 8, 0, 0))
+
+            manager.apply_mega_log(
+                "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=42|MEASURE_ID=7|COLOR=MAVI|DECISION_SOURCE=CORE_STABLE|REVIEW=0|TRAVEL_MS=4500|PENDING=1",
+                "2026-04-02T08:01:00Z",
+            )
+            manager.apply_mega_log(
+                "MEGA|AUTO|STATE=WAIT_ARM|EVENT=ARM_POSITION_REACHED|ITEM_ID=42|MEASURE_ID=7|COLOR=MAVI|DECISION_SOURCE=CORE_STABLE|REVIEW=0|TRIGGER=TIMER",
+                "2026-04-02T08:01:03Z",
+            )
+
+            changed = manager.apply_mega_log(
+                "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=42|MEASURE_ID=7|TRIGGER=TIMER",
+                "2026-04-02T08:01:05Z",
+            )
+
+            state = manager.read_state()
+            self.assertTrue(changed)
+            self.assertEqual(state["counts"]["total"], 1)
+            self.assertEqual(state["counts"]["good"], 1)
+            self.assertEqual(state["itemsById"]["42"]["released_at"], "2026-04-02T08:01:05Z")
+            self.assertEqual(state["itemsById"]["42"]["completed_at"], "2026-04-02T08:01:05Z")
+
+            changed = manager.apply_mega_log(
+                "MEGA|AUTO|STATE=SEARCHING|EVENT=PICKPLACE_DONE|ITEM_ID=42|MEASURE_ID=7|COLOR=MAVI|DECISION_SOURCE=CORE_STABLE|REVIEW=0|TRIGGER=TIMER|PENDING=0",
+                "2026-04-02T08:01:06Z",
+            )
+
+            state = manager.read_state()
+            self.assertFalse(changed)
+            self.assertEqual(state["counts"]["total"], 1)
+            self.assertEqual(state["counts"]["good"], 1)
+
     def test_quality_override_recomputes_counts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")

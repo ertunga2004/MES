@@ -312,6 +312,14 @@ body {
   color: var(--text-soft);
 }
 
+#oee-quality-override-list .status-row {
+  align-items: center;
+}
+
+.oee-override-label {
+  flex: 1 1 240px;
+}
+
 .count-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -465,6 +473,39 @@ body {
 .oee-choice-button.is-active {
   border-color: rgba(255, 138, 61, 0.34);
   background: linear-gradient(135deg, rgba(255, 138, 61, 0.24), rgba(88, 166, 255, 0.16));
+}
+
+.oee-override-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  flex: 1 1 340px;
+  max-width: 420px;
+}
+
+.oee-override-button {
+  min-width: 0;
+  padding: 11px 10px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.oee-override-button.quality-good.is-active {
+  border-color: rgba(36, 199, 141, 0.45);
+  background: linear-gradient(135deg, rgba(36, 199, 141, 0.28), rgba(88, 166, 255, 0.14));
+  box-shadow: 0 0 0 1px rgba(36, 199, 141, 0.12), 0 10px 24px rgba(36, 199, 141, 0.16);
+}
+
+.oee-override-button.quality-rework.is-active {
+  border-color: rgba(248, 191, 79, 0.45);
+  background: linear-gradient(135deg, rgba(248, 191, 79, 0.28), rgba(255, 138, 61, 0.14));
+  box-shadow: 0 0 0 1px rgba(248, 191, 79, 0.12), 0 10px 24px rgba(248, 191, 79, 0.16);
+}
+
+.oee-override-button.quality-scrap.is-active {
+  border-color: rgba(255, 107, 107, 0.5);
+  background: linear-gradient(135deg, rgba(255, 107, 107, 0.3), rgba(255, 138, 61, 0.12));
+  box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.14), 0 10px 24px rgba(255, 107, 107, 0.18);
 }
 
 .oee-action-row {
@@ -897,6 +938,15 @@ body {
   .oee-trend-card-stats {
     justify-items: start;
     text-align: left;
+  }
+
+  #oee-quality-override-list .status-row {
+    align-items: stretch;
+  }
+
+  .oee-override-actions {
+    width: 100%;
+    max-width: none;
   }
 
   .tab-bar {

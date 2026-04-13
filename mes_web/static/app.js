@@ -78,6 +78,14 @@ const state = {
   reconnectAttempt: 0,
   reconnectTimer: null,
   oeeControlBusy: false,
+  oeeDrafts: {
+    selectedShift: null,
+    performanceMode: null,
+    targetQty: { value: "", dirty: false },
+    idealCycleSec: { value: "", dirty: false },
+    plannedStopMin: { value: "", dirty: false },
+    qualityOverrides: {},
+  },
 };
 
 const els = {
@@ -390,6 +398,208 @@ function syncInputValue(input, value) {
   input.value = value === null || value === undefined || value === "" ? "" : String(value);
 }
 
+function normalizeComparableValue(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+}
+
+function comparableValuesMatch(left, right) {
+  const leftText = normalizeComparableValue(left).replace(",", ".");
+  const rightText = normalizeComparableValue(right).replace(",", ".");
+  if (!leftText || !rightText) return leftText === rightText;
+
+  const leftNumber = Number(leftText);
+  const rightNumber = Number(rightText);
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+    return Math.abs(leftNumber - rightNumber) < 0.000001;
+  }
+  return leftText === rightText;
+}
+
+function getOeeDraftField(key) {
+  return state.oeeDrafts[key];
+}
+
+function setOeeInputDraft(key, value) {
+  const draft = getOeeDraftField(key);
+  draft.value = String(value ?? "");
+  draft.dirty = true;
+}
+
+function clearOeeInputDraft(key) {
+  const draft = getOeeDraftField(key);
+  draft.value = "";
+  draft.dirty = false;
+}
+
+function effectiveOeeInputValue(key, serverValue) {
+  const draft = getOeeDraftField(key);
+  if (draft && draft.dirty) return draft.value;
+  return serverValue === null || serverValue === undefined || serverValue === "" ? "" : String(serverValue);
+}
+
+function syncOeeInputValue(input, draftKey, serverValue) {
+  const nextValue = effectiveOeeInputValue(draftKey, serverValue);
+  if (document.activeElement === input) return;
+  if (input.value !== nextValue) {
+    input.value = nextValue;
+  }
+}
+
+function resolveOeeInputDraft(draftKey, serverValue) {
+  const draft = getOeeDraftField(draftKey);
+  if (draft && draft.dirty && comparableValuesMatch(draft.value, serverValue)) {
+    clearOeeInputDraft(draftKey);
+  }
+}
+
+function setOeeChoiceDraft(key, value) {
+  state.oeeDrafts[key] = value ? String(value) : null;
+}
+
+function clearOeeChoiceDraft(key) {
+  state.oeeDrafts[key] = null;
+}
+
+function effectiveOeeChoiceValue(key, serverValue, fallbackValue = "") {
+  return state.oeeDrafts[key] || serverValue || fallbackValue;
+}
+
+function resolveOeeChoiceDraft(key, serverValue) {
+  const draftValue = state.oeeDrafts[key];
+  if (draftValue && comparableValuesMatch(draftValue, serverValue)) {
+    clearOeeChoiceDraft(key);
+  }
+}
+
+function setOeeQualityDraft(itemId, value) {
+  if (!itemId) return;
+  state.oeeDrafts.qualityOverrides[String(itemId)] = String(value ?? "");
+}
+
+function resolveOeeQualityDrafts(snapshot) {
+  const recentItems = snapshot?.oee?.recent_items || [];
+  const knownItems = new Map(recentItems.map((item) => [String(item.item_id), item]));
+  Object.keys(state.oeeDrafts.qualityOverrides).forEach((itemId) => {
+    const item = knownItems.get(itemId);
+    if (!item) {
+      delete state.oeeDrafts.qualityOverrides[itemId];
+      return;
+    }
+    if (comparableValuesMatch(state.oeeDrafts.qualityOverrides[itemId], item.classification)) {
+      delete state.oeeDrafts.qualityOverrides[itemId];
+    }
+  });
+}
+
+function resolveOeeDrafts(snapshot) {
+  const controls = snapshot?.oee?.controls || {};
+  resolveOeeChoiceDraft("selectedShift", controls.selected_shift || "SHIFT-A");
+  resolveOeeChoiceDraft("performanceMode", controls.performance_mode || "TARGET");
+  resolveOeeInputDraft("targetQty", controls.target_qty);
+  resolveOeeInputDraft("idealCycleSec", controls.ideal_cycle_sec);
+  resolveOeeInputDraft("plannedStopMin", controls.planned_stop_min);
+  resolveOeeQualityDrafts(snapshot);
+}
+
+function syncButtonCollection(container, entries, { datasetKey, activeValue = null, disabled = false, baseClass }) {
+  const existing = new Map(
+    Array.from(container.querySelectorAll("button")).map((button) => [button.dataset[datasetKey], button])
+  );
+
+  entries.forEach((entry, index) => {
+    const value = String(entry.value);
+    let button = existing.get(value);
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.dataset[datasetKey] = value;
+    }
+    button.textContent = entry.label;
+    button.className = activeValue !== null && comparableValuesMatch(activeValue, value)
+      ? `${baseClass} is-active`
+      : baseClass;
+    button.disabled = disabled;
+
+    const currentChild = container.children[index];
+    if (currentChild !== button) {
+      container.insertBefore(button, currentChild || null);
+    }
+    existing.delete(value);
+  });
+
+  existing.forEach((button) => button.remove());
+}
+
+function createQualityOverrideRow(itemId) {
+  const row = document.createElement("article");
+  row.className = "status-row";
+  row.dataset.itemId = String(itemId);
+
+  const label = document.createElement("span");
+  label.className = "oee-override-label";
+
+  const controls = document.createElement("div");
+  controls.className = "oee-override-actions";
+
+  row.append(label, controls);
+  return row;
+}
+
+function renderQualityOverrideRows(recentItems, overrideOptions, disabled) {
+  if (!recentItems.length) {
+    els.oeeQualityOverrideList.innerHTML = `<p class="empty-state">Override icin tamamlanan urun yok.</p>`;
+    return;
+  }
+
+  Array.from(els.oeeQualityOverrideList.querySelectorAll(".empty-state")).forEach((node) => node.remove());
+
+  const existing = new Map(
+    Array.from(els.oeeQualityOverrideList.querySelectorAll("article[data-item-id]")).map((row) => [row.dataset.itemId, row])
+  );
+
+  recentItems.forEach((item, index) => {
+    const itemId = String(item.item_id);
+    let row = existing.get(itemId);
+    if (!row) {
+      row = createQualityOverrideRow(itemId);
+    }
+
+    const label = row.querySelector(".oee-override-label");
+    const controls = row.querySelector(".oee-override-actions");
+    label.textContent = `#${item.item_id} | ${formatToken(item.color)} | ${formatTime(item.completed_at)}`;
+
+    const draftValue = state.oeeDrafts.qualityOverrides[itemId];
+    const selectedValue = draftValue || item.classification || "GOOD";
+    syncButtonCollection(
+      controls,
+      overrideOptions.map((value) => ({ value, label: formatToken(value) })),
+      {
+        datasetKey: "oeeQualityValue",
+        activeValue: selectedValue,
+        disabled,
+        baseClass: "oee-choice-button oee-override-button",
+      }
+    );
+    controls.querySelectorAll("button[data-oee-quality-value]").forEach((button) => {
+      button.dataset.itemId = itemId;
+      button.dataset.oeeOverrideItem = itemId;
+      button.dataset.qualityValue = button.dataset.oeeQualityValue;
+      button.classList.toggle("quality-good", button.dataset.oeeQualityValue === "GOOD");
+      button.classList.toggle("quality-rework", button.dataset.oeeQualityValue === "REWORK");
+      button.classList.toggle("quality-scrap", button.dataset.oeeQualityValue === "SCRAP");
+    });
+
+    const currentChild = els.oeeQualityOverrideList.children[index];
+    if (currentChild !== row) {
+      els.oeeQualityOverrideList.insertBefore(row, currentChild || null);
+    }
+    existing.delete(itemId);
+  });
+
+  existing.forEach((row) => row.remove());
+}
+
 function setRuntime(nextRuntime) {
   state.runtime = nextRuntime;
   els.runtimeBadge.textContent = formatToken(nextRuntime);
@@ -553,16 +763,11 @@ function renderCommands(snapshot) {
   const manualDisabled = !permissions.publish_enabled || !permissions.manual_command_enabled;
 
   els.commandMode.textContent = `Mod: ${formatToken(permissions.mode)} | Topic: ${permissions.transport_topic}`;
-  els.presetButtons.innerHTML = permissions.allowed_presets
-    .map((command) => {
-      const label = PRESET_LABELS[command] || command;
-      return `
-        <button class="preset-button" data-command="${command}" ${presetDisabled ? "disabled" : ""}>
-          ${label}
-        </button>
-      `;
-    })
-    .join("");
+  syncButtonCollection(
+    els.presetButtons,
+    permissions.allowed_presets.map((command) => ({ value: command, label: PRESET_LABELS[command] || command })),
+    { datasetKey: "command", disabled: presetDisabled, baseClass: "preset-button" }
+  );
 
   els.manualCommandInput.disabled = manualDisabled;
   els.manualCommandSubmit.disabled = manualDisabled;
@@ -607,52 +812,41 @@ function selectedShiftWindowText(controls) {
 
 function renderOeeControls(oee) {
   const controls = oee.controls || {};
-  const selectedShift = controls.selected_shift || "SHIFT-A";
-  const performanceMode = controls.performance_mode || "TARGET";
+  const selectedShift = effectiveOeeChoiceValue("selectedShift", controls.selected_shift, "SHIFT-A");
+  const performanceMode = effectiveOeeChoiceValue("performanceMode", controls.performance_mode, "TARGET");
+  const targetQtyValue = effectiveOeeInputValue("targetQty", controls.target_qty);
+  const idealCycleValue = effectiveOeeInputValue("idealCycleSec", controls.ideal_cycle_sec);
+  const plannedStopValue = effectiveOeeInputValue("plannedStopMin", controls.planned_stop_min);
+  const selectedShiftControls = {
+    ...controls,
+    selected_shift: selectedShift,
+  };
 
   els.oeeControlSummary.textContent = oee.last_event_summary || "OEE kontrol paneli hazir.";
-  els.oeeSelectedWindow.textContent = selectedShiftWindowText(controls);
+  els.oeeSelectedWindow.textContent = selectedShiftWindowText(selectedShiftControls);
 
-  els.oeeShiftOptions.innerHTML = (controls.shift_options || [])
-    .map(
-      (option) => `
-        <button
-          class="oee-choice-button ${option.code === selectedShift ? "is-active" : ""}"
-          data-shift-code="${option.code}"
-          type="button"
-          ${state.oeeControlBusy ? "disabled" : ""}
-        >
-          ${option.code}
-        </button>
-      `
-    )
-    .join("");
+  syncButtonCollection(
+    els.oeeShiftOptions,
+    (controls.shift_options || []).map((option) => ({ value: option.code, label: option.code })),
+    { datasetKey: "shiftCode", activeValue: selectedShift, disabled: state.oeeControlBusy, baseClass: "oee-choice-button" }
+  );
 
   const modes = [
     ["TARGET", "Hedef Bazli"],
     ["IDEAL_CYCLE", "Ideal Cycle"],
   ];
-  els.oeeModeOptions.innerHTML = modes
-    .map(
-      ([mode, label]) => `
-        <button
-          class="oee-choice-button ${mode === performanceMode ? "is-active" : ""}"
-          data-performance-mode="${mode}"
-          type="button"
-          ${state.oeeControlBusy ? "disabled" : ""}
-        >
-          ${label}
-        </button>
-      `
-    )
-    .join("");
+  syncButtonCollection(
+    els.oeeModeOptions,
+    modes.map(([value, label]) => ({ value, label })),
+    { datasetKey: "performanceMode", activeValue: performanceMode, disabled: state.oeeControlBusy, baseClass: "oee-choice-button" }
+  );
 
   els.oeeShiftStart.disabled = state.oeeControlBusy || !controls.can_start;
   els.oeeShiftStop.disabled = state.oeeControlBusy || !controls.can_stop;
 
-  syncInputValue(els.oeeTargetQty, controls.target_qty);
-  syncInputValue(els.oeeIdealCycle, controls.ideal_cycle_sec);
-  syncInputValue(els.oeePlannedStop, controls.planned_stop_min);
+  syncOeeInputValue(els.oeeTargetQty, "targetQty", targetQtyValue);
+  syncOeeInputValue(els.oeeIdealCycle, "idealCycleSec", idealCycleValue);
+  syncOeeInputValue(els.oeePlannedStop, "plannedStopMin", plannedStopValue);
   els.oeeTargetQty.disabled = state.oeeControlBusy;
   els.oeeIdealCycle.disabled = state.oeeControlBusy;
   els.oeePlannedStop.disabled = state.oeeControlBusy;
@@ -679,9 +873,9 @@ function renderOeeControls(oee) {
     ["Secim", selectedShift],
     ["Aktif Shift", oee.shift.code || "-"],
     ["Mod", formatToken(performanceMode)],
-    ["Target", `${formatNumber(controls.target_qty)} adet`],
-    ["Cycle", `${formatNumber(controls.ideal_cycle_sec)} sn`],
-    ["Planli Durus", `${formatNumber(controls.planned_stop_min)} dk`],
+    ["Target", `${formatNumber(targetQtyValue)} adet`],
+    ["Cycle", `${formatNumber(idealCycleValue)} sn`],
+    ["Planli Durus", `${formatNumber(plannedStopValue)} dk`],
   ]);
 }
 
@@ -790,23 +984,7 @@ function renderOee(snapshot) {
 
   const overrideOptions = oee.controls.quality_override_options || ["GOOD", "REWORK", "SCRAP"];
   const recentItems = oee.recent_items || [];
-  if (!recentItems.length) {
-    els.oeeQualityOverrideList.innerHTML = `<p class="empty-state">Override icin tamamlanan urun yok.</p>`;
-  } else {
-    els.oeeQualityOverrideList.innerHTML = recentItems
-      .map((item) => `
-        <article class="status-row">
-          <span>#${item.item_id} | ${formatToken(item.color)} | ${formatTime(item.completed_at)}</span>
-          <strong>
-            <select class="oee-quality-select" data-item-id="${item.item_id}" ${state.oeeControlBusy ? "disabled" : ""}>
-              ${overrideOptions.map((option) => `<option value="${option}" ${option === item.classification ? "selected" : ""}>${formatToken(option)}</option>`).join("")}
-            </select>
-            <button class="preset-button" type="button" data-oee-override-item="${item.item_id}" ${state.oeeControlBusy ? "disabled" : ""}>Kaydet</button>
-          </strong>
-        </article>
-      `)
-      .join("");
-  }
+  renderQualityOverrideRows(recentItems, overrideOptions, state.oeeControlBusy);
 
   renderOeeTrend(oee.trend);
 }
@@ -853,6 +1031,7 @@ async function fetchDashboard() {
 
 function applySnapshot(snapshot) {
   state.snapshot = snapshot;
+  resolveOeeDrafts(snapshot);
   render(snapshot);
 }
 
@@ -918,7 +1097,7 @@ async function sendCommand(kind, value) {
   }
 }
 
-async function sendOeeControl(action, value = null) {
+async function sendOeeControl(action, value = null, options = {}) {
   state.oeeControlBusy = true;
   setOeeFeedback("OEE ayari gonderiliyor...", "neutral");
   if (state.snapshot) {
@@ -936,6 +1115,9 @@ async function sendOeeControl(action, value = null) {
     }
     setOeeFeedback(payload.summary || `OEE aksiyonu gonderildi: ${action}`, "success");
   } catch (error) {
+    if (typeof options.onError === "function") {
+      options.onError();
+    }
     setOeeFeedback(`OEE kontrol hatasi: ${error.message}`, "error");
   } finally {
     state.oeeControlBusy = false;
@@ -945,7 +1127,7 @@ async function sendOeeControl(action, value = null) {
   }
 }
 
-async function sendQualityOverride(itemId, classification) {
+async function sendQualityOverride(itemId, classification, options = {}) {
   state.oeeControlBusy = true;
   setOeeFeedback("Kalite override gonderiliyor...", "neutral");
   if (state.snapshot) renderOee(state.snapshot);
@@ -961,6 +1143,9 @@ async function sendQualityOverride(itemId, classification) {
     }
     setOeeFeedback(payload.summary || `Kalite guncellendi: ${itemId}`, "success");
   } catch (error) {
+    if (typeof options.onError === "function") {
+      options.onError();
+    }
     setOeeFeedback(`Kalite override hatasi: ${error.message}`, "error");
   } finally {
     state.oeeControlBusy = false;
@@ -989,37 +1174,79 @@ els.manualCommandForm.addEventListener("submit", (event) => {
 els.oeeShiftOptions.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-shift-code]");
   if (!button || button.disabled) return;
-  sendOeeControl("select_shift", button.dataset.shiftCode);
+  setOeeChoiceDraft("selectedShift", button.dataset.shiftCode);
+  if (state.snapshot) renderOee(state.snapshot);
+  sendOeeControl("select_shift", button.dataset.shiftCode, {
+    onError: () => {
+      clearOeeChoiceDraft("selectedShift");
+    },
+  });
 });
 
 els.oeeModeOptions.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-performance-mode]");
   if (!button || button.disabled) return;
-  sendOeeControl("set_performance_mode", button.dataset.performanceMode);
+  setOeeChoiceDraft("performanceMode", button.dataset.performanceMode);
+  if (state.snapshot) renderOee(state.snapshot);
+  sendOeeControl("set_performance_mode", button.dataset.performanceMode, {
+    onError: () => {
+      clearOeeChoiceDraft("performanceMode");
+    },
+  });
 });
 
 els.oeeShiftStart.addEventListener("click", () => sendOeeControl("shift_start"));
 els.oeeShiftStop.addEventListener("click", () => sendOeeControl("shift_stop"));
 
 els.oeeTargetApply.addEventListener("click", () => {
-  sendOeeControl("set_target_qty", els.oeeTargetQty.value.trim());
+  sendOeeControl("set_target_qty", effectiveOeeInputValue("targetQty", els.oeeTargetQty.value).trim());
 });
 
 els.oeeIdealCycleApply.addEventListener("click", () => {
-  sendOeeControl("set_ideal_cycle_sec", els.oeeIdealCycle.value.trim());
+  sendOeeControl("set_ideal_cycle_sec", effectiveOeeInputValue("idealCycleSec", els.oeeIdealCycle.value).trim());
 });
 
 els.oeePlannedStopApply.addEventListener("click", () => {
-  sendOeeControl("set_planned_stop_min", els.oeePlannedStop.value.trim());
+  sendOeeControl("set_planned_stop_min", effectiveOeeInputValue("plannedStopMin", els.oeePlannedStop.value).trim());
+});
+
+els.oeeTargetQty.addEventListener("input", () => setOeeInputDraft("targetQty", els.oeeTargetQty.value));
+els.oeeIdealCycle.addEventListener("input", () => setOeeInputDraft("idealCycleSec", els.oeeIdealCycle.value));
+els.oeePlannedStop.addEventListener("input", () => setOeeInputDraft("plannedStopMin", els.oeePlannedStop.value));
+
+els.oeeTargetQty.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  els.oeeTargetApply.click();
+});
+
+els.oeeIdealCycle.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  els.oeeIdealCycleApply.click();
+});
+
+els.oeePlannedStop.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  els.oeePlannedStopApply.click();
 });
 
 els.oeeQualityOverrideList.addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-oee-override-item]");
+  const button = event.target.closest("button[data-oee-override-item][data-quality-value]");
   if (!button || button.disabled) return;
   const itemId = button.dataset.oeeOverrideItem;
-  const select = els.oeeQualityOverrideList.querySelector(`select[data-item-id="${itemId}"]`);
-  if (!select) return;
-  sendQualityOverride(itemId, select.value);
+  const classification = button.dataset.qualityValue;
+  const currentSnapshotItem = (state.snapshot?.oee?.recent_items || []).find((item) => String(item.item_id) === itemId);
+  const currentValue = state.oeeDrafts.qualityOverrides[itemId] || currentSnapshotItem?.classification || "";
+  if (comparableValuesMatch(currentValue, classification)) return;
+  setOeeQualityDraft(itemId, classification);
+  if (state.snapshot) renderOee(state.snapshot);
+  sendQualityOverride(itemId, classification, {
+    onError: () => {
+      delete state.oeeDrafts.qualityOverrides[itemId];
+    },
+  });
 });
 
 async function bootstrap() {

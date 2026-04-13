@@ -46,12 +46,19 @@ class DashboardStoreTests(unittest.TestCase):
 
     def test_reset_counts(self) -> None:
         self.store.apply_log_line(self.module_id, "MEGA|AUTO|QUEUE=ENQ|COLOR=MAVI")
+        self.store.apply_vision_status(self.module_id, {"state": "running", "fps": 12.4})
+        self.store.apply_vision_tracks(self.module_id, {"active_tracks": 2, "pending_tracks": 1, "total_crossings": 5})
+        self.store.apply_vision_event(self.module_id, {"event": "line_crossed", "color_name": "red"})
         self.store.reset_counts(self.module_id, received_at="2026-04-02T10:15:30Z")
 
         snapshot = self.store.get_dashboard_snapshot(self.module_id)
         self.assertEqual(snapshot["counts"]["total"], 0)
         self.assertEqual(snapshot["counts"]["last_reset_at"], "2026-04-02T10:15:30Z")
         self.assertEqual(snapshot["recent_logs"][0]["message"], "SYSTEM|COUNTS|RESET")
+        self.assertEqual(snapshot["vision_ingest"]["status"]["state"], "unknown")
+        self.assertEqual(snapshot["vision_ingest"]["tracks"]["total_crossings"], 0)
+        self.assertEqual(snapshot["vision_ingest"]["compare"]["vision"]["red"], 0)
+        self.assertEqual(snapshot["vision_ingest"]["runtime"]["last_item"], None)
 
     def test_heartbeat_timeout_turns_offline(self) -> None:
         base = datetime(2026, 4, 2, 10, 0, 0, tzinfo=timezone.utc)
@@ -224,11 +231,54 @@ class DashboardStoreTests(unittest.TestCase):
             self.assertEqual(runtime["mismatch_count"], 1)
             self.assertEqual(runtime["early_accepted_count"], 2)
             self.assertEqual(runtime["early_rejected_count"], 3)
+            self.assertEqual(runtime["late_audit_count"], 4)
             self.assertEqual(runtime["last_reject_reason"], "HEAD_CHANGED")
             self.assertEqual(runtime["last_item"]["sensor_color"], "yellow")
             self.assertEqual(runtime["last_item"]["vision_color"], "red")
             self.assertEqual(runtime["last_item"]["final_color"], "red")
             self.assertEqual(runtime["last_item"]["correlation_status"], "MATCHED")
+
+    def test_reset_counts_keeps_old_vision_runtime_values_cleared_after_refresh(self) -> None:
+        runtime_payload = (
+            '{"shiftSelected":"SHIFT-A","performanceMode":"TARGET",'
+            '"itemsById":{"42":{"item_id":"42","measure_id":"7","sensor_color":"yellow","vision_color":"red","final_color":"red","color":"red","classification":"GOOD","completed_at":"2026-04-02T08:01:05Z","updated_at":"2026-04-02T08:02:00Z","decision_source":"VISION","finalization_reason":"VISION_CORRECTED_MISMATCH","correlation_status":"MATCHED","pick_trigger_source":"EARLY"},'
+            '"43":{"item_id":"43","measure_id":"8","sensor_color":"blue","vision_color":"blue","final_color":"blue","color":"blue","classification":"GOOD","completed_at":"2026-04-02T08:06:00Z","updated_at":"2026-04-02T08:06:00Z","decision_source":"VISION","finalization_reason":"VISION_HIGH_CONF","correlation_status":"MATCHED","pick_trigger_source":"EARLY"}},'
+            '"recentItemIds":["42"],'
+            '"vision":{"healthState":"online","lastRejectReason":"HEAD_CHANGED","metrics":{"mismatchCount":1,"earlyAcceptedCount":2,"earlyRejectedCount":3,"lateAuditCount":4}},'
+            '"counts":{"total":1,"good":1,"rework":0,"scrap":0,"byColor":{"red":{"total":1,"good":1,"rework":0,"scrap":0},"yellow":{"total":0,"good":0,"rework":0,"scrap":0},"blue":{"total":0,"good":0,"rework":0,"scrap":0}}}}'
+        )
+        with open(self._state_path, "w", encoding="utf-8") as handle:
+            handle.write(runtime_payload)
+
+        refreshed = self.store.refresh_oee_runtime_state(self.module_id, force=True)
+        self.assertTrue(refreshed)
+
+        self.store.reset_counts(self.module_id, received_at="2026-04-02T08:05:00Z")
+        refreshed = self.store.refresh_oee_runtime_state(self.module_id, force=True)
+        self.assertTrue(refreshed)
+        snapshot = self.store.get_dashboard_snapshot(self.module_id)
+        runtime = snapshot["vision_ingest"]["runtime"]
+        self.assertEqual(runtime["mismatch_count"], 0)
+        self.assertEqual(runtime["early_accepted_count"], 0)
+        self.assertEqual(runtime["early_rejected_count"], 0)
+        self.assertEqual(runtime["late_audit_count"], 0)
+        self.assertEqual(runtime["last_reject_reason"], "")
+        self.assertEqual(runtime["last_item"], None)
+
+        updated_payload = runtime_payload.replace('"recentItemIds":["42"]', '"recentItemIds":["43","42"]').replace('"mismatchCount":1', '"mismatchCount":2').replace('"earlyAcceptedCount":2', '"earlyAcceptedCount":3').replace('"earlyRejectedCount":3', '"earlyRejectedCount":4').replace('"lateAuditCount":4', '"lateAuditCount":5')
+        with open(self._state_path, "w", encoding="utf-8") as handle:
+            handle.write(updated_payload)
+
+        refreshed = self.store.refresh_oee_runtime_state(self.module_id, force=True)
+        self.assertTrue(refreshed)
+        snapshot = self.store.get_dashboard_snapshot(self.module_id)
+        runtime = snapshot["vision_ingest"]["runtime"]
+        self.assertEqual(runtime["mismatch_count"], 1)
+        self.assertEqual(runtime["early_accepted_count"], 1)
+        self.assertEqual(runtime["early_rejected_count"], 1)
+        self.assertEqual(runtime["late_audit_count"], 1)
+        self.assertEqual(runtime["last_reject_reason"], "HEAD_CHANGED")
+        self.assertEqual(runtime["last_item"]["item_id"], "43")
 
     def test_refresh_oee_runtime_state_retries_after_transient_permission_error(self) -> None:
         with open(self._state_path, "w", encoding="utf-8") as handle:

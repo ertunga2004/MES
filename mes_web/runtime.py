@@ -11,7 +11,7 @@ from .config import AppConfig
 from .excel_runtime import ExcelRuntimeSink
 from .mqtt_runtime import MqttIngestClient
 from .oee_state import OeeRuntimeStateManager
-from .store import DashboardStore
+from .store import DashboardStore, utc_now_text
 
 
 class SnapshotHub:
@@ -101,7 +101,18 @@ class RuntimeService:
         self.hub.attach_loop(asyncio.get_running_loop())
         if self.oee_manager.deactivate_active_shift_on_startup():
             self.store.refresh_oee_runtime_state(self.config.module_id, force=True)
+        current_state = self.oee_manager.read_state()
+        current_orders = ((current_state.get("workOrders") or {}) if isinstance(current_state.get("workOrders"), dict) else {}).get("ordersById")
+        if not isinstance(current_orders, dict) or not current_orders:
+            candidates = sorted(self.config.work_orders_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+            if candidates:
+                with contextlib.suppress(ValueError, OSError):
+                    self.oee_manager.import_work_orders_from_file(candidates[0], replace_existing=True)
+                    self.store.refresh_oee_runtime_state(self.config.module_id, force=True)
+                    current_state = self.oee_manager.read_state()
+        self.store.refresh_oee_runtime_state(self.config.module_id, force=True)
         self.excel_sink.start()
+        self.excel_sink.record_work_order_state(current_state, utc_now_text())
         self.mqtt_client.start()
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 

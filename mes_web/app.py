@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .command_policy import is_local_only_command
 from .config import AppConfig
+from .oee_state import WorkOrderTransitionReasonRequired
 from .runtime import RuntimeService, SnapshotHub
 from .store import DashboardStore, utc_now_text
 
@@ -24,6 +25,10 @@ def create_app() -> FastAPI:
     app = FastAPI(title="MES Web", version="0.1.0")
     static_dir = Path(config.static_dir)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+    def sync_work_order_runtime(state: dict[str, Any] | None = None) -> None:
+        runtime_state = state if isinstance(state, dict) else oee_state_manager.read_state()
+        runtime_service.excel_sink.record_work_order_state(runtime_state, utc_now_text())
 
     @app.on_event("startup")
     async def on_startup() -> None:
@@ -108,6 +113,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
         recent_log = str(result.get("recent_log") or "").strip()
         if recent_log:
             store.append_system_log(module_id, recent_log, topic="local/oee")
@@ -134,6 +140,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
         override = result.get("override") if isinstance(result.get("override"), dict) else None
         if override is not None:
             runtime_service.excel_sink.record_quality_override(
@@ -146,6 +153,144 @@ def create_app() -> FastAPI:
             "item_id": item_id,
             "classification": classification,
             "summary": str(result.get("summary") or ""),
+        }
+
+    @app.post("/api/modules/{module_id}/work-orders/import")
+    async def import_work_orders(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if module_id != config.module_id:
+            raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+
+        orders = payload.get("orders")
+        replace_existing = bool(payload.get("replace_existing", True))
+        try:
+            result = oee_state_manager.import_work_orders(orders, replace_existing=replace_existing)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+
+        store.refresh_oee_runtime_state(module_id, force=True)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        summary = str(result.get("summary") or "Is emri listesi guncellendi.")
+        store.append_system_log(module_id, f"SYSTEM|WORK_ORDER|IMPORT|COUNT={int(result.get('total_count') or 0)}", topic="local/work-orders")
+        return {
+            "status": "accepted",
+            "summary": summary,
+            "queued_count": int(result.get("queued_count") or 0),
+            "total_count": int(result.get("total_count") or 0),
+        }
+
+    @app.post("/api/modules/{module_id}/work-orders/reload")
+    async def reload_work_orders(module_id: str) -> dict[str, Any]:
+        if module_id != config.module_id:
+            raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+
+        candidates = sorted(config.work_orders_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+        if not candidates:
+            raise HTTPException(status_code=404, detail="WORK_ORDER_SOURCE_NOT_FOUND")
+        try:
+            result = oee_state_manager.import_work_orders_from_file(candidates[0], replace_existing=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+
+        store.refresh_oee_runtime_state(module_id, force=True)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        summary = str(result.get("summary") or "Is emri kaynagi yenilendi.")
+        store.append_system_log(module_id, f"SYSTEM|WORK_ORDER|RELOAD|FILE={candidates[0].name}", topic="local/work-orders")
+        return {
+            "status": "accepted",
+            "summary": summary,
+            "source_file": candidates[0].name,
+        }
+
+    @app.post("/api/modules/{module_id}/work-orders/tolerance")
+    async def update_work_order_tolerance(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if module_id != config.module_id:
+            raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+
+        try:
+            result = oee_state_manager.set_work_order_tolerance(payload.get("minutes", payload.get("tolerance_minutes")))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+
+        store.refresh_oee_runtime_state(module_id, force=True)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        summary = str(result.get("summary") or "Is emri toleransi guncellendi.")
+        store.append_system_log(module_id, f"SYSTEM|WORK_ORDER|TOLERANCE|{result.get('tolerance_minutes')}", topic="local/work-orders")
+        return {
+            "status": "accepted",
+            "summary": summary,
+            "tolerance_minutes": float(result.get("tolerance_minutes") or 0.0),
+        }
+
+    @app.post("/api/modules/{module_id}/work-orders/reorder")
+    async def reorder_work_orders(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if module_id != config.module_id:
+            raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+
+        try:
+            result = oee_state_manager.reorder_work_orders(payload.get("order_ids") or payload.get("orderIds"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+
+        store.refresh_oee_runtime_state(module_id, force=True)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        summary = str(result.get("summary") or "Is emri sirasi guncellendi.")
+        store.append_system_log(module_id, "SYSTEM|WORK_ORDER|REORDER", topic="local/work-orders")
+        return {
+            "status": "accepted",
+            "summary": summary,
+        }
+
+    @app.post("/api/modules/{module_id}/work-orders/start")
+    async def start_work_order(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if module_id != config.module_id:
+            raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+
+        try:
+            result = oee_state_manager.start_work_order(
+                str(payload.get("order_id") or payload.get("orderId") or ""),
+                operator_code=str(payload.get("operator_code") or payload.get("operatorCode") or ""),
+                operator_name=str(payload.get("operator_name") or payload.get("operatorName") or ""),
+                transition_reason=str(payload.get("transition_reason") or payload.get("transitionReason") or ""),
+                started_at=str(payload.get("started_at") or payload.get("startedAt") or ""),
+            )
+        except WorkOrderTransitionReasonRequired as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "WORK_ORDER_REASON_REQUIRED",
+                    "order_id": exc.order_id,
+                    "previous_order_id": exc.previous_order_id,
+                    "elapsed_minutes": round(exc.elapsed_minutes, 1),
+                    "tolerance_minutes": round(exc.tolerance_minutes, 1),
+                },
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+
+        store.refresh_oee_runtime_state(module_id, force=True)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        order = result.get("order") if isinstance(result.get("order"), dict) else {}
+        summary = str(result.get("summary") or "Is emri baslatildi.")
+        store.append_system_log(
+            module_id,
+            f"SYSTEM|WORK_ORDER|START|ORDER={order.get('orderId') or ''}|OPERATOR={order.get('startedBy') or ''}",
+            topic="local/work-orders",
+        )
+        return {
+            "status": "accepted",
+            "summary": summary,
+            "inventory_used": int(result.get("inventory_used") or 0),
+            "order_id": str(order.get("orderId") or ""),
         }
 
     @app.websocket("/ws/modules/{module_id}")

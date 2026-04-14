@@ -218,6 +218,48 @@ class DashboardStoreTests(unittest.TestCase):
             self.assertEqual(snapshot["oee"]["recent_items"][0]["classification"], "REWORK")
             self.assertEqual(snapshot["oee"]["controls"]["quality_override_options"], ["GOOD", "REWORK", "SCRAP"])
 
+    def test_runtime_state_exposes_work_order_queue_inventory_and_active_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "oee_runtime_state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"shiftSelected":"SHIFT-A","performanceMode":"TARGET","targetQty":12,"idealCycleSec":10,'
+                    '"shift":{"active":true,"code":"SHIFT-A","startedAt":"2026-04-02T08:00:00+03:00","planStart":"2026-04-02T08:00:00+03:00","planEnd":"2026-04-02T16:00:00+03:00","performanceMode":"TARGET","targetQty":12,"plannedStopMin":15.0},'
+                    '"counts":{"total":3,"good":3,"rework":0,"scrap":0,"byColor":{"red":{"total":2,"good":2,"rework":0,"scrap":0},"yellow":{"total":1,"good":1,"rework":0,"scrap":0},"blue":{"total":0,"good":0,"rework":0,"scrap":0}}},'
+                    '"workOrders":{"toleranceMinutes":10.0,'
+                    '"ordersById":{'
+                    '"WO-1":{"orderId":"WO-1","stockCode":"BOX-MIX","stockName":"Karisik Set","quantity":3,"completedQty":2,"inventoryConsumedQty":1,"productionQty":1,"remainingQty":1,"productColor":"mixed","status":"active","startedAt":"2026-04-02T08:05:00+03:00","startedBy":"OP-001","startedByName":"Ayse","cycleTimeSec":10,"requirements":[{"lineId":"RED","stockCode":"BOX-RED","stockName":"Kirmizi Kutu","productCode":"BOX-RED","color":"red","quantity":1,"completedQty":1,"inventoryConsumedQty":0,"productionQty":1,"remainingQty":0},{"lineId":"YEL","stockCode":"BOX-YEL","stockName":"Sari Kutu","productCode":"BOX-YEL","color":"yellow","quantity":1,"completedQty":1,"inventoryConsumedQty":1,"productionQty":0,"remainingQty":0},{"lineId":"BLU","stockCode":"BOX-BLUE","stockName":"Mavi Kutu","productCode":"BOX-BLUE","color":"blue","quantity":1,"completedQty":0,"inventoryConsumedQty":0,"productionQty":0,"remainingQty":1}]},'
+                    '"WO-2":{"orderId":"WO-2","stockCode":"BOX-BLUE","stockName":"Mavi Kutu","quantity":2,"completedQty":0,"remainingQty":2,"productColor":"blue","status":"queued","cycleTimeSec":10}},'
+                    '"orderSequence":["WO-1","WO-2"],'
+                    '"activeOrderId":"WO-1",'
+                    '"lastCompletedOrderId":"WO-0",'
+                    '"lastCompletedAt":"2026-04-02T08:00:00+03:00",'
+                    '"source":{"folder":"C:/erp-cache","file":"work_orders.json","loadedAt":"2026-04-02T08:00:00+03:00"},'
+                    '"inventoryByProduct":{"yellow":{"matchKey":"yellow","productCode":"BOX-YEL","stockCode":"BOX-YEL","stockName":"Sari Kutu","color":"yellow","quantity":2,"lastUpdatedAt":"2026-04-02T08:04:00+03:00","lastSource":"off_order_completion"}},'
+                    '"transitionLog":[{"eventType":"started","time":"2026-04-02T08:05:00+03:00","orderId":"WO-1","note":"Operator baslatti."}],'
+                    '"completionLog":[{"eventType":"completed","time":"2026-04-02T08:00:00+03:00","orderId":"WO-0","note":"Tamamlandi."}]},'
+                    '"lastEventSummary":"Is emri snapshot geri yuklendi.","lastUpdatedAt":"2026-04-02T08:10:00+03:00"}'
+                )
+
+            with patch.dict(os.environ, {"MES_WEB_OEE_RUNTIME_STATE_PATH": state_path}, clear=False):
+                config = AppConfig.from_env()
+                store = DashboardStore(config)
+                snapshot = store.get_dashboard_snapshot(config.module_id)
+
+            self.assertEqual(snapshot["work_orders"]["controls"]["tolerance_minutes"], 10.0)
+            self.assertEqual(snapshot["work_orders"]["summary"]["queued_count"], 1)
+            self.assertEqual(snapshot["work_orders"]["summary"]["active_count"], 1)
+            self.assertEqual(snapshot["work_orders"]["summary"]["inventory_total"], 2)
+            self.assertEqual(snapshot["work_orders"]["active_order"]["order_id"], "WO-1")
+            self.assertEqual(snapshot["work_orders"]["active_order"]["inventory_consumed_qty"], 1)
+            self.assertEqual(snapshot["work_orders"]["active_order"]["ideal_cycle_sec"], 10.0)
+            self.assertEqual(len(snapshot["work_orders"]["active_order"]["requirements"]), 3)
+            self.assertEqual(snapshot["work_orders"]["active_order"]["requirements"][2]["color"], "blue")
+            self.assertEqual(snapshot["work_orders"]["queue"][0]["order_id"], "WO-2")
+            self.assertEqual(snapshot["work_orders"]["inventory"][0]["quantity"], 2)
+            self.assertEqual(snapshot["work_orders"]["source"]["folder"], "C:/erp-cache")
+            self.assertEqual(snapshot["work_orders"]["source"]["file"], "work_orders.json")
+
     def test_runtime_state_exposes_vision_runtime_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "oee_runtime_state.json")

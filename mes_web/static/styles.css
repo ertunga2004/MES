@@ -586,6 +586,262 @@ body {
   color: #ffb4b4;
 }
 
+.work-order-summary-grid,
+.work-order-list,
+.work-order-log-grid,
+.work-order-kpi-grid,
+.work-order-meta-grid,
+.work-order-input-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.work-order-summary-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.work-order-metric-card,
+.work-order-active-card,
+.work-order-row,
+.work-order-log-card,
+.work-order-kpi-chip,
+.work-order-reason-panel,
+.work-order-import-card {
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.work-order-metric-card,
+.work-order-kpi-chip,
+.work-order-log-card {
+  padding: 16px;
+}
+
+.work-order-metric-card span,
+.work-order-kpi-chip span,
+.work-order-log-card span {
+  display: block;
+  color: var(--text-soft);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.work-order-metric-card strong,
+.work-order-kpi-chip strong {
+  display: block;
+  font-size: 24px;
+}
+
+.work-order-metric-card small {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.work-order-control-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.work-order-input-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.work-order-textarea,
+.oee-input-card input {
+  width: 100%;
+  min-width: 0;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 12px 14px;
+  color: var(--text-main);
+  background: rgba(0, 0, 0, 0.18);
+  font: inherit;
+}
+
+.work-order-textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.work-order-reason-panel {
+  padding: 16px;
+}
+
+.work-order-inline-head {
+  margin-bottom: 12px;
+}
+
+.work-order-active {
+  display: grid;
+  gap: 12px;
+}
+
+.work-order-active-card {
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.work-order-active-head,
+.work-order-row,
+.work-order-log-head,
+.work-order-log-body {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.work-order-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 138, 61, 0.16);
+  border: 1px solid rgba(255, 138, 61, 0.24);
+  color: #ffd4b6;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.work-order-active-head h3 {
+  margin: 10px 0 0;
+  font-size: 24px;
+}
+
+.work-order-progress {
+  display: grid;
+  gap: 10px;
+}
+
+.work-order-progress-bar {
+  position: relative;
+  width: 100%;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.work-order-progress-bar span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(36, 199, 141, 0.92), rgba(88, 166, 255, 0.92));
+}
+
+.work-order-progress strong {
+  font-size: 14px;
+}
+
+.work-order-requirement-list {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.work-order-requirement-list.compact {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.work-order-requirement-chip {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  display: grid;
+  gap: 4px;
+}
+
+.work-order-requirement-chip span {
+  color: var(--text-soft);
+  font-size: 12px;
+  margin: 0;
+}
+
+.work-order-requirement-chip strong {
+  font-size: 16px;
+}
+
+.work-order-requirement-chip small {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.work-order-kpi-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.work-order-kpi-chip {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.work-order-meta-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.work-order-row {
+  padding: 16px 18px;
+}
+
+.work-order-row-main {
+  display: grid;
+  gap: 10px;
+  flex: 1 1 auto;
+}
+
+.work-order-row-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.work-order-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.work-order-row-actions {
+  display: flex;
+  align-items: center;
+}
+
+.work-order-import-card {
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.work-order-import-textarea {
+  min-height: 240px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+}
+
+.work-order-import-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.work-order-log-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.work-order-log-card p {
+  margin: 10px 0 0;
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
 .oee-summary,
 .oee-kpi-grid,
 .oee-color-grid,
@@ -875,6 +1131,11 @@ body {
   .count-grid,
   .button-grid,
   .vision-grid,
+  .work-order-summary-grid,
+  .work-order-input-grid,
+  .work-order-kpi-grid,
+  .work-order-meta-grid,
+  .work-order-log-grid,
   .oee-control-layout,
   .oee-input-grid,
   .oee-mini-stat-grid,
@@ -913,6 +1174,11 @@ body {
   .button-grid,
   .manual-command-row,
   .vision-grid,
+  .work-order-summary-grid,
+  .work-order-input-grid,
+  .work-order-kpi-grid,
+  .work-order-meta-grid,
+  .work-order-log-grid,
   .oee-control-layout,
   .oee-choice-grid,
   .oee-action-row,
@@ -947,6 +1213,14 @@ body {
   .oee-override-actions {
     width: 100%;
     max-width: none;
+  }
+
+  .work-order-row,
+  .work-order-active-head,
+  .work-order-log-head,
+  .work-order-log-body,
+  .work-order-import-actions {
+    display: grid;
   }
 
   .tab-bar {

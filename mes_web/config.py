@@ -97,6 +97,13 @@ class AppConfig:
         return self.logs_dir / "oee_runtime_state.json"
 
     @property
+    def work_orders_dir(self) -> Path:
+        raw = os.getenv("MES_WEB_WORK_ORDERS_DIR")
+        if raw:
+            return Path(raw)
+        return self.package_dir / "work_orders"
+
+    @property
     def excel_workbook_path(self) -> Path:
         raw = os.getenv("MES_WEB_EXCEL_WORKBOOK_PATH")
         if raw:

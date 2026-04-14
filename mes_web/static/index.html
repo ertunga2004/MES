@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MES Kontrol Paneli</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260414-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260414-2" />
   </head>
   <body>
     <div class="app-shell">
@@ -24,6 +24,7 @@
 
       <nav class="tab-bar">
         <button class="tab-button is-active" data-tab="operations" type="button">Operasyon</button>
+        <button class="tab-button" data-tab="work-orders" type="button">Is Emirleri</button>
         <button class="tab-button" data-tab="oee" type="button">OEE</button>
       </nav>
 
@@ -206,9 +207,112 @@
             <div id="oee-trend-list" class="oee-trend-list"></div>
           </section>
         </section>
+
+        <section id="tab-work-orders" class="dashboard-grid tab-panel hidden">
+          <section class="panel panel-span-12">
+            <div class="panel-head">
+              <h2>Is Emri Operasyon Ozet</h2>
+              <span class="panel-note">Tablet secimi, depo kullanimi ve hat KPI ozetleri</span>
+            </div>
+            <div id="work-order-summary" class="work-order-summary-grid"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Operator Akisi</h2>
+              <span class="panel-note">Tolerans ve baslatma kontrolleri</span>
+            </div>
+            <div class="work-order-control-stack">
+              <div class="work-order-input-grid">
+                <label class="oee-input-card">
+                  <span>Operator Kodu</span>
+                  <input id="work-order-operator-code" type="text" autocomplete="off" placeholder="OP-001" />
+                </label>
+                <label class="oee-input-card">
+                  <span>Operator Adi</span>
+                  <input id="work-order-operator-name" type="text" autocomplete="off" placeholder="Ad Soyad" />
+                </label>
+              </div>
+
+              <label class="oee-input-card">
+                <span>Is Emirleri Arasi Tolerans (dk)</span>
+                <div class="oee-input-row">
+                  <input id="work-order-tolerance" type="number" min="0" step="0.1" inputmode="decimal" />
+                  <button id="work-order-tolerance-apply" type="button">Uygula</button>
+                </div>
+              </label>
+
+              <section id="work-order-reason-panel" class="work-order-reason-panel hidden">
+                <div class="panel-head work-order-inline-head">
+                  <h3>Gecikme Nedeni</h3>
+                  <span id="work-order-reason-context" class="panel-note">-</span>
+                </div>
+                <label class="oee-input-card">
+                  <span>Neden yeni is emrine gecis gecikti?</span>
+                  <textarea id="work-order-reason-input" class="work-order-textarea" rows="4" placeholder="Operator aciklamasi"></textarea>
+                </label>
+                <button id="work-order-reason-submit" class="oee-primary-button" type="button">Nedeni Kaydet ve Baslat</button>
+              </section>
+            </div>
+            <p id="work-order-feedback" class="oee-control-feedback">Is emri kontrolleri beklemede.</p>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Aktif Is Emri</h2>
+              <span class="panel-note">Anlik ilerleme ve kapanis durumu</span>
+            </div>
+            <div id="work-order-active" class="work-order-active"></div>
+          </section>
+
+          <section class="panel panel-span-12">
+            <div class="panel-head">
+              <h2>ERP Kaynagi</h2>
+              <span class="panel-note">Is emirleri klasorden yuklenir ve yenilenir</span>
+            </div>
+            <div class="work-order-import-card">
+              <div id="work-order-source" class="status-grid"></div>
+              <div class="work-order-import-actions">
+                <button id="work-order-reload-submit" class="oee-primary-button" type="button">Klasorden Yenile</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel panel-span-12">
+            <div class="panel-head">
+              <h2>Bekleyen Is Emirleri</h2>
+              <span class="panel-note">Operatorun siradaki secimi icin kuyruk</span>
+            </div>
+            <div id="work-order-queue-list" class="work-order-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Depo Onceligi</h2>
+              <span class="panel-note">Araya giren urunler burada tutulur</span>
+            </div>
+            <div id="work-order-inventory" class="status-grid"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Hat Performans Paneli</h2>
+              <span class="panel-note">OEE, durus ve runtime ozeti</span>
+            </div>
+            <div id="work-order-performance" class="status-grid"></div>
+          </section>
+
+          <section class="panel panel-span-12">
+            <div class="panel-head">
+              <h2>Gecis ve Kapanis Gecmisi</h2>
+              <span class="panel-note">Son operator gecisleri ve kapanan is emirleri</span>
+            </div>
+            <div id="work-order-transition-log" class="work-order-log-grid"></div>
+          </section>
+        </section>
       </main>
     </div>
 
-    <script src="/static/app.js?v=20260414-1"></script>
+    <script src="/static/app.js?v=20260414-2"></script>
   </body>
 </html>

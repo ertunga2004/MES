@@ -53,6 +53,11 @@ const TOKEN_LABELS = {
   bootstrapping: "Bootstrapping",
   live: "Canli",
   reconnecting: "Reconnect",
+  queued: "Kuyrukta",
+  started: "Basladi",
+  completed: "Kapatildi",
+  consumed_for_work_order: "Depodan Kullanildi",
+  off_order_completion: "Depoya Alindi",
 };
 
 const OEE_TREND_METRICS = [
@@ -78,6 +83,7 @@ const state = {
   reconnectAttempt: 0,
   reconnectTimer: null,
   oeeControlBusy: false,
+  workOrderBusy: false,
   oeeDrafts: {
     selectedShift: null,
     performanceMode: null,
@@ -85,6 +91,13 @@ const state = {
     idealCycleSec: { value: "", dirty: false },
     plannedStopMin: { value: "", dirty: false },
     qualityOverrides: {},
+  },
+  workOrderDrafts: {
+    operatorCode: "",
+    operatorName: "",
+    toleranceMinutes: { value: "", dirty: false },
+    pendingReason: "",
+    pendingStart: null,
   },
 };
 
@@ -96,6 +109,7 @@ const els = {
   connectionBanner: document.getElementById("connection-banner"),
   tabButtons: Array.from(document.querySelectorAll(".tab-button")),
   operationsTab: document.getElementById("tab-operations"),
+  workOrdersTab: document.getElementById("tab-work-orders"),
   oeeTab: document.getElementById("tab-oee"),
   overviewMeta: document.getElementById("overview-meta"),
   connectionCards: document.getElementById("connection-cards"),
@@ -135,6 +149,23 @@ const els = {
   oeeColorGrid: document.getElementById("oee-color-grid"),
   oeeQualityOverrideList: document.getElementById("oee-quality-override-list"),
   oeeTrendList: document.getElementById("oee-trend-list"),
+  workOrderSummary: document.getElementById("work-order-summary"),
+  workOrderOperatorCode: document.getElementById("work-order-operator-code"),
+  workOrderOperatorName: document.getElementById("work-order-operator-name"),
+  workOrderTolerance: document.getElementById("work-order-tolerance"),
+  workOrderToleranceApply: document.getElementById("work-order-tolerance-apply"),
+  workOrderReasonPanel: document.getElementById("work-order-reason-panel"),
+  workOrderReasonContext: document.getElementById("work-order-reason-context"),
+  workOrderReasonInput: document.getElementById("work-order-reason-input"),
+  workOrderReasonSubmit: document.getElementById("work-order-reason-submit"),
+  workOrderFeedback: document.getElementById("work-order-feedback"),
+  workOrderActive: document.getElementById("work-order-active"),
+  workOrderSource: document.getElementById("work-order-source"),
+  workOrderReloadSubmit: document.getElementById("work-order-reload-submit"),
+  workOrderQueueList: document.getElementById("work-order-queue-list"),
+  workOrderInventory: document.getElementById("work-order-inventory"),
+  workOrderPerformance: document.getElementById("work-order-performance"),
+  workOrderTransitionLog: document.getElementById("work-order-transition-log"),
 };
 
 function formatToken(value) {
@@ -404,6 +435,11 @@ function setOeeFeedback(message, tone = "neutral") {
   els.oeeControlFeedback.dataset.tone = tone;
 }
 
+function setWorkOrderFeedback(message, tone = "neutral") {
+  els.workOrderFeedback.textContent = message;
+  els.workOrderFeedback.dataset.tone = tone;
+}
+
 function syncInputValue(input, value) {
   if (document.activeElement === input) return;
   input.value = value === null || value === undefined || value === "" ? "" : String(value);
@@ -511,6 +547,29 @@ function resolveOeeDrafts(snapshot) {
   resolveOeeInputDraft("idealCycleSec", controls.ideal_cycle_sec);
   resolveOeeInputDraft("plannedStopMin", controls.planned_stop_min);
   resolveOeeQualityDrafts(snapshot);
+}
+
+function setWorkOrderToleranceDraft(value) {
+  state.workOrderDrafts.toleranceMinutes.value = String(value ?? "");
+  state.workOrderDrafts.toleranceMinutes.dirty = true;
+}
+
+function clearWorkOrderToleranceDraft() {
+  state.workOrderDrafts.toleranceMinutes.value = "";
+  state.workOrderDrafts.toleranceMinutes.dirty = false;
+}
+
+function effectiveWorkOrderToleranceValue(serverValue) {
+  const draft = state.workOrderDrafts.toleranceMinutes;
+  if (draft.dirty) return draft.value;
+  return serverValue === null || serverValue === undefined || serverValue === "" ? "" : String(serverValue);
+}
+
+function resolveWorkOrderDrafts(snapshot) {
+  const controls = snapshot?.work_orders?.controls || {};
+  if (state.workOrderDrafts.toleranceMinutes.dirty && comparableValuesMatch(state.workOrderDrafts.toleranceMinutes.value, controls.tolerance_minutes)) {
+    clearWorkOrderToleranceDraft();
+  }
 }
 
 function syncButtonCollection(container, entries, { datasetKey, activeValue = null, disabled = false, baseClass }) {
@@ -626,11 +685,18 @@ function setRuntime(nextRuntime) {
 }
 
 function setActiveTab(tabName) {
-  state.activeTab = tabName === "oee" ? "oee" : "operations";
+  if (tabName === "oee") {
+    state.activeTab = "oee";
+  } else if (tabName === "work-orders") {
+    state.activeTab = "work-orders";
+  } else {
+    state.activeTab = "operations";
+  }
   els.tabButtons.forEach((button) => {
     button.classList.toggle("is-active", button.dataset.tab === state.activeTab);
   });
   els.operationsTab.classList.toggle("hidden", state.activeTab !== "operations");
+  els.workOrdersTab.classList.toggle("hidden", state.activeTab !== "work-orders");
   els.oeeTab.classList.toggle("hidden", state.activeTab !== "oee");
 
   const params = new URLSearchParams(window.location.search);
@@ -1000,6 +1066,274 @@ function renderOee(snapshot) {
   renderOeeTrend(oee.trend);
 }
 
+function formatMinutes(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "-";
+  return `${numeric.toFixed(1)} dk`;
+}
+
+function workOrderTitle(order) {
+  if (!order) return "-";
+  const stockCode = String(order.stock_code || "").trim();
+  const stockName = String(order.stock_name || "").trim();
+  if (stockCode && stockName) return `${stockCode} | ${stockName}`;
+  return stockCode || stockName || String(order.order_id || "-");
+}
+
+function workOrderRequirementLabel(requirement) {
+  if (!requirement) return "-";
+  const color = String(requirement.color || "").trim();
+  if (color) return formatToken(color);
+  return String(requirement.stock_code || requirement.product_code || requirement.line_id || "-");
+}
+
+function renderWorkOrderRequirements(order, compact = false) {
+  const requirements = Array.isArray(order?.requirements) ? order.requirements : [];
+  if (!requirements.length) return "";
+  return `
+    <div class="work-order-requirement-list${compact ? " compact" : ""}">
+      ${requirements.map((requirement) => `
+        <div class="work-order-requirement-chip">
+          <span>${workOrderRequirementLabel(requirement)}</span>
+          <strong>${formatNumber(requirement.completed_qty)}/${formatNumber(requirement.qty)}</strong>
+          <small>Uretim ${formatNumber(requirement.production_qty)} | Depo ${formatNumber(requirement.inventory_consumed_qty)} | Kalan ${formatNumber(requirement.remaining_qty)}</small>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function workOrderProgressBar(order) {
+  const progress = Number(order?.progress_pct || 0);
+  const safeProgress = Math.max(0, Math.min(100, progress));
+  return `
+    <div class="work-order-progress">
+      <div class="work-order-progress-bar">
+        <span style="width:${safeProgress.toFixed(1)}%"></span>
+      </div>
+      <strong>${safeProgress.toFixed(1)}%</strong>
+    </div>
+  `;
+}
+
+function renderWorkOrderReasonPanel() {
+  const pending = state.workOrderDrafts.pendingStart;
+  if (!pending) {
+    els.workOrderReasonPanel.classList.add("hidden");
+    els.workOrderReasonContext.textContent = "-";
+    if (document.activeElement !== els.workOrderReasonInput) {
+      els.workOrderReasonInput.value = "";
+    }
+    return;
+  }
+  els.workOrderReasonPanel.classList.remove("hidden");
+  els.workOrderReasonContext.textContent = `${pending.previousOrderId} -> ${pending.orderId} | ${pending.elapsedMinutes.toFixed(1)} dk gecikme | limit ${pending.toleranceMinutes.toFixed(1)} dk`;
+  if (document.activeElement !== els.workOrderReasonInput) {
+    els.workOrderReasonInput.value = state.workOrderDrafts.pendingReason;
+  }
+}
+
+function renderWorkOrders(snapshot) {
+  const workOrders = snapshot.work_orders || {};
+  const summary = workOrders.summary || {};
+  const controls = workOrders.controls || {};
+  const activeOrder = workOrders.active_order;
+  const queue = workOrders.queue || [];
+  const inventory = workOrders.inventory || [];
+  const transitionLog = workOrders.transition_log || [];
+  const completionLog = workOrders.completion_log || [];
+  const perf = workOrders.performance_panel || {};
+  const source = workOrders.source || {};
+
+  syncInputValue(els.workOrderTolerance, effectiveWorkOrderToleranceValue(controls.tolerance_minutes));
+  els.workOrderTolerance.disabled = state.workOrderBusy;
+  els.workOrderToleranceApply.disabled = state.workOrderBusy;
+  els.workOrderReasonSubmit.disabled = state.workOrderBusy;
+  els.workOrderReloadSubmit.disabled = state.workOrderBusy;
+
+  els.workOrderSummary.innerHTML = `
+    <article class="work-order-metric-card">
+      <span>Bekleyen</span>
+      <strong>${formatNumber(summary.queued_count)}</strong>
+    </article>
+    <article class="work-order-metric-card">
+      <span>Aktif</span>
+      <strong>${formatNumber(summary.active_count)}</strong>
+    </article>
+    <article class="work-order-metric-card">
+      <span>Kapanan</span>
+      <strong>${formatNumber(summary.completed_count)}</strong>
+    </article>
+    <article class="work-order-metric-card">
+      <span>Depo Stogu</span>
+      <strong>${formatNumber(summary.inventory_total)}</strong>
+    </article>
+    <article class="work-order-metric-card">
+      <span>Tolerans</span>
+      <strong>${formatMinutes(controls.tolerance_minutes)}</strong>
+    </article>
+    <article class="work-order-metric-card">
+      <span>Son Kapanis</span>
+      <strong>${summary.last_completed_order_id || "-"}</strong>
+      <small>${formatTime(summary.last_completed_at)}</small>
+    </article>
+  `;
+
+  if (!activeOrder) {
+    els.workOrderActive.innerHTML = `<p class="empty-state">Aktif is emri yok. Operator kuyruktaki siradaki emri secebilir.</p>`;
+  } else {
+    els.workOrderActive.innerHTML = `
+      <article class="work-order-active-card">
+        <div class="work-order-active-head">
+          <div>
+            <span class="work-order-badge">${activeOrder.order_id}</span>
+            <h3>${workOrderTitle(activeOrder)}</h3>
+          </div>
+          <strong>${formatToken(activeOrder.status)}</strong>
+        </div>
+        ${workOrderProgressBar(activeOrder)}
+        ${renderWorkOrderRequirements(activeOrder)}
+        <div class="work-order-kpi-grid">
+          <div class="work-order-kpi-chip">
+            <span>Plan</span>
+            <strong>${formatNumber(activeOrder.qty)} ${activeOrder.unit || "adet"}</strong>
+          </div>
+          <div class="work-order-kpi-chip">
+            <span>Uretimden</span>
+            <strong>${formatNumber(activeOrder.production_qty)}</strong>
+          </div>
+          <div class="work-order-kpi-chip">
+            <span>Depodan</span>
+            <strong>${formatNumber(activeOrder.inventory_consumed_qty)}</strong>
+          </div>
+          <div class="work-order-kpi-chip">
+            <span>Kalan</span>
+            <strong>${formatNumber(activeOrder.remaining_qty)}</strong>
+          </div>
+          <div class="work-order-kpi-chip">
+            <span>WO OEE</span>
+            <strong>${formatPercent(activeOrder.oee)}</strong>
+          </div>
+          <div class="work-order-kpi-chip">
+            <span>WO Kull</span>
+            <strong>${formatPercent(activeOrder.availability)}</strong>
+          </div>
+          <div class="work-order-kpi-chip">
+            <span>WO Perf</span>
+            <strong>${formatPercent(activeOrder.performance)}</strong>
+          </div>
+          <div class="work-order-kpi-chip">
+            <span>WO Kalite</span>
+            <strong>${formatPercent(activeOrder.quality)}</strong>
+          </div>
+        </div>
+        <div class="work-order-meta-grid">
+          <div class="status-row"><span>Operator</span><strong>${activeOrder.started_by_name || activeOrder.started_by || "-"}</strong></div>
+          <div class="status-row"><span>Baslangic</span><strong>${formatTime(activeOrder.started_at)}</strong></div>
+          <div class="status-row"><span>Proje</span><strong>${activeOrder.project_code || "-"}</strong></div>
+          <div class="status-row"><span>Vardiya</span><strong>${activeOrder.shift_code || "-"}</strong></div>
+          <div class="status-row"><span>Is Merkezi</span><strong>${activeOrder.work_center_code || "-"}</strong></div>
+          <div class="status-row"><span>Aciklama</span><strong>${activeOrder.description || "-"}</strong></div>
+          <div class="status-row"><span>Ideal Cycle</span><strong>${formatNumber(activeOrder.ideal_cycle_sec)} sn</strong></div>
+          <div class="status-row"><span>Plan Sure</span><strong>${formatMinutes(activeOrder.planned_duration_min)}</strong></div>
+        </div>
+      </article>
+    `;
+  }
+
+  renderFieldGrid(els.workOrderSource, [
+    ["Klasor", source.folder || "-"],
+    ["Kaynak Dosya", source.file || "-"],
+    ["Yuklenme", formatTime(source.loaded_at)],
+    ["Kaynak Mod", "ERP klasor cache"],
+  ]);
+
+  if (!queue.length) {
+    els.workOrderQueueList.innerHTML = `<p class="empty-state">Bekleyen is emri yok.</p>`;
+  } else {
+    els.workOrderQueueList.innerHTML = queue
+      .map((order, index) => `
+        <article class="work-order-row">
+          <div class="work-order-row-main">
+            <div class="work-order-row-head">
+              <span class="work-order-badge">${order.order_id}</span>
+              <strong>${workOrderTitle(order)}</strong>
+            </div>
+            <div class="work-order-row-meta">
+              <span>Plan ${formatNumber(order.qty)} ${order.unit || "adet"}</span>
+              <span>Siralama ${formatNumber(order.sequence_no)}</span>
+              <span>Renk ${formatToken(order.product_color)}</span>
+              <span>Proje ${order.project_code || "-"}</span>
+            </div>
+            ${renderWorkOrderRequirements(order, true)}
+          </div>
+          <div class="work-order-row-actions">
+            <button class="oee-choice-button" type="button" data-work-order-move="${order.order_id}" data-direction="up" ${state.workOrderBusy || index === 0 ? "disabled" : ""}>Yukari</button>
+            <button class="oee-choice-button" type="button" data-work-order-move="${order.order_id}" data-direction="down" ${state.workOrderBusy || index === queue.length - 1 ? "disabled" : ""}>Asagi</button>
+            <button class="oee-primary-button" type="button" data-work-order-start="${order.order_id}" ${state.workOrderBusy || !controls.can_start ? "disabled" : ""}>Baslat</button>
+          </div>
+        </article>
+      `)
+      .join("");
+  }
+
+  if (!inventory.length) {
+    els.workOrderInventory.innerHTML = `<p class="empty-state">Depoya alinmis ara urun yok.</p>`;
+  } else {
+    els.workOrderInventory.innerHTML = inventory
+      .map((row) => `
+        <div class="status-row">
+          <span>${row.stock_code || row.match_key}</span>
+          <strong>${formatNumber(row.quantity)} | ${formatToken(row.color)}</strong>
+        </div>
+      `)
+      .join("");
+  }
+
+  renderFieldGrid(els.workOrderPerformance, [
+    ["OEE", formatPercent(perf.oee)],
+    ["Kullanilabilirlik", formatPercent(perf.availability)],
+    ["Performans", formatPercent(perf.performance)],
+    ["Kalite", formatPercent(perf.quality)],
+    ["Planli Durus", formatMinutes(perf.planned_stop_min)],
+    ["Plansiz Durus", formatMinutes(perf.unplanned_stop_min)],
+    ["Runtime", formatMinutes(perf.runtime_min)],
+    ["Kalan Sure", formatMinutes(perf.remaining_min)],
+    ["Fault", formatBool(perf.active_fault, "Aktif", "Yok")],
+    ["Fault Neden", perf.fault_reason || "-"],
+  ]);
+
+  const mergedLog = [
+    ...transitionLog.map((row) => ({ ...row, logType: "transition" })),
+    ...completionLog.map((row) => ({ ...row, logType: "completion" })),
+  ]
+    .sort((left, right) => String(right.time || "").localeCompare(String(left.time || "")))
+    .slice(0, 10);
+
+  if (!mergedLog.length) {
+    els.workOrderTransitionLog.innerHTML = `<p class="empty-state">Henuz is emri gecis kaydi yok.</p>`;
+  } else {
+    els.workOrderTransitionLog.innerHTML = mergedLog
+      .map((row) => `
+        <article class="work-order-log-card">
+          <div class="work-order-log-head">
+            <strong>${row.orderId || "-"}</strong>
+            <span>${formatToken(row.eventType || row.logType)}</span>
+          </div>
+          <div class="work-order-log-body">
+            <span>${row.stockCode || row.stockName || "-"}</span>
+            <strong>${formatTime(row.time)}</strong>
+          </div>
+          <p>${row.note || "-"}</p>
+        </article>
+      `)
+      .join("");
+  }
+
+  renderWorkOrderReasonPanel();
+}
+
 function render(snapshot) {
   renderOverview(snapshot);
 
@@ -1029,6 +1363,7 @@ function render(snapshot) {
   renderVision(snapshot);
   renderCommands(snapshot);
   renderLogs(snapshot);
+  renderWorkOrders(snapshot);
   renderOee(snapshot);
 }
 
@@ -1043,6 +1378,7 @@ async function fetchDashboard() {
 function applySnapshot(snapshot) {
   state.snapshot = snapshot;
   resolveOeeDrafts(snapshot);
+  resolveWorkOrderDrafts(snapshot);
   render(snapshot);
 }
 
@@ -1164,6 +1500,124 @@ async function sendQualityOverride(itemId, classification, options = {}) {
   }
 }
 
+async function sendWorkOrderTolerance() {
+  state.workOrderBusy = true;
+  setWorkOrderFeedback("Is emri toleransi gonderiliyor...", "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/work-orders/tolerance`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ minutes: effectiveWorkOrderToleranceValue(els.workOrderTolerance.value).trim() }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    setWorkOrderFeedback(payload.summary || "Tolerans guncellendi.", "success");
+  } catch (error) {
+    setWorkOrderFeedback(`Is emri tolerans hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
+async function sendWorkOrderReload() {
+  state.workOrderBusy = true;
+  setWorkOrderFeedback("Is emri kaynagi klasorden yenileniyor...", "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/work-orders/reload`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    setWorkOrderFeedback(payload.summary || "Is emri kaynagi yenilendi.", "success");
+  } catch (error) {
+    setWorkOrderFeedback(`Is emri kaynak hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
+async function sendWorkOrderReorder(orderId, direction) {
+  if (!state.snapshot?.work_orders?.queue?.length) return;
+  const queue = [...state.snapshot.work_orders.queue];
+  const index = queue.findIndex((order) => order.order_id === orderId);
+  if (index < 0) return;
+  const targetIndex = direction === "up" ? index - 1 : index + 1;
+  if (targetIndex < 0 || targetIndex >= queue.length) return;
+  [queue[index], queue[targetIndex]] = [queue[targetIndex], queue[index]];
+
+  state.workOrderBusy = true;
+  setWorkOrderFeedback("Is emri sirasi guncelleniyor...", "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/work-orders/reorder`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ order_ids: queue.map((order) => order.order_id) }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    setWorkOrderFeedback(payload.summary || "Is emri sirasi guncellendi.", "success");
+  } catch (error) {
+    setWorkOrderFeedback(`Is emri sira hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
+async function sendWorkOrderStart(orderId, transitionReason = "") {
+  state.workOrderBusy = true;
+  setWorkOrderFeedback(`${orderId} baslatiliyor...`, "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/work-orders/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        order_id: orderId,
+        operator_code: els.workOrderOperatorCode.value.trim(),
+        operator_name: els.workOrderOperatorName.value.trim(),
+        transition_reason: transitionReason,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 409 && payload.detail?.code === "WORK_ORDER_REASON_REQUIRED") {
+        state.workOrderDrafts.pendingStart = {
+          orderId: payload.detail.order_id,
+          previousOrderId: payload.detail.previous_order_id,
+          elapsedMinutes: Number(payload.detail.elapsed_minutes || 0),
+          toleranceMinutes: Number(payload.detail.tolerance_minutes || 0),
+        };
+        renderWorkOrderReasonPanel();
+        throw new Error("Gecis toleransi asildi. Neden girilmesi gerekiyor.");
+      }
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    state.workOrderDrafts.pendingStart = null;
+    state.workOrderDrafts.pendingReason = "";
+    els.workOrderReasonInput.value = "";
+    setWorkOrderFeedback(payload.summary || `${orderId} baslatildi.`, "success");
+  } catch (error) {
+    setWorkOrderFeedback(`Is emri baslatma hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
 els.tabButtons.forEach((button) => {
   button.addEventListener("click", () => setActiveTab(button.dataset.tab));
 });
@@ -1260,11 +1714,48 @@ els.oeeQualityOverrideList.addEventListener("click", (event) => {
   });
 });
 
+els.workOrderTolerance.addEventListener("input", () => setWorkOrderToleranceDraft(els.workOrderTolerance.value));
+els.workOrderToleranceApply.addEventListener("click", () => sendWorkOrderTolerance());
+els.workOrderTolerance.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  els.workOrderToleranceApply.click();
+});
+
+els.workOrderReloadSubmit.addEventListener("click", () => sendWorkOrderReload());
+
+els.workOrderReasonInput.addEventListener("input", () => {
+  state.workOrderDrafts.pendingReason = els.workOrderReasonInput.value;
+});
+els.workOrderReasonSubmit.addEventListener("click", () => {
+  const pending = state.workOrderDrafts.pendingStart;
+  if (!pending) return;
+  const reason = els.workOrderReasonInput.value.trim();
+  if (!reason) {
+    setWorkOrderFeedback("Gecikme nedeni bos birakilamaz.", "error");
+    return;
+  }
+  sendWorkOrderStart(pending.orderId, reason);
+});
+
+els.workOrderQueueList.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-work-order-start]");
+  if (button && !button.disabled) {
+    sendWorkOrderStart(button.dataset.workOrderStart);
+    return;
+  }
+  const moveButton = event.target.closest("button[data-work-order-move][data-direction]");
+  if (moveButton && !moveButton.disabled) {
+    sendWorkOrderReorder(moveButton.dataset.workOrderMove, moveButton.dataset.direction);
+  }
+});
+
 async function bootstrap() {
   setActiveTab(state.activeTab);
   setRuntime("bootstrapping");
   setFeedback("Komutlar beklemede.");
   setOeeFeedback("OEE ayarlari beklemede.");
+  setWorkOrderFeedback("Is emri kontrolleri beklemede.");
   try {
     const snapshot = await fetchDashboard();
     applySnapshot(snapshot);

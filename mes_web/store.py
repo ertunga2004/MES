@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import AppConfig
-from .oee_state import build_live_snapshot, read_runtime_state_file, shift_options
+from .oee_state import build_live_snapshot, build_work_order_snapshot, read_runtime_state_file, shift_options
 from .parsers import (
     parse_bridge_status_line,
     parse_mega_event_from_log,
@@ -199,6 +199,47 @@ class DashboardStore:
             },
         }
 
+    def _default_work_order_state(self) -> dict[str, Any]:
+        return {
+            "enabled": True,
+            "updated_at": None,
+            "controls": {
+                "tolerance_minutes": 15.0,
+                "can_start": True,
+            },
+            "summary": {
+                "queued_count": 0,
+                "active_count": 0,
+                "completed_count": 0,
+                "inventory_total": 0,
+                "last_completed_order_id": "",
+                "last_completed_at": None,
+            },
+            "source": {
+                "folder": "",
+                "file": "",
+                "loaded_at": None,
+            },
+            "active_order": None,
+            "queue": [],
+            "completed": [],
+            "inventory": [],
+            "transition_log": [],
+            "completion_log": [],
+            "performance_panel": {
+                "oee": None,
+                "availability": None,
+                "performance": None,
+                "quality": None,
+                "planned_stop_min": 0.0,
+                "unplanned_stop_min": 0.0,
+                "runtime_min": 0.0,
+                "remaining_min": 0.0,
+                "active_fault": False,
+                "fault_reason": "",
+            },
+        }
+
     def _build_module_state(self) -> dict[str, Any]:
         return {
             "enabled": True,
@@ -253,6 +294,7 @@ class DashboardStore:
             "recent_logs": deque(maxlen=self.config.log_store_size),
             "vision": self._default_vision_state(),
             "oee": self._default_oee_state(),
+            "work_orders": self._default_work_order_state(),
         }
 
     def register_listener(self, listener: Callable[[str], None]) -> None:
@@ -500,6 +542,177 @@ class DashboardStore:
                 )
             oee["recent_items"] = recent_items
             oee["quality_override_log"] = copy.deepcopy((payload.get("qualityOverrideLog") or [])[:10])
+            work_orders_payload = payload.get("workOrders") if isinstance(payload.get("workOrders"), dict) else {}
+            raw_work_orders = work_orders_payload.get("ordersById") if isinstance(work_orders_payload.get("ordersById"), dict) else {}
+            raw_sequence = work_orders_payload.get("orderSequence") if isinstance(work_orders_payload.get("orderSequence"), list) else []
+
+            def project_work_order(order_id: str, order: dict[str, Any]) -> dict[str, Any]:
+                metrics = build_work_order_snapshot(payload, order, now=datetime.now().astimezone())
+                quantity = max(0, _safe_int(order.get("quantity")))
+                completed_qty = max(0, _safe_int(order.get("completedQty")))
+                inventory_qty = max(0, _safe_int(order.get("inventoryConsumedQty")))
+                production_qty = max(0, _safe_int(order.get("productionQty")))
+                remaining_qty = max(0, quantity - completed_qty)
+                requirements_payload = order.get("requirements") if isinstance(order.get("requirements"), list) else []
+                requirements: list[dict[str, Any]] = []
+                for requirement in requirements_payload:
+                    if not isinstance(requirement, dict):
+                        continue
+                    requirement_qty = max(0, _safe_int(requirement.get("quantity")))
+                    requirement_completed = max(0, _safe_int(requirement.get("completedQty")))
+                    requirement_inventory = max(0, _safe_int(requirement.get("inventoryConsumedQty")))
+                    requirement_production = max(0, _safe_int(requirement.get("productionQty")))
+                    requirement_remaining = max(0, requirement_qty - requirement_completed)
+                    requirements.append(
+                        {
+                            "line_id": str(requirement.get("lineId") or ""),
+                            "product_code": str(requirement.get("productCode") or ""),
+                            "stock_code": str(requirement.get("stockCode") or ""),
+                            "stock_name": str(requirement.get("stockName") or ""),
+                            "color": str(requirement.get("color") or ""),
+                            "match_key": str(requirement.get("matchKey") or ""),
+                            "qty": requirement_qty,
+                            "completed_qty": requirement_completed,
+                            "inventory_consumed_qty": requirement_inventory,
+                            "production_qty": requirement_production,
+                            "remaining_qty": requirement_remaining,
+                            "progress_pct": round((requirement_completed / requirement_qty) * 100.0, 1) if requirement_qty > 0 else 0.0,
+                        }
+                    )
+                return {
+                    "order_id": order_id,
+                    "erp_type": str(order.get("erpType") or "İş Emirleri"),
+                    "date": order.get("date"),
+                    "system_no": str(order.get("systemNo") or ""),
+                    "sequence_no": max(0, _safe_int(order.get("sequenceNo"))),
+                    "locked": bool(order.get("locked")),
+                    "stock_type": str(order.get("stockType") or ""),
+                    "stock_code": str(order.get("stockCode") or ""),
+                    "stock_name": str(order.get("stockName") or ""),
+                    "unit": str(order.get("unit") or ""),
+                    "method_code": str(order.get("methodCode") or ""),
+                    "qty": quantity,
+                    "project_code": str(order.get("projectCode") or ""),
+                    "description": str(order.get("description") or ""),
+                    "work_center_code": str(order.get("workCenterCode") or ""),
+                    "operation_code": str(order.get("operationCode") or ""),
+                    "setup_time_sec": _safe_float(order.get("setupTimeSec")),
+                    "worker_count": max(0, _safe_int(order.get("workerCount"))),
+                    "cycle_time_sec": _safe_float(order.get("cycleTimeSec")),
+                    "shift_code": str(order.get("shiftCode") or ""),
+                    "product_code": str(order.get("productCode") or ""),
+                    "product_color": str(order.get("productColor") or ""),
+                    "requirements": requirements,
+                    "status": str(order.get("status") or "queued"),
+                    "queued_at": order.get("queuedAt"),
+                    "started_at": order.get("startedAt"),
+                    "completed_at": order.get("completedAt"),
+                    "started_by": str(order.get("startedBy") or ""),
+                    "started_by_name": str(order.get("startedByName") or ""),
+                    "transition_reason": str(order.get("transitionReason") or ""),
+                    "inventory_consumed_qty": inventory_qty,
+                    "production_qty": production_qty,
+                    "completed_qty": completed_qty,
+                    "remaining_qty": remaining_qty,
+                    "progress_pct": round((completed_qty / quantity) * 100.0, 1) if quantity > 0 else 0.0,
+                    "last_allocation_at": order.get("lastAllocationAt"),
+                    "good_qty": int(metrics["goodQty"]),
+                    "rework_qty": int(metrics["reworkQty"]),
+                    "scrap_qty": int(metrics["scrapQty"]),
+                    "ideal_cycle_sec": round(float(metrics["idealCycleSec"]), 1),
+                    "planned_duration_min": round(float(metrics["plannedDurationMs"]) / 60000.0, 1),
+                    "runtime_min": round(float(metrics["runtimeMs"]) / 60000.0, 1),
+                    "unplanned_stop_min": round(float(metrics["unplannedMs"]) / 60000.0, 1),
+                    "availability": round(float(metrics["availability"]) * 100.0, 1),
+                    "performance": round(float(metrics["performance"]) * 100.0, 1),
+                    "quality": round(float(metrics["quality"]) * 100.0, 1),
+                    "oee": round(float(metrics["oee"]) * 100.0, 1),
+                }
+
+            projected_by_id: dict[str, dict[str, Any]] = {}
+            projected_sequence: list[str] = []
+            for order_id in raw_sequence:
+                normalized_id = str(order_id or "").strip()
+                order = raw_work_orders.get(normalized_id)
+                if not normalized_id or not isinstance(order, dict):
+                    continue
+                projected_by_id[normalized_id] = project_work_order(normalized_id, order)
+                projected_sequence.append(normalized_id)
+            for order_id, order in raw_work_orders.items():
+                normalized_id = str(order_id or "").strip()
+                if not normalized_id or normalized_id in projected_by_id or not isinstance(order, dict):
+                    continue
+                projected_by_id[normalized_id] = project_work_order(normalized_id, order)
+                projected_sequence.append(normalized_id)
+
+            active_order_id = str(work_orders_payload.get("activeOrderId") or "").strip()
+            active_order = projected_by_id.get(active_order_id)
+            if active_order is None:
+                active_order = next((row for row in projected_by_id.values() if row["status"] == "active"), None)
+
+            queue_orders = [projected_by_id[order_id] for order_id in projected_sequence if projected_by_id.get(order_id, {}).get("status") == "queued"]
+            completed_orders = [projected_by_id[order_id] for order_id in projected_sequence if projected_by_id.get(order_id, {}).get("status") == "completed"]
+            inventory_payload = work_orders_payload.get("inventoryByProduct") if isinstance(work_orders_payload.get("inventoryByProduct"), dict) else {}
+            inventory_rows: list[dict[str, Any]] = []
+            for match_key, row in inventory_payload.items():
+                if not isinstance(row, dict):
+                    continue
+                quantity = max(0, _safe_int(row.get("quantity")))
+                if quantity <= 0:
+                    continue
+                inventory_rows.append(
+                    {
+                        "match_key": str(match_key or ""),
+                        "product_code": str(row.get("productCode") or ""),
+                        "stock_code": str(row.get("stockCode") or ""),
+                        "stock_name": str(row.get("stockName") or ""),
+                        "color": str(row.get("color") or ""),
+                        "quantity": quantity,
+                        "last_updated_at": row.get("lastUpdatedAt"),
+                        "last_source": str(row.get("lastSource") or ""),
+                    }
+                )
+            inventory_rows.sort(key=lambda row: (-row["quantity"], row["stock_code"], row["match_key"]))
+
+            module["work_orders"] = {
+                "enabled": True,
+                "updated_at": payload.get("lastUpdatedAt") or payload.get("lastSnapshotLoggedAt") or module["work_orders"].get("updated_at"),
+                "controls": {
+                    "tolerance_minutes": _safe_float(work_orders_payload.get("toleranceMinutes") or 0.0),
+                    "can_start": active_order is None,
+                },
+                "summary": {
+                    "queued_count": len(queue_orders),
+                    "active_count": 1 if active_order is not None else 0,
+                    "completed_count": len(completed_orders),
+                    "inventory_total": sum(row["quantity"] for row in inventory_rows),
+                    "last_completed_order_id": str(work_orders_payload.get("lastCompletedOrderId") or ""),
+                    "last_completed_at": work_orders_payload.get("lastCompletedAt"),
+                },
+                "source": {
+                    "folder": str(((work_orders_payload.get("source") or {}) if isinstance(work_orders_payload.get("source"), dict) else {}).get("folder") or self.config.work_orders_dir),
+                    "file": str(((work_orders_payload.get("source") or {}) if isinstance(work_orders_payload.get("source"), dict) else {}).get("file") or ""),
+                    "loaded_at": (((work_orders_payload.get("source") or {}) if isinstance(work_orders_payload.get("source"), dict) else {}).get("loadedAt")),
+                },
+                "active_order": copy.deepcopy(active_order) if isinstance(active_order, dict) else None,
+                "queue": copy.deepcopy(queue_orders),
+                "completed": copy.deepcopy(completed_orders[:10]),
+                "inventory": copy.deepcopy(inventory_rows[:12]),
+                "transition_log": copy.deepcopy((work_orders_payload.get("transitionLog") or [])[:10]),
+                "completion_log": copy.deepcopy((work_orders_payload.get("completionLog") or [])[:10]),
+                "performance_panel": {
+                    "oee": round(float(live["oee"]) * 100.0, 1),
+                    "availability": round(float(live["availability"]) * 100.0, 1),
+                    "performance": round(float(live["performance"]) * 100.0, 1),
+                    "quality": round(float(live["quality"]) * 100.0, 1),
+                    "planned_stop_min": round(float(live["plannedStopMs"]) / 60000.0, 1),
+                    "unplanned_stop_min": round(float(live["unplannedMs"]) / 60000.0, 1),
+                    "runtime_min": round(float(live["runtimeMs"]) / 60000.0, 1),
+                    "remaining_min": round(float(live["remainingMs"]) / 60000.0, 1),
+                    "active_fault": bool(oee["fault"]["active"]),
+                    "fault_reason": str(oee["fault"]["reason"] or ""),
+                },
+            }
             vision_state = payload.get("vision") if isinstance(payload.get("vision"), dict) else {}
             vision_metrics = vision_state.get("metrics") if isinstance(vision_state.get("metrics"), dict) else {}
             vision_reset = self._vision_reset_state(module)
@@ -966,4 +1179,5 @@ class DashboardStore:
                     "runtime": vision_runtime,
                 },
                 "oee": copy.deepcopy(module["oee"]),
+                "work_orders": copy.deepcopy(module["work_orders"]),
             }

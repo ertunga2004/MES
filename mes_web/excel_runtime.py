@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig
+from .oee_state import build_work_order_snapshot
 from .parsers import (
     normalize_color,
     normalize_token,
@@ -54,6 +55,17 @@ RAW_LOG_COLUMNS = [
     "raw_log_id", "logged_at", "source_topic", "source_code", "parsed_flag", "event_type_code", "item_id", "measure_id",
     "color_code", "notes", "raw_payload",
 ]
+WORK_ORDER_COLUMNS = [
+    "work_order_record_id", "order_id", "erp_type", "source_file", "queued_at", "started_at", "completed_at",
+    "status_code", "status_tr", "stock_code", "stock_name", "product_color", "target_qty", "fulfilled_qty",
+    "production_qty", "inventory_consumed_qty", "good_qty", "rework_qty", "scrap_qty", "ideal_cycle_sec",
+    "planned_duration_sec", "runtime_sec", "unplanned_downtime_sec", "availability_pct", "performance_pct",
+    "quality_pct", "oee_pct", "started_by", "started_by_name", "transition_reason", "notes",
+]
+INVENTORY_COLUMNS = [
+    "inventory_record_id", "match_key", "product_code", "stock_code", "stock_name", "color_code", "quantity",
+    "last_updated_at", "last_source", "source_file", "notes",
+]
 
 SHEET_COLUMNS = {
     "1_Olay_Logu": EVENT_LOG_COLUMNS,
@@ -61,6 +73,8 @@ SHEET_COLUMNS = {
     "4_Uretim_Tamamlanan": COMPLETED_COLUMNS,
     "6_Vision": VISION_COLUMNS,
     "7_Raw_Logs": RAW_LOG_COLUMNS,
+    "8_Is_Emirleri": WORK_ORDER_COLUMNS,
+    "9_Depo_Stok": INVENTORY_COLUMNS,
 }
 
 SOURCE_IDS = {"mega": 1, "tablet": 2, "vision": 3, "system": 4}
@@ -774,6 +788,16 @@ class ExcelRuntimeSink:
                 )
             )
 
+    def record_work_order_state(self, state: dict[str, Any], received_at: str) -> None:
+        if self._enabled:
+            self._queue.put(
+                SinkEnvelope(
+                    kind="work_order_state",
+                    received_at=received_at,
+                    payload=state,
+                )
+            )
+
     def _worker(self) -> None:
         from openpyxl import Workbook, load_workbook
         from openpyxl.utils import get_column_letter
@@ -836,6 +860,10 @@ class ExcelRuntimeSink:
                     rows = {}
                 elif item.kind == "early_pick_request":
                     rows = self.projector.consume_early_pick_request(item.payload["item_id"], item.received_at)
+                elif item.kind == "work_order_state":
+                    self._sync_work_order_sheets(workbook, item.payload, item.received_at)
+                    dirty = True
+                    rows = {}
                 else:
                     rows = self.projector.consume_local_counts_reset(item.received_at)
                 for sheet_name, row_dicts in rows.items():
@@ -853,6 +881,137 @@ class ExcelRuntimeSink:
                 workbook.save(workbook_path)
                 dirty = False
         workbook.save(workbook_path)
+
+    def _sync_work_order_sheets(self, workbook: Any, state: dict[str, Any], received_at: str) -> None:
+        work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
+        orders = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+        sequence = work_orders.get("orderSequence") if isinstance(work_orders.get("orderSequence"), list) else []
+        source = work_orders.get("source") if isinstance(work_orders.get("source"), dict) else {}
+        source_file = str(source.get("file") or "")
+
+        work_order_sheet = workbook["8_Is_Emirleri"]
+        inventory_sheet = workbook["9_Depo_Stok"]
+
+        for order_id in sequence:
+            order = orders.get(order_id)
+            if not isinstance(order, dict):
+                continue
+            snapshot = build_work_order_snapshot(state, order)
+            requirements = order.get("requirements") if isinstance(order.get("requirements"), list) else []
+            requirement_note = ",".join(
+                f"{str(req.get('color') or req.get('stockCode') or req.get('lineId') or '').strip()}:{int(req.get('completedQty') or 0)}/{int(req.get('quantity') or 0)}"
+                for req in requirements
+                if isinstance(req, dict)
+            )
+            target_id = str(order_id)
+            row = {
+                "work_order_record_id": self._existing_or_next_id(work_order_sheet, "work_order_record_id", "order_id", target_id),
+                "order_id": target_id,
+                "erp_type": str(order.get("erpType") or ""),
+                "source_file": source_file,
+                "queued_at": order.get("queuedAt"),
+                "started_at": order.get("startedAt"),
+                "completed_at": order.get("completedAt"),
+                "status_code": str(order.get("status") or "").upper(),
+                "status_tr": str(order.get("status") or "").upper(),
+                "stock_code": str(order.get("stockCode") or ""),
+                "stock_name": str(order.get("stockName") or ""),
+                "product_color": str(order.get("productColor") or ""),
+                "target_qty": int(snapshot["targetQty"]),
+                "fulfilled_qty": int(snapshot["fulfilledQty"]),
+                "production_qty": int(snapshot["productionQty"]),
+                "inventory_consumed_qty": int(snapshot["inventoryConsumedQty"]),
+                "good_qty": int(snapshot["goodQty"]),
+                "rework_qty": int(snapshot["reworkQty"]),
+                "scrap_qty": int(snapshot["scrapQty"]),
+                "ideal_cycle_sec": round(float(snapshot["idealCycleSec"]), 1),
+                "planned_duration_sec": round(float(snapshot["plannedDurationMs"]) / 1000.0, 1),
+                "runtime_sec": round(float(snapshot["runtimeMs"]) / 1000.0, 1),
+                "unplanned_downtime_sec": round(float(snapshot["unplannedMs"]) / 1000.0, 1),
+                "availability_pct": round(float(snapshot["availability"]) * 100.0, 1),
+                "performance_pct": round(float(snapshot["performance"]) * 100.0, 1),
+                "quality_pct": round(float(snapshot["quality"]) * 100.0, 1),
+                "oee_pct": round(float(snapshot["oee"]) * 100.0, 1),
+                "started_by": str(order.get("startedBy") or ""),
+                "started_by_name": str(order.get("startedByName") or ""),
+                "transition_reason": str(order.get("transitionReason") or ""),
+                "notes": f"updated_at={received_at}" + (f";requirements={requirement_note}" if requirement_note else ""),
+            }
+            self._upsert_sheet_row(work_order_sheet, "work_order_record_id", "order_id", target_id, row)
+
+        inventory_rows = work_orders.get("inventoryByProduct") if isinstance(work_orders.get("inventoryByProduct"), dict) else {}
+        for match_key, entry in inventory_rows.items():
+            if not isinstance(entry, dict):
+                continue
+            target_key = str(match_key or "")
+            if not target_key:
+                continue
+            row = {
+                "inventory_record_id": self._existing_or_next_id(inventory_sheet, "inventory_record_id", "match_key", target_key),
+                "match_key": target_key,
+                "product_code": str(entry.get("productCode") or ""),
+                "stock_code": str(entry.get("stockCode") or ""),
+                "stock_name": str(entry.get("stockName") or ""),
+                "color_code": str(entry.get("color") or ""),
+                "quantity": int(entry.get("quantity") or 0),
+                "last_updated_at": entry.get("lastUpdatedAt"),
+                "last_source": str(entry.get("lastSource") or ""),
+                "source_file": source_file,
+                "notes": f"updated_at={received_at}",
+            }
+            self._upsert_sheet_row(inventory_sheet, "inventory_record_id", "match_key", target_key, row)
+        self._zero_missing_inventory_rows(inventory_sheet, set(inventory_rows.keys()), received_at)
+        self._update_auto_filter(work_order_sheet, work_order_sheet.max_column, max(work_order_sheet.max_row, 2), None)
+        self._update_auto_filter(inventory_sheet, inventory_sheet.max_column, max(inventory_sheet.max_row, 2), None)
+
+    def _existing_or_next_id(self, sheet: Any, id_header: str, key_header: str, target_key: str) -> int:
+        headers = [sheet.cell(1, idx).value for idx in range(1, sheet.max_column + 1)]
+        if not headers:
+            return 1
+        key_index = headers.index(key_header) + 1
+        id_index = headers.index(id_header) + 1
+        max_id = 0
+        for row_index in range(2, sheet.max_row + 1):
+            row_key = sheet.cell(row_index, key_index).value
+            row_id = sheet.cell(row_index, id_index).value
+            if isinstance(row_id, int):
+                max_id = max(max_id, row_id)
+            if str(row_key or "").strip() == target_key:
+                return int(row_id or max_id + 1 or 1)
+        return max_id + 1 if max_id > 0 else 1
+
+    def _upsert_sheet_row(self, sheet: Any, id_header: str, key_header: str, target_key: str, row: dict[str, Any]) -> None:
+        headers = [sheet.cell(1, idx).value for idx in range(1, sheet.max_column + 1)]
+        if not headers:
+            return
+        key_index = headers.index(key_header) + 1
+        target_row = None
+        for row_index in range(2, sheet.max_row + 1):
+            if str(sheet.cell(row_index, key_index).value or "").strip() == target_key:
+                target_row = row_index
+                break
+        if target_row is None:
+            target_row = self._next_write_row(sheet, len(headers))
+            if target_row > 2:
+                self._copy_row_style(sheet, source_row=2, target_row=target_row, width=len(headers))
+        for col_index, header in enumerate(headers, start=1):
+            sheet.cell(target_row, col_index, row.get(header, ""))
+
+    def _zero_missing_inventory_rows(self, sheet: Any, active_keys: set[str], received_at: str) -> None:
+        headers = [sheet.cell(1, idx).value for idx in range(1, sheet.max_column + 1)]
+        if not headers or "match_key" not in headers:
+            return
+        key_index = headers.index("match_key") + 1
+        quantity_index = headers.index("quantity") + 1 if "quantity" in headers else None
+        notes_index = headers.index("notes") + 1 if "notes" in headers else None
+        for row_index in range(2, sheet.max_row + 1):
+            row_key = str(sheet.cell(row_index, key_index).value or "").strip()
+            if not row_key or row_key in active_keys:
+                continue
+            if quantity_index is not None:
+                sheet.cell(row_index, quantity_index, 0)
+            if notes_index is not None:
+                sheet.cell(row_index, notes_index, f"updated_at={received_at};depleted=1")
 
     def _update_completed_sheet_row(self, sheet: Any, row: dict[str, Any]) -> None:
         headers = [sheet.cell(1, idx).value for idx in range(1, sheet.max_column + 1)]

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .parsers import (
+    normalize_color,
     parse_mega_event_from_log,
     parse_tablet_fault_line,
     parse_vision_event,
@@ -25,6 +26,8 @@ SHIFT_PRESETS: dict[str, dict[str, str]] = {
     "SHIFT-B": {"name": "B Vardiyasi", "start": "16:00:00", "end": "00:00:00"},
     "SHIFT-C": {"name": "C Vardiyasi", "start": "00:00:00", "end": "08:00:00"},
 }
+
+WORK_ORDER_STATUSES = {"queued", "active", "completed"}
 
 
 def empty_color_counts() -> dict[str, int]:
@@ -42,13 +45,48 @@ def shift_options() -> list[dict[str, str]]:
     ]
 
 
+def default_work_order_state() -> dict[str, Any]:
+    return {
+        "toleranceMinutes": 15.0,
+        "ordersById": {},
+        "orderSequence": [],
+        "activeOrderId": "",
+        "lastCompletedOrderId": "",
+        "lastCompletedAt": "",
+        "inventoryByProduct": {},
+        "transitionLog": [],
+        "completionLog": [],
+        "source": {
+            "folder": "",
+            "file": "",
+            "loadedAt": "",
+        },
+    }
+
+
+class WorkOrderTransitionReasonRequired(ValueError):
+    def __init__(
+        self,
+        *,
+        order_id: str,
+        previous_order_id: str,
+        elapsed_minutes: float,
+        tolerance_minutes: float,
+    ) -> None:
+        super().__init__("WORK_ORDER_REASON_REQUIRED")
+        self.order_id = order_id
+        self.previous_order_id = previous_order_id
+        self.elapsed_minutes = elapsed_minutes
+        self.tolerance_minutes = tolerance_minutes
+
+
 def default_runtime_state() -> dict[str, Any]:
     return {
-        "version": 3,
+        "version": 4,
         "shiftSelected": "SHIFT-A",
         "performanceMode": "TARGET",
-        "targetQty": 0,
-        "idealCycleSec": 0.0,
+        "targetQty": 14,
+        "idealCycleSec": 10.0,
         "plannedStopMin": 0.0,
         "shift": {
             "active": False,
@@ -59,8 +97,8 @@ def default_runtime_state() -> dict[str, Any]:
             "planStart": "",
             "planEnd": "",
             "performanceMode": "TARGET",
-            "targetQty": 0,
-            "idealCycleSec": 0.0,
+            "targetQty": 14,
+            "idealCycleSec": 10.0,
             "plannedStopMin": 0.0,
         },
         "counts": {
@@ -77,6 +115,7 @@ def default_runtime_state() -> dict[str, Any]:
         "itemsById": {},
         "queueOrder": [],
         "recentItemIds": [],
+        "workOrders": default_work_order_state(),
         "processedVisionEventKeys": [],
         "activeFault": None,
         "faultHistory": [],
@@ -205,6 +244,402 @@ def _touch_shift_config(state: dict[str, Any]) -> None:
     shift["plannedStopMin"] = state["plannedStopMin"]
 
 
+def _text_or_default(value: Any, default: str = "") -> str:
+    return str(value or "").strip() or default
+
+
+def _boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "evet"}
+
+
+def _normalize_order_color(value: Any, *fallbacks: Any) -> str:
+    candidates = (value,) + fallbacks
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        normalized = normalize_color(text)
+        if normalized in {"red", "yellow", "blue"}:
+            return normalized
+        upper = text.upper()
+        if "RED" in upper or "KIRMIZI" in upper:
+            return "red"
+        if "YELLOW" in upper or "SARI" in upper:
+            return "yellow"
+        if "BLUE" in upper or "MAVI" in upper:
+            return "blue"
+    return ""
+
+
+def _order_match_key(order: dict[str, Any]) -> str:
+    requirements = order.get("requirements") if isinstance(order.get("requirements"), list) else []
+    if len(requirements) == 1 and isinstance(requirements[0], dict):
+        return (
+            str(requirements[0].get("matchKey") or "").strip()
+            or str(requirements[0].get("color") or "").strip().lower()
+            or str(requirements[0].get("productCode") or "").strip()
+            or str(requirements[0].get("stockCode") or "").strip()
+        )
+    return (
+        str(order.get("matchKey") or "").strip()
+        or str(order.get("productColor") or "").strip().lower()
+        or str(order.get("productCode") or "").strip()
+        or str(order.get("stockCode") or "").strip()
+    )
+
+
+def _normalize_inventory_row(raw: Any, match_key: str = "") -> dict[str, Any]:
+    entry = raw if isinstance(raw, dict) else {}
+    color = _normalize_order_color(
+        entry.get("color"),
+        entry.get("productColor"),
+        entry.get("stockCode"),
+        entry.get("stockName"),
+    )
+    resolved_match_key = str(entry.get("matchKey") or "").strip() or match_key or color or str(entry.get("productCode") or entry.get("stockCode") or "").strip()
+    return {
+        "matchKey": resolved_match_key,
+        "productCode": _text_or_default(entry.get("productCode") or entry.get("stockCode"), resolved_match_key),
+        "stockCode": _text_or_default(entry.get("stockCode") or entry.get("productCode"), resolved_match_key),
+        "stockName": _text_or_default(entry.get("stockName"), resolved_match_key or color or "Urun"),
+        "color": color,
+        "quantity": max(0, round(_numeric(entry.get("quantity") or entry.get("availableQty") or 0))),
+        "lastUpdatedAt": _text_or_default(entry.get("lastUpdatedAt")),
+        "lastSource": _text_or_default(entry.get("lastSource")),
+    }
+
+
+def _work_order_requirement_key(raw: Any, fallback: str = "") -> str:
+    entry = raw if isinstance(raw, dict) else {}
+    return _text_or_default(
+        entry.get("lineId")
+        or entry.get("line_id")
+        or entry.get("matchKey")
+        or entry.get("match_key")
+        or entry.get("color")
+        or entry.get("productColor")
+        or entry.get("product_code")
+        or entry.get("productCode")
+        or entry.get("stock_code")
+        or entry.get("stockCode"),
+        fallback,
+    )
+
+
+def _work_order_requirement_match_key(requirement: dict[str, Any]) -> str:
+    return (
+        str(requirement.get("matchKey") or "").strip()
+        or str(requirement.get("color") or "").strip().lower()
+        or str(requirement.get("productCode") or "").strip()
+        or str(requirement.get("stockCode") or "").strip()
+    )
+
+
+def _work_order_requirement_label(requirement: dict[str, Any]) -> str:
+    color = _normalize_order_color(
+        requirement.get("color"),
+        requirement.get("stockCode"),
+        requirement.get("stockName"),
+    )
+    if color:
+        return color
+    return (
+        str(requirement.get("stockCode") or "").strip()
+        or str(requirement.get("productCode") or "").strip()
+        or str(requirement.get("lineId") or "").strip()
+        or "urun"
+    )
+
+
+def _sync_work_order_requirement(requirement: dict[str, Any]) -> None:
+    quantity = max(0, round(_numeric(requirement.get("quantity"))))
+    completed_qty = max(0, round(_numeric(requirement.get("completedQty"))))
+    requirement["lineId"] = _text_or_default(
+        requirement.get("lineId"),
+        _work_order_requirement_match_key(requirement) or "line",
+    )
+    requirement["productCode"] = _text_or_default(
+        requirement.get("productCode"),
+        str(requirement.get("stockCode") or requirement.get("lineId") or ""),
+    )
+    requirement["stockCode"] = _text_or_default(
+        requirement.get("stockCode"),
+        str(requirement.get("productCode") or requirement.get("lineId") or ""),
+    )
+    requirement["stockName"] = _text_or_default(
+        requirement.get("stockName"),
+        str(requirement.get("stockCode") or requirement.get("productCode") or requirement.get("lineId") or ""),
+    )
+    requirement["color"] = _normalize_order_color(
+        requirement.get("color"),
+        requirement.get("stockCode"),
+        requirement.get("stockName"),
+    )
+    requirement["matchKey"] = _text_or_default(
+        requirement.get("matchKey"),
+        requirement["color"] or requirement["productCode"] or requirement["stockCode"] or requirement["lineId"],
+    )
+    requirement["quantity"] = quantity
+    requirement["completedQty"] = min(quantity, completed_qty)
+    requirement["inventoryConsumedQty"] = min(
+        requirement["completedQty"],
+        max(0, round(_numeric(requirement.get("inventoryConsumedQty")))),
+    )
+    requirement["productionQty"] = min(
+        quantity,
+        max(0, round(_numeric(requirement.get("productionQty")))),
+    )
+    requirement["remainingQty"] = max(0, quantity - requirement["completedQty"])
+
+
+def _normalize_work_order_requirement(
+    raw: Any,
+    *,
+    existing: dict[str, Any] | None = None,
+    fallback_line_id: str = "",
+    fallback_product_code: str = "",
+    fallback_stock_code: str = "",
+    fallback_stock_name: str = "",
+) -> dict[str, Any]:
+    entry = raw if isinstance(raw, dict) else {}
+    current = existing if isinstance(existing, dict) else {}
+    color = _normalize_order_color(
+        entry.get("color")
+        or entry.get("product_color")
+        or entry.get("productColor")
+        or entry.get("renk"),
+        entry.get("stock_code") or entry.get("stockCode") or entry.get("stok_kodu"),
+        entry.get("stock_name") or entry.get("stockName") or entry.get("stok_adi"),
+        current.get("color"),
+        current.get("stockCode"),
+        current.get("stockName"),
+    )
+    product_code = _text_or_default(
+        entry.get("product_code")
+        or entry.get("productCode")
+        or entry.get("stock_code")
+        or entry.get("stockCode")
+        or current.get("productCode"),
+        fallback_product_code or fallback_stock_code or fallback_line_id,
+    )
+    stock_code = _text_or_default(
+        entry.get("stock_code")
+        or entry.get("stockCode")
+        or current.get("stockCode"),
+        fallback_stock_code or product_code or fallback_line_id,
+    )
+    stock_name = _text_or_default(
+        entry.get("stock_name")
+        or entry.get("stockName")
+        or current.get("stockName"),
+        fallback_stock_name or stock_code or product_code or fallback_line_id,
+    )
+    requirement = {
+        "lineId": _text_or_default(
+            entry.get("lineId")
+            or entry.get("line_id")
+            or current.get("lineId"),
+            fallback_line_id or color or stock_code or product_code or "line",
+        ),
+        "productCode": product_code or stock_code or fallback_line_id,
+        "stockCode": stock_code or product_code or fallback_line_id,
+        "stockName": stock_name or stock_code or product_code or fallback_line_id,
+        "color": color,
+        "matchKey": _text_or_default(
+            entry.get("matchKey") or entry.get("match_key") or current.get("matchKey"),
+            color or product_code or stock_code or fallback_line_id,
+        ),
+        "quantity": max(0, round(_numeric(entry.get("qty") or entry.get("quantity") or entry.get("miktar") or current.get("quantity") or 0))),
+        "completedQty": max(
+            0,
+            round(
+                _numeric(
+                    entry.get("completedQty")
+                    or entry.get("completed_qty")
+                    or current.get("completedQty")
+                    or 0
+                )
+            ),
+        ),
+        "inventoryConsumedQty": max(
+            0,
+            round(
+                _numeric(
+                    entry.get("inventoryConsumedQty")
+                    or entry.get("inventory_consumed_qty")
+                    or current.get("inventoryConsumedQty")
+                    or 0
+                )
+            ),
+        ),
+        "productionQty": max(
+            0,
+            round(
+                _numeric(
+                    entry.get("productionQty")
+                    or entry.get("production_qty")
+                    or current.get("productionQty")
+                    or 0
+                )
+            ),
+        ),
+    }
+    _sync_work_order_requirement(requirement)
+    return requirement
+
+
+def _normalize_work_order_requirements(entry: dict[str, Any], current: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_requirements = entry.get("requirements") or entry.get("components") or entry.get("lines")
+    current_requirements = current.get("requirements") if isinstance(current.get("requirements"), list) else []
+    if isinstance(raw_requirements, list) and raw_requirements:
+        source_rows = raw_requirements
+    elif current_requirements:
+        source_rows = current_requirements
+    else:
+        source_rows = [
+            {
+                "lineId": _text_or_default(entry.get("lineId") or current.get("lineId"), "line-1"),
+                "productCode": entry.get("product_code") or entry.get("productCode") or current.get("productCode"),
+                "stockCode": entry.get("stock_code") or entry.get("stockCode") or current.get("stockCode"),
+                "stockName": entry.get("stock_name") or entry.get("stockName") or current.get("stockName"),
+                "color": entry.get("product_color") or entry.get("productColor") or entry.get("color") or current.get("productColor"),
+                "matchKey": entry.get("matchKey") or current.get("matchKey"),
+                "qty": entry.get("qty") or entry.get("quantity") or current.get("quantity"),
+                "completedQty": entry.get("completedQty") or current.get("completedQty"),
+                "inventoryConsumedQty": entry.get("inventoryConsumedQty") or current.get("inventoryConsumedQty"),
+                "productionQty": entry.get("productionQty") or current.get("productionQty"),
+            }
+        ]
+
+    current_lookup: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(current_requirements, start=1):
+        if not isinstance(row, dict):
+            continue
+        current_lookup[_work_order_requirement_key(row, f"line-{index}")] = row
+
+    fallback_product_code = _text_or_default(entry.get("product_code") or entry.get("productCode") or current.get("productCode"))
+    fallback_stock_code = _text_or_default(entry.get("stock_code") or entry.get("stockCode") or current.get("stockCode"))
+    fallback_stock_name = _text_or_default(entry.get("stock_name") or entry.get("stockName") or current.get("stockName"))
+    requirements: list[dict[str, Any]] = []
+    for index, raw_row in enumerate(source_rows, start=1):
+        if not isinstance(raw_row, dict):
+            continue
+        lookup_key = _work_order_requirement_key(raw_row, f"line-{index}")
+        requirement = _normalize_work_order_requirement(
+            raw_row,
+            existing=current_lookup.get(lookup_key),
+            fallback_line_id=lookup_key,
+            fallback_product_code=fallback_product_code,
+            fallback_stock_code=fallback_stock_code,
+            fallback_stock_name=fallback_stock_name,
+        )
+        if (
+            requirement["quantity"] > 0
+            or requirement["completedQty"] > 0
+            or requirement["inventoryConsumedQty"] > 0
+            or requirement["productionQty"] > 0
+        ):
+            requirements.append(requirement)
+    return requirements
+
+
+def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = None, queued_at: str = "") -> dict[str, Any]:
+    entry = raw if isinstance(raw, dict) else {}
+    current = existing if isinstance(existing, dict) else {}
+    order_id = _text_or_default(
+        entry.get("order_id")
+        or entry.get("orderId")
+        or entry.get("id")
+        or entry.get("is_emri_no")
+        or entry.get("iş_emri_no")
+        or entry.get("system_no")
+        or entry.get("systemNo")
+        or entry.get("sistem_no")
+        or entry.get("sistemNo")
+        or current.get("orderId")
+    )
+    color = _normalize_order_color(
+        entry.get("product_color")
+        or entry.get("productColor")
+        or entry.get("color")
+        or entry.get("renk"),
+        entry.get("stock_code") or entry.get("stockCode") or entry.get("stok_kodu"),
+        entry.get("stock_name") or entry.get("stockName") or entry.get("stok_adi") or entry.get("stokAdı"),
+        current.get("productColor"),
+    )
+    product_code = _text_or_default(
+        entry.get("product_code")
+        or entry.get("productCode")
+        or entry.get("stock_code")
+        or entry.get("stockCode")
+        or entry.get("stok_kodu")
+        or entry.get("stokKodu")
+        or current.get("productCode")
+    )
+    stock_code = _text_or_default(
+        entry.get("stock_code")
+        or entry.get("stockCode")
+        or entry.get("stok_kodu")
+        or entry.get("stokKodu")
+        or current.get("stockCode")
+        or product_code
+    )
+    stock_name = _text_or_default(
+        entry.get("stock_name")
+        or entry.get("stockName")
+        or entry.get("stok_adi")
+        or entry.get("stokAdı")
+        or current.get("stockName"),
+        stock_code or order_id,
+    )
+    status = _text_or_default(entry.get("status"), str(current.get("status") or "queued")).lower()
+    if status not in WORK_ORDER_STATUSES:
+        status = "queued"
+    requirements = _normalize_work_order_requirements(entry, current)
+    order = {
+        "orderId": order_id,
+        "erpType": _text_or_default(entry.get("erp_type") or entry.get("erpType") or entry.get("tip") or current.get("erpType"), "Is Emirleri"),
+        "date": _text_or_default(entry.get("date") or entry.get("tarih") or current.get("date")),
+        "systemNo": _text_or_default(entry.get("system_no") or entry.get("systemNo") or entry.get("sistem_no") or entry.get("sistemNo") or current.get("systemNo")),
+        "sequenceNo": max(0, round(_numeric(entry.get("sequence_no") or entry.get("sequenceNo") or entry.get("sira") or entry.get("sıra") or current.get("sequenceNo")))),
+        "locked": _boolish(entry.get("locked") if entry.get("locked") is not None else entry.get("kilit") if entry.get("kilit") is not None else current.get("locked")),
+        "stockType": _text_or_default(entry.get("stock_type") or entry.get("stockType") or entry.get("stok_servis") or entry.get("stokServis") or current.get("stockType")),
+        "stockCode": stock_code,
+        "stockName": stock_name,
+        "unit": _text_or_default(entry.get("unit") or entry.get("birim") or current.get("unit")),
+        "methodCode": _text_or_default(entry.get("method_code") or entry.get("methodCode") or entry.get("metod_kodu") or entry.get("metodKodu") or current.get("methodCode")),
+        "quantity": 0,
+        "projectCode": _text_or_default(entry.get("project_code") or entry.get("projectCode") or entry.get("proje") or current.get("projectCode")),
+        "description": _text_or_default(entry.get("description") or entry.get("aciklama") or entry.get("açıklama") or current.get("description")),
+        "workCenterCode": _text_or_default(entry.get("work_center_code") or entry.get("workCenterCode") or entry.get("is_merkezi") or entry.get("iş_merkezi") or current.get("workCenterCode")),
+        "operationCode": _text_or_default(entry.get("operation_code") or entry.get("operationCode") or entry.get("operasyon") or current.get("operationCode")),
+        "setupTimeSec": max(0.0, _numeric(entry.get("setup_time_sec") or entry.get("setupTimeSec") or entry.get("hazirlik_suresi_sec") or entry.get("hazırlık_süresi_sn") or current.get("setupTimeSec"))),
+        "workerCount": max(0, round(_numeric(entry.get("worker_count") or entry.get("workerCount") or entry.get("isci_sayisi") or entry.get("işçi_sayısı") or current.get("workerCount")))),
+        "cycleTimeSec": max(0.0, _numeric(entry.get("cycle_time_sec") or entry.get("cycleTimeSec") or entry.get("sure_sec") or entry.get("süre_saniye") or current.get("cycleTimeSec"))),
+        "shiftCode": _text_or_default(entry.get("shift_code") or entry.get("shiftCode") or entry.get("vardiya") or current.get("shiftCode")),
+        "productCode": product_code or stock_code or order_id,
+        "productColor": color,
+        "matchKey": _text_or_default(entry.get("matchKey") or current.get("matchKey"), color or product_code or stock_code or order_id),
+        "status": status,
+        "queuedAt": _text_or_default(entry.get("queuedAt") or current.get("queuedAt"), queued_at),
+        "startedAt": _text_or_default(entry.get("startedAt") or current.get("startedAt")),
+        "completedAt": _text_or_default(entry.get("completedAt") or current.get("completedAt")),
+        "startedBy": _text_or_default(entry.get("startedBy") or current.get("startedBy")),
+        "startedByName": _text_or_default(entry.get("startedByName") or current.get("startedByName")),
+        "transitionReason": _text_or_default(entry.get("transitionReason") or current.get("transitionReason")),
+        "inventoryConsumedQty": 0,
+        "productionQty": 0,
+        "completedQty": 0,
+        "remainingQty": 0,
+        "lastAllocationAt": _text_or_default(entry.get("lastAllocationAt") or current.get("lastAllocationAt")),
+        "requirements": requirements,
+    }
+    _sync_work_order_row(order)
+    return order
+
+
 def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     candidate = payload if isinstance(payload, dict) else {}
     base = default_runtime_state()
@@ -254,6 +689,62 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     base["itemsById"] = candidate.get("itemsById") if isinstance(candidate.get("itemsById"), dict) else {}
     base["queueOrder"] = candidate.get("queueOrder") if isinstance(candidate.get("queueOrder"), list) else []
     base["recentItemIds"] = candidate.get("recentItemIds") if isinstance(candidate.get("recentItemIds"), list) else []
+    work_orders = candidate.get("workOrders") if isinstance(candidate.get("workOrders"), dict) else {}
+    base["workOrders"]["toleranceMinutes"] = max(0.0, _numeric(work_orders.get("toleranceMinutes") or base["workOrders"]["toleranceMinutes"]))
+    raw_orders = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+    normalized_orders: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_order in raw_orders.items():
+        normalized = _normalize_work_order_row(raw_order, queued_at="")
+        order_id = normalized["orderId"] or str(raw_key or "").strip()
+        if not order_id:
+            continue
+        normalized["orderId"] = order_id
+        if not normalized["queuedAt"]:
+            normalized["queuedAt"] = str(work_orders.get("importedAt") or "")
+        normalized["completedQty"] = min(normalized["quantity"], normalized["completedQty"])
+        normalized["inventoryConsumedQty"] = min(normalized["completedQty"], normalized["inventoryConsumedQty"])
+        normalized["productionQty"] = min(normalized["quantity"], normalized["productionQty"])
+        normalized["remainingQty"] = max(0, normalized["quantity"] - normalized["completedQty"])
+        if normalized["status"] == "completed" and not normalized["completedAt"]:
+            normalized["completedAt"] = normalized["lastAllocationAt"] or normalized["startedAt"]
+        if normalized["status"] == "active" and not normalized["startedAt"]:
+            normalized["status"] = "queued"
+        normalized_orders[order_id] = normalized
+    base["workOrders"]["ordersById"] = normalized_orders
+    raw_sequence = work_orders.get("orderSequence") if isinstance(work_orders.get("orderSequence"), list) else []
+    sequence: list[str] = []
+    for item in raw_sequence:
+        order_id = str(item or "").strip()
+        if order_id and order_id in normalized_orders and order_id not in sequence:
+            sequence.append(order_id)
+    for order_id in normalized_orders:
+        if order_id not in sequence:
+            sequence.append(order_id)
+    base["workOrders"]["orderSequence"] = sequence
+    active_order_id = str(work_orders.get("activeOrderId") or "").strip()
+    if active_order_id not in normalized_orders or normalized_orders.get(active_order_id, {}).get("status") != "active":
+        active_order_id = ""
+        for order_id in sequence:
+            if normalized_orders.get(order_id, {}).get("status") == "active":
+                active_order_id = order_id
+                break
+    base["workOrders"]["activeOrderId"] = active_order_id
+    base["workOrders"]["lastCompletedOrderId"] = str(work_orders.get("lastCompletedOrderId") or "").strip()
+    base["workOrders"]["lastCompletedAt"] = str(work_orders.get("lastCompletedAt") or "")
+    inventory = work_orders.get("inventoryByProduct") if isinstance(work_orders.get("inventoryByProduct"), dict) else {}
+    base["workOrders"]["inventoryByProduct"] = {
+        key: _normalize_inventory_row(value, str(key or "").strip())
+        for key, value in inventory.items()
+        if str(key or "").strip()
+    }
+    base["workOrders"]["transitionLog"] = work_orders.get("transitionLog") if isinstance(work_orders.get("transitionLog"), list) else []
+    base["workOrders"]["completionLog"] = work_orders.get("completionLog") if isinstance(work_orders.get("completionLog"), list) else []
+    source = work_orders.get("source") if isinstance(work_orders.get("source"), dict) else {}
+    base["workOrders"]["source"] = {
+        "folder": str(source.get("folder") or ""),
+        "file": str(source.get("file") or ""),
+        "loadedAt": str(source.get("loadedAt") or ""),
+    }
     base["processedVisionEventKeys"] = candidate.get("processedVisionEventKeys") if isinstance(candidate.get("processedVisionEventKeys"), list) else []
     base["activeFault"] = candidate.get("activeFault") if isinstance(candidate.get("activeFault"), dict) else None
     base["faultHistory"] = candidate.get("faultHistory") if isinstance(candidate.get("faultHistory"), list) else []
@@ -343,6 +834,285 @@ def _normalize_classification(value: Any) -> str:
 
 def _classification_bucket_name(value: str) -> str:
     return _normalize_classification(value).lower()
+
+
+def _prepend_capped(rows: list[dict[str, Any]], row: dict[str, Any], *, limit: int = 20) -> list[dict[str, Any]]:
+    rows.insert(0, row)
+    return rows[:limit]
+
+
+def _work_orders_state(state: dict[str, Any]) -> dict[str, Any]:
+    work_orders = state.get("workOrders")
+    if not isinstance(work_orders, dict):
+        work_orders = default_work_order_state()
+        state["workOrders"] = work_orders
+    if not isinstance(work_orders.get("ordersById"), dict):
+        work_orders["ordersById"] = {}
+    if not isinstance(work_orders.get("orderSequence"), list):
+        work_orders["orderSequence"] = []
+    if not isinstance(work_orders.get("inventoryByProduct"), dict):
+        work_orders["inventoryByProduct"] = {}
+    if not isinstance(work_orders.get("transitionLog"), list):
+        work_orders["transitionLog"] = []
+    if not isinstance(work_orders.get("completionLog"), list):
+        work_orders["completionLog"] = []
+    if not isinstance(work_orders.get("source"), dict):
+        work_orders["source"] = default_work_order_state()["source"]
+    work_orders["toleranceMinutes"] = max(0.0, _numeric(work_orders.get("toleranceMinutes") or 0.0))
+    work_orders["activeOrderId"] = str(work_orders.get("activeOrderId") or "").strip()
+    work_orders["lastCompletedOrderId"] = str(work_orders.get("lastCompletedOrderId") or "").strip()
+    work_orders["lastCompletedAt"] = str(work_orders.get("lastCompletedAt") or "")
+    return work_orders
+
+
+def _work_order_orders(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return _work_orders_state(state)["ordersById"]
+
+
+def _work_order_sequence(state: dict[str, Any]) -> list[str]:
+    return _work_orders_state(state)["orderSequence"]
+
+
+def _work_order_inventory(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return _work_orders_state(state)["inventoryByProduct"]
+
+
+def _work_order_requirements(order: dict[str, Any]) -> list[dict[str, Any]]:
+    requirements = order.get("requirements")
+    if not isinstance(requirements, list):
+        requirements = []
+        order["requirements"] = requirements
+    normalized: list[dict[str, Any]] = []
+    for row in requirements:
+        if not isinstance(row, dict):
+            continue
+        _sync_work_order_requirement(row)
+        normalized.append(row)
+    order["requirements"] = normalized
+    return normalized
+
+
+def _find_matching_requirement(order: dict[str, Any], match_key: str) -> dict[str, Any] | None:
+    normalized_match = str(match_key or "").strip().lower()
+    if not normalized_match:
+        return None
+    for requirement in _work_order_requirements(order):
+        if max(0, round(_numeric(requirement.get("remainingQty")))) <= 0:
+            continue
+        if _work_order_requirement_match_key(requirement).lower() == normalized_match:
+            return requirement
+    return None
+
+
+def _work_order_log_row(order: dict[str, Any], *, event_type: str, stamp: str, note: str = "") -> dict[str, Any]:
+    return {
+        "eventType": event_type,
+        "time": stamp,
+        "orderId": str(order.get("orderId") or ""),
+        "stockCode": str(order.get("stockCode") or ""),
+        "stockName": str(order.get("stockName") or ""),
+        "quantity": max(0, round(_numeric(order.get("quantity")))),
+        "completedQty": max(0, round(_numeric(order.get("completedQty")))),
+        "remainingQty": max(0, round(_numeric(order.get("remainingQty")))),
+        "startedBy": str(order.get("startedBy") or ""),
+        "startedByName": str(order.get("startedByName") or ""),
+        "note": note,
+    }
+
+
+def _sync_work_order_row(order: dict[str, Any]) -> None:
+    requirements = _work_order_requirements(order)
+    if requirements:
+        order["quantity"] = sum(max(0, round(_numeric(requirement.get("quantity")))) for requirement in requirements)
+        order["completedQty"] = sum(max(0, round(_numeric(requirement.get("completedQty")))) for requirement in requirements)
+        order["inventoryConsumedQty"] = sum(max(0, round(_numeric(requirement.get("inventoryConsumedQty")))) for requirement in requirements)
+        order["productionQty"] = sum(max(0, round(_numeric(requirement.get("productionQty")))) for requirement in requirements)
+        order["remainingQty"] = sum(max(0, round(_numeric(requirement.get("remainingQty")))) for requirement in requirements)
+        if len(requirements) == 1:
+            requirement = requirements[0]
+            order["productColor"] = _normalize_order_color(order.get("productColor"), requirement.get("color"), requirement.get("stockCode"), requirement.get("stockName"))
+            order["matchKey"] = _text_or_default(order.get("matchKey"), _work_order_requirement_match_key(requirement))
+        else:
+            order["productColor"] = "mixed"
+            order["matchKey"] = "mixed"
+        return
+    quantity = max(0, round(_numeric(order.get("quantity"))))
+    completed_qty = max(0, round(_numeric(order.get("completedQty"))))
+    order["quantity"] = quantity
+    order["completedQty"] = min(quantity, completed_qty)
+    order["inventoryConsumedQty"] = min(order["completedQty"], max(0, round(_numeric(order.get("inventoryConsumedQty")))))
+    order["productionQty"] = min(quantity, max(0, round(_numeric(order.get("productionQty")))))
+    order["remainingQty"] = max(0, quantity - order["completedQty"])
+
+
+def _persist_work_order_metrics(state: dict[str, Any], order: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+    snapshot = build_work_order_snapshot(state, order, now=now)
+    order["goodQty"] = snapshot["goodQty"]
+    order["reworkQty"] = snapshot["reworkQty"]
+    order["scrapQty"] = snapshot["scrapQty"]
+    order["plannedDurationMs"] = snapshot["plannedDurationMs"]
+    order["runtimeMs"] = snapshot["runtimeMs"]
+    order["unplannedMs"] = snapshot["unplannedMs"]
+    order["availability"] = round(snapshot["availability"] * 100.0, 1)
+    order["performance"] = round(snapshot["performance"] * 100.0, 1)
+    order["quality"] = round(snapshot["quality"] * 100.0, 1)
+    order["oee"] = round(snapshot["oee"] * 100.0, 1)
+    return snapshot
+
+
+def _ensure_inventory_entry(
+    inventory: dict[str, dict[str, Any]],
+    match_key: str,
+    *,
+    product_code: str = "",
+    stock_code: str = "",
+    stock_name: str = "",
+    color: str = "",
+) -> dict[str, Any]:
+    entry = inventory.get(match_key)
+    if not isinstance(entry, dict):
+        entry = _normalize_inventory_row(
+            {
+                "matchKey": match_key,
+                "productCode": product_code or stock_code or match_key,
+                "stockCode": stock_code or product_code or match_key,
+                "stockName": stock_name or product_code or stock_code or color or match_key,
+                "color": color,
+                "quantity": 0,
+            },
+            match_key,
+        )
+        inventory[match_key] = entry
+    return entry
+
+
+def _complete_work_order_if_ready(state: dict[str, Any], order: dict[str, Any], *, now: datetime, completed_at: str) -> bool:
+    _sync_work_order_row(order)
+    if order.get("status") != "active":
+        return False
+    if max(0, round(_numeric(order.get("remainingQty")))) > 0:
+        return False
+    stamp = completed_at or _pseudo_iso_text(now)
+    order["status"] = "completed"
+    order["completedAt"] = stamp
+    work_orders = _work_orders_state(state)
+    if work_orders.get("activeOrderId") == order.get("orderId"):
+        work_orders["activeOrderId"] = ""
+    work_orders["lastCompletedOrderId"] = str(order.get("orderId") or "")
+    work_orders["lastCompletedAt"] = stamp
+    metrics = _persist_work_order_metrics(state, order, now=now)
+    work_orders["completionLog"] = _prepend_capped(
+        work_orders["completionLog"],
+        _work_order_log_row(
+            order,
+            event_type="completed",
+            stamp=stamp,
+            note=f"Is emri sistem tarafindan kapatildi. OEE={round(metrics['oee'] * 100.0, 1)}%",
+        ),
+    )
+    _set_summary(
+        state,
+        f"{order.get('orderId') or 'Is emri'} kapatildi. {order.get('completedQty')}/{order.get('quantity')} tamamlandi.",
+        now=now,
+    )
+    return True
+
+
+def _consume_inventory_for_order(state: dict[str, Any], order: dict[str, Any], *, now: datetime, reason: str = "inventory") -> int:
+    inventory = _work_order_inventory(state)
+    _sync_work_order_row(order)
+    total_taken = 0
+    notes: list[str] = []
+    for requirement in _work_order_requirements(order):
+        match_key = _work_order_requirement_match_key(requirement)
+        if not match_key:
+            continue
+        entry = inventory.get(match_key)
+        if not isinstance(entry, dict):
+            continue
+        take_qty = min(
+            max(0, round(_numeric(entry.get("quantity")))),
+            max(0, round(_numeric(requirement.get("remainingQty")))),
+        )
+        if take_qty <= 0:
+            continue
+        entry["quantity"] = max(0, round(_numeric(entry.get("quantity"))) - take_qty)
+        entry["lastUpdatedAt"] = _pseudo_iso_text(now)
+        entry["lastSource"] = "consumed_for_work_order"
+        if entry["quantity"] <= 0:
+            inventory.pop(match_key, None)
+        requirement["inventoryConsumedQty"] = max(0, round(_numeric(requirement.get("inventoryConsumedQty")))) + take_qty
+        requirement["completedQty"] = max(0, round(_numeric(requirement.get("completedQty")))) + take_qty
+        order["lastAllocationAt"] = entry["lastUpdatedAt"]
+        total_taken += take_qty
+        notes.append(f"{_work_order_requirement_label(requirement)}={take_qty}")
+    if total_taken <= 0:
+        return 0
+    _sync_work_order_row(order)
+    _persist_work_order_metrics(state, order, now=now)
+    _set_summary(
+        state,
+        f"{order.get('orderId') or 'Is emri'} icin depodan {total_taken} adet kullanildi ({', '.join(notes)}).",
+        now=now,
+    )
+    _complete_work_order_if_ready(state, order, now=now, completed_at=str(order.get("lastAllocationAt") or _pseudo_iso_text(now)))
+    return total_taken
+
+
+def _route_completed_item_to_work_orders(
+    state: dict[str, Any],
+    resolved_key: str,
+    item: dict[str, Any],
+    *,
+    received_at: str,
+    now: datetime,
+) -> None:
+    work_orders = _work_orders_state(state)
+    orders = _work_order_orders(state)
+    inventory = _work_order_inventory(state)
+    item_color = _normalize_order_color(item.get("final_color"), item.get("color"), item.get("sensor_color"))
+    item_id = str(item.get("item_id") or resolved_key)
+    active_order_id = str(work_orders.get("activeOrderId") or "")
+    active_order = orders.get(active_order_id) if active_order_id else None
+    item["inventoryAction"] = ""
+    item["work_order_id"] = ""
+
+    matching_requirement = _find_matching_requirement(active_order, item_color) if isinstance(active_order, dict) else None
+    if isinstance(active_order, dict) and isinstance(matching_requirement, dict):
+        matching_requirement["productionQty"] = max(0, round(_numeric(matching_requirement.get("productionQty")))) + 1
+        matching_requirement["completedQty"] = max(0, round(_numeric(matching_requirement.get("completedQty")))) + 1
+        active_order["lastAllocationAt"] = received_at
+        _sync_work_order_row(active_order)
+        item["work_order_id"] = str(active_order.get("orderId") or "")
+        item["work_order_match_key"] = _work_order_requirement_match_key(matching_requirement)
+        item["inventoryAction"] = "work_order"
+        if not _complete_work_order_if_ready(state, active_order, now=now, completed_at=received_at):
+            _set_summary(
+                state,
+                f"#{item_id} aktif {active_order.get('orderId')} is emrine {item_color} olarak yazildi. Kalan {active_order.get('remainingQty')} adet.",
+                now=now,
+            )
+        return
+
+    match_key = item_color or str(item.get("final_color") or item.get("color") or resolved_key)
+    inventory_entry = _ensure_inventory_entry(
+        inventory,
+        match_key,
+        product_code=match_key.upper(),
+        stock_code=match_key.upper(),
+        stock_name=(item_color or match_key).upper(),
+        color=item_color,
+    )
+    inventory_entry["quantity"] = max(0, round(_numeric(inventory_entry.get("quantity")))) + 1
+    inventory_entry["lastUpdatedAt"] = received_at
+    inventory_entry["lastSource"] = "off_order_completion"
+    item["inventoryAction"] = "stored"
+    item["inventory_match_key"] = match_key
+    _set_summary(
+        state,
+        f"#{item_id} aktif is emrine uymadigi icin depoya alindi ({match_key}).",
+        now=now,
+    )
 
 
 def _recompute_item_counts(state: dict[str, Any]) -> None:
@@ -636,6 +1406,115 @@ def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -
     }
 
 
+def _overlap_ms(start_at: datetime, end_at: datetime, window_start: datetime, window_end: datetime) -> int:
+    latest_start = max(start_at, window_start)
+    earliest_end = min(end_at, window_end)
+    if earliest_end <= latest_start:
+        return 0
+    return max(0, int((earliest_end - latest_start).total_seconds() * 1000))
+
+
+def _work_order_fault_ms(state: dict[str, Any], *, start_at: datetime, end_at: datetime) -> int:
+    total_ms = 0
+    fault_history = state.get("faultHistory") if isinstance(state.get("faultHistory"), list) else []
+    for row in fault_history:
+        if not isinstance(row, dict):
+            continue
+        fault_start = _parse_iso(str(row.get("startedAt") or ""))
+        fault_end = _parse_iso(str(row.get("endedAt") or ""))
+        if fault_start is None or fault_end is None:
+            continue
+        total_ms += _overlap_ms(fault_start, fault_end, start_at, end_at)
+    active_fault = state.get("activeFault") if isinstance(state.get("activeFault"), dict) else None
+    if isinstance(active_fault, dict):
+        fault_start = _parse_iso(str(active_fault.get("startedAt") or ""))
+        if fault_start is not None:
+            total_ms += _overlap_ms(fault_start, end_at, start_at, end_at)
+    return total_ms
+
+
+def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    stamp = now or datetime.now().astimezone()
+    if stamp.tzinfo is None:
+        stamp = stamp.astimezone()
+    order_id = str(order.get("orderId") or "").strip()
+    items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
+    related_items = [
+        item
+        for item in items.values()
+        if isinstance(item, dict)
+        and str(item.get("work_order_id") or "").strip() == order_id
+        and item.get("completed_at")
+    ]
+    good = 0
+    rework = 0
+    scrap = 0
+    for item in related_items:
+        classification = _normalize_classification(item.get("classification"))
+        if classification == "REWORK":
+            rework += 1
+        elif classification == "SCRAP":
+            scrap += 1
+        else:
+            good += 1
+    total = good + rework + scrap
+    requirements = _work_order_requirements(order)
+    if requirements:
+        target_qty = sum(max(0, round(_numeric(requirement.get("quantity")))) for requirement in requirements)
+        inventory_consumed_qty = sum(max(0, round(_numeric(requirement.get("inventoryConsumedQty")))) for requirement in requirements)
+        production_qty = max(total, sum(max(0, round(_numeric(requirement.get("productionQty")))) for requirement in requirements))
+        completed_qty = sum(max(0, round(_numeric(requirement.get("completedQty")))) for requirement in requirements)
+        remaining_qty = sum(max(0, round(_numeric(requirement.get("remainingQty")))) for requirement in requirements)
+    else:
+        target_qty = max(0, round(_numeric(order.get("quantity"))))
+        inventory_consumed_qty = max(0, round(_numeric(order.get("inventoryConsumedQty"))))
+        production_qty = max(total, round(_numeric(order.get("productionQty"))))
+        completed_qty = max(0, round(_numeric(order.get("completedQty"))))
+        remaining_raw = order.get("remainingQty")
+        remaining_qty = None if remaining_raw in (None, "") else max(0, round(_numeric(remaining_raw)))
+    fulfilled_candidates = [completed_qty, production_qty + inventory_consumed_qty]
+    if remaining_qty is not None:
+        fulfilled_candidates.append(target_qty - remaining_qty)
+    fulfilled_qty = min(target_qty, max(fulfilled_candidates) if fulfilled_candidates else 0)
+    ideal_cycle_sec = max(0.0, _numeric(order.get("cycleTimeSec") or state.get("idealCycleSec") or 10.0))
+    if ideal_cycle_sec <= 0:
+        ideal_cycle_sec = 10.0
+    planned_duration_ms = int(target_qty * ideal_cycle_sec * 1000.0)
+    started_at = _parse_iso(str(order.get("startedAt") or ""))
+    completed_at = _parse_iso(str(order.get("completedAt") or ""))
+    end_at = completed_at or stamp
+    elapsed_ms = int((end_at - started_at).total_seconds() * 1000) if started_at is not None and end_at >= started_at else 0
+    unplanned_ms = _work_order_fault_ms(state, start_at=started_at, end_at=end_at) if started_at is not None and elapsed_ms > 0 else 0
+    runtime_ms = max(0, elapsed_ms - unplanned_ms)
+    availability = (runtime_ms / planned_duration_ms) if planned_duration_ms > 0 else 0.0
+    availability = max(0.0, min(1.0, availability))
+    performance = ((production_qty * ideal_cycle_sec * 1000.0) / runtime_ms) if runtime_ms > 0 else 0.0
+    performance = max(0.0, min(1.0, performance))
+    quality = (good / total) if total > 0 else 1.0
+    quality = max(0.0, min(1.0, quality))
+    oee = availability * performance * quality
+    return {
+        "orderId": order_id,
+        "targetQty": target_qty,
+        "fulfilledQty": fulfilled_qty,
+        "productionQty": production_qty,
+        "inventoryConsumedQty": inventory_consumed_qty,
+        "remainingQty": max(0, target_qty - fulfilled_qty),
+        "goodQty": good,
+        "reworkQty": rework,
+        "scrapQty": scrap,
+        "idealCycleSec": ideal_cycle_sec,
+        "plannedDurationMs": planned_duration_ms,
+        "elapsedMs": elapsed_ms,
+        "runtimeMs": runtime_ms,
+        "unplannedMs": unplanned_ms,
+        "availability": availability,
+        "performance": performance,
+        "quality": quality,
+        "oee": oee,
+    }
+
+
 def _system_log_line(kind: str, state: dict[str, Any], *, now: datetime) -> str:
     shift = state["shift"]
     if kind == "START":
@@ -716,6 +1595,13 @@ def _complete_runtime_item(
     _append_recent_id(state, resolved_key)
     _recompute_item_counts(state)
     _set_summary(state, f"#{item.get('item_id') or resolved_key} tamamlandi ve renk {normalized_color} olarak kilitlendi.", now=now)
+    _route_completed_item_to_work_orders(
+        state,
+        resolved_key,
+        item,
+        received_at=received_at,
+        now=now,
+    )
     return True
 
 
@@ -968,6 +1854,256 @@ class OeeRuntimeStateManager:
         }
 
     @_state_locked
+    def import_work_orders(
+        self,
+        payload: Any,
+        *,
+        replace_existing: bool = True,
+        source_folder: str = "",
+        source_file: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        state = self.read_state()
+        work_orders = _work_orders_state(state)
+        existing_orders = _work_order_orders(state)
+        existing_sequence = list(_work_order_sequence(state))
+        raw_orders = payload if isinstance(payload, list) else []
+        if not raw_orders:
+            raise ValueError("INVALID_WORK_ORDER_PAYLOAD")
+
+        queued_at = _pseudo_iso_text(stamp)
+        next_orders: dict[str, dict[str, Any]] = {} if replace_existing else dict(existing_orders)
+        incoming_ids: list[str] = []
+        for raw_order in raw_orders:
+            normalized = _normalize_work_order_row(raw_order, queued_at=queued_at)
+            order_id = str(normalized.get("orderId") or "").strip()
+            if not order_id:
+                raise ValueError("WORK_ORDER_ID_REQUIRED")
+            merged = _normalize_work_order_row(
+                raw_order,
+                existing=existing_orders.get(order_id),
+                queued_at=str((existing_orders.get(order_id) or {}).get("queuedAt") or queued_at),
+            )
+            existing = existing_orders.get(order_id)
+            if isinstance(existing, dict) and str(existing.get("status") or "") in {"active", "completed"}:
+                merged["status"] = str(existing.get("status") or merged["status"])
+                merged["startedAt"] = str(existing.get("startedAt") or merged["startedAt"])
+                merged["completedAt"] = str(existing.get("completedAt") or merged["completedAt"])
+                merged["startedBy"] = str(existing.get("startedBy") or merged["startedBy"])
+                merged["startedByName"] = str(existing.get("startedByName") or merged["startedByName"])
+                merged["transitionReason"] = str(existing.get("transitionReason") or merged["transitionReason"])
+                merged["inventoryConsumedQty"] = max(
+                    round(_numeric(merged.get("inventoryConsumedQty"))),
+                    round(_numeric(existing.get("inventoryConsumedQty"))),
+                )
+                merged["productionQty"] = max(
+                    round(_numeric(merged.get("productionQty"))),
+                    round(_numeric(existing.get("productionQty"))),
+                )
+                merged["completedQty"] = max(
+                    round(_numeric(merged.get("completedQty"))),
+                    round(_numeric(existing.get("completedQty"))),
+                )
+                merged["lastAllocationAt"] = str(existing.get("lastAllocationAt") or merged.get("lastAllocationAt") or "")
+            _sync_work_order_row(merged)
+            next_orders[order_id] = merged
+            if order_id not in incoming_ids:
+                incoming_ids.append(order_id)
+
+        if replace_existing:
+            for order_id in existing_sequence:
+                existing = existing_orders.get(order_id)
+                if not isinstance(existing, dict) or order_id in next_orders:
+                    continue
+                if str(existing.get("status") or "") in {"active", "completed"}:
+                    next_orders[order_id] = existing
+
+        next_sequence: list[str] = []
+        for order_id in existing_sequence:
+            if order_id in next_orders and order_id not in next_sequence:
+                next_sequence.append(order_id)
+        for order_id in incoming_ids:
+            if order_id in next_orders and order_id not in next_sequence:
+                next_sequence.append(order_id)
+        for order_id in next_orders:
+            if order_id not in next_sequence:
+                next_sequence.append(order_id)
+
+        work_orders["ordersById"] = next_orders
+        work_orders["orderSequence"] = next_sequence
+        if source_folder or source_file:
+            work_orders["source"] = {
+                "folder": str(source_folder or work_orders.get("source", {}).get("folder") or ""),
+                "file": str(source_file or work_orders.get("source", {}).get("file") or ""),
+                "loadedAt": queued_at,
+            }
+        if str(work_orders.get("activeOrderId") or "") not in next_orders:
+            work_orders["activeOrderId"] = ""
+        if str(work_orders.get("lastCompletedOrderId") or "") not in next_orders:
+            work_orders["lastCompletedOrderId"] = ""
+            work_orders["lastCompletedAt"] = ""
+
+        queued_count = sum(1 for order in next_orders.values() if str(order.get("status") or "") == "queued")
+        _set_summary(state, f"{len(incoming_ids)} is emri yuklendi. Bekleyen kuyruk {queued_count}.", now=stamp)
+        self.write_state(state)
+        return {
+            "state": state,
+            "summary": state["lastEventSummary"],
+            "queued_count": queued_count,
+            "total_count": len(next_orders),
+        }
+
+    @_state_locked
+    def import_work_orders_from_file(
+        self,
+        path: Path,
+        *,
+        replace_existing: bool = True,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise ValueError("WORK_ORDER_SOURCE_NOT_FOUND") from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError("WORK_ORDER_SOURCE_INVALID_JSON") from exc
+        orders = payload.get("orders") if isinstance(payload, dict) else payload
+        if not isinstance(orders, list):
+            raise ValueError("INVALID_WORK_ORDER_PAYLOAD")
+        return self.import_work_orders(
+            orders,
+            replace_existing=replace_existing,
+            source_folder=str(path.parent),
+            source_file=path.name,
+            now=now,
+        )
+
+    @_state_locked
+    def reorder_work_orders(self, ordered_ids: Any, *, now: datetime | None = None) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        state = self.read_state()
+        work_orders = _work_orders_state(state)
+        sequence = _work_order_sequence(state)
+        orders = _work_order_orders(state)
+        requested = [str(value or "").strip() for value in (ordered_ids if isinstance(ordered_ids, list) else [])]
+        queued_current = [order_id for order_id in sequence if str(orders.get(order_id, {}).get("status") or "") == "queued"]
+        queued_set = {order_id for order_id in queued_current}
+        requested_set = {order_id for order_id in requested if order_id}
+        if queued_set != requested_set:
+            raise ValueError("INVALID_WORK_ORDER_REORDER")
+        next_sequence: list[str] = []
+        queued_iter = iter(requested)
+        for order_id in sequence:
+            if order_id in queued_set:
+                next_sequence.append(next(queued_iter))
+            else:
+                next_sequence.append(order_id)
+        work_orders["orderSequence"] = next_sequence
+        _set_summary(state, "Is emri sirasi guncellendi.", now=stamp)
+        self.write_state(state)
+        return {
+            "state": state,
+            "summary": state["lastEventSummary"],
+        }
+
+    @_state_locked
+    def set_work_order_tolerance(self, minutes: Any, *, now: datetime | None = None) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        state = self.read_state()
+        work_orders = _work_orders_state(state)
+        work_orders["toleranceMinutes"] = max(0.0, _numeric(minutes))
+        _set_summary(state, f"Is emirleri arasi tolerans {work_orders['toleranceMinutes']:.1f} dk olarak ayarlandi.", now=stamp)
+        self.write_state(state)
+        return {
+            "state": state,
+            "summary": state["lastEventSummary"],
+            "tolerance_minutes": work_orders["toleranceMinutes"],
+        }
+
+    @_state_locked
+    def start_work_order(
+        self,
+        order_id: str,
+        *,
+        operator_code: str = "",
+        operator_name: str = "",
+        transition_reason: str = "",
+        started_at: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        state = self.read_state()
+        work_orders = _work_orders_state(state)
+        orders = _work_order_orders(state)
+        normalized_order_id = str(order_id or "").strip()
+        order = orders.get(normalized_order_id)
+        if not isinstance(order, dict):
+            raise ValueError("WORK_ORDER_NOT_FOUND")
+        if str(work_orders.get("activeOrderId") or "").strip():
+            raise ValueError("ACTIVE_WORK_ORDER_EXISTS")
+        if str(order.get("status") or "") == "completed":
+            raise ValueError("WORK_ORDER_ALREADY_COMPLETED")
+
+        start_dt = _parse_iso(started_at) or stamp
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.astimezone()
+        start_text = _pseudo_iso_text(start_dt)
+        tolerance_minutes = max(0.0, _numeric(work_orders.get("toleranceMinutes")))
+        last_completed_order_id = str(work_orders.get("lastCompletedOrderId") or "").strip()
+        last_completed_at = _parse_iso(str(work_orders.get("lastCompletedAt") or ""))
+        cleaned_reason = str(transition_reason or "").strip()
+        if last_completed_order_id and last_completed_at is not None and tolerance_minutes > 0:
+            elapsed_minutes = max(0.0, (start_dt - last_completed_at).total_seconds() / 60.0)
+            if elapsed_minutes > tolerance_minutes and not cleaned_reason:
+                raise WorkOrderTransitionReasonRequired(
+                    order_id=normalized_order_id,
+                    previous_order_id=last_completed_order_id,
+                    elapsed_minutes=elapsed_minutes,
+                    tolerance_minutes=tolerance_minutes,
+                )
+
+        order["status"] = "active"
+        order["startedAt"] = start_text
+        order["completedAt"] = ""
+        order["startedBy"] = str(operator_code or "").strip() or "OPERATOR"
+        order["startedByName"] = str(operator_name or "").strip()
+        order["transitionReason"] = cleaned_reason
+        work_orders["activeOrderId"] = normalized_order_id
+        inventory_used = _consume_inventory_for_order(state, order, now=start_dt)
+        _persist_work_order_metrics(state, order, now=start_dt)
+        work_orders["transitionLog"] = _prepend_capped(
+            work_orders["transitionLog"],
+            _work_order_log_row(
+                order,
+                event_type="started",
+                stamp=start_text,
+                note=cleaned_reason or (f"Depodan {inventory_used} adet dusuldu." if inventory_used else "Operator baslatti."),
+            ),
+        )
+        if str(order.get("status") or "") == "completed":
+            _set_summary(
+                state,
+                f"{normalized_order_id} baslatildi ve depodaki stok ile kapatildi.",
+                now=start_dt,
+            )
+        else:
+            _set_summary(
+                state,
+                f"{normalized_order_id} baslatildi. Kalan {order.get('remainingQty')} adet.",
+                now=start_dt,
+            )
+        self.write_state(state)
+        return {
+            "state": state,
+            "summary": state["lastEventSummary"],
+            "order": order,
+            "inventory_used": inventory_used,
+        }
+
+    @_state_locked
     def apply_mega_log(self, line: str, received_at: str) -> bool:
         parsed = parse_mega_event_from_log(line)
         if parsed is None:
@@ -1193,6 +2329,11 @@ class OeeRuntimeStateManager:
         item["override_applied_at"] = item["updated_at"]
         item["override_source"] = "MANUAL"
         _recompute_item_counts(state)
+        work_order_id = str(item.get("work_order_id") or "").strip()
+        if work_order_id:
+            order = _work_order_orders(state).get(work_order_id)
+            if isinstance(order, dict):
+                _persist_work_order_metrics(state, order, now=stamp)
         override_row = {
             "item_id": normalized_item_id,
             "measure_id": str(item.get("measure_id") or ""),

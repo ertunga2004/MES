@@ -27,7 +27,7 @@ def utc_now_text(now: datetime | None = None) -> str:
     current = now or datetime.now().astimezone()
     if current.tzinfo is None:
         current = current.astimezone()
-    return current.astimezone().isoformat(timespec="seconds")
+    return current.astimezone().isoformat(timespec="milliseconds")
 
 
 def parse_iso_text(value: str | None) -> datetime | None:
@@ -234,8 +234,13 @@ class DashboardStore:
                 "wifi_connected": None,
                 "mqtt_connected": None,
                 "queue": None,
+                "max_queue": None,
                 "drop_uart": None,
                 "drop_pub": None,
+                "last_rx_ms": None,
+                "last_pub_ms": None,
+                "uptime_ms": None,
+                "rssi": None,
                 "last_seen_at": None,
             },
             "counts": {
@@ -600,6 +605,7 @@ class DashboardStore:
         if parsed is None:
             return
         stamp = received_at or utc_now_text()
+        normalized = str(line or "").strip()
         with self._lock:
             module = self._touch_message(module_id, stamp)
             module["last_status_at"] = stamp
@@ -626,10 +632,18 @@ class DashboardStore:
                     "step_us": parsed["step_us"],
                 }
             )
+            self._append_recent_log(module, self.config.topics["status"], normalized, stamp)
         self._notify(module_id)
 
     def _append_recent_log(self, module: dict[str, Any], topic: str, line: str, received_at: str) -> None:
-        source = "mega" if topic == self.config.topics["logs"] else "system"
+        if topic in {self.config.topics["logs"], self.config.topics["status"]}:
+            source = "mega"
+        elif topic == self.config.topics["tablet_log"]:
+            source = "tablet"
+        elif topic == self.config.topics["bridge_status"]:
+            source = "bridge"
+        else:
+            source = "system"
         module["recent_logs"].append(
             {
                 "id": uuid.uuid4().hex[:12],
@@ -916,8 +930,13 @@ class DashboardStore:
                         "wifi_connected": module["bridge"]["wifi_connected"],
                         "mqtt_connected": module["bridge"]["mqtt_connected"],
                         "queue": module["bridge"]["queue"],
+                        "max_queue": module["bridge"]["max_queue"],
                         "drop_uart": module["bridge"]["drop_uart"],
                         "drop_pub": module["bridge"]["drop_pub"],
+                        "last_rx_ms": module["bridge"]["last_rx_ms"],
+                        "last_pub_ms": module["bridge"]["last_pub_ms"],
+                        "uptime_ms": module["bridge"]["uptime_ms"],
+                        "rssi": module["bridge"]["rssi"],
                         "last_seen_at": module["bridge"]["last_seen_at"],
                     },
                 },

@@ -158,8 +158,13 @@ def parse_bridge_status_line(line: str) -> dict[str, Any] | None:
         "wifi_connected": wifi_connected,
         "mqtt_connected": mqtt_connected,
         "queue": parse_int(fields.get("QUEUE")) or 0,
+        "max_queue": parse_int(fields.get("MAX_QUEUE")) or 0,
         "drop_uart": parse_int(fields.get("DROP_UART")) or 0,
         "drop_pub": parse_int(fields.get("DROP_PUB")) or 0,
+        "last_rx_ms": parse_int(fields.get("LAST_RX_MS")) or 0,
+        "last_pub_ms": parse_int(fields.get("LAST_PUB_MS")) or 0,
+        "uptime_ms": parse_int(fields.get("UPTIME_MS")) or 0,
+        "rssi": parse_int(fields.get("RSSI")),
         "raw": fields,
     }
 

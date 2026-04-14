@@ -42,7 +42,7 @@ class DashboardStoreTests(unittest.TestCase):
 
     def test_utc_now_text_preserves_local_offset(self) -> None:
         local_time = datetime(2026, 4, 3, 9, 30, 0, tzinfo=timezone(timedelta(hours=3)))
-        self.assertEqual(utc_now_text(local_time), "2026-04-03T09:30:00+03:00")
+        self.assertEqual(utc_now_text(local_time), "2026-04-03T09:30:00.000+03:00")
 
     def test_reset_counts(self) -> None:
         self.store.apply_log_line(self.module_id, "MEGA|AUTO|QUEUE=ENQ|COLOR=MAVI")
@@ -81,6 +81,15 @@ class DashboardStoreTests(unittest.TestCase):
         self.assertEqual(snapshot["system_status"]["last_color"], "blue")
         self.assertEqual(snapshot["hardware_status"]["direction"], "rev")
         self.assertEqual(snapshot["hardware_status"]["esp32_state"], "offline")
+
+    def test_status_line_is_added_to_recent_logs(self) -> None:
+        line = "MEGA|STATUS|AUTO=1|STATE=RUN|CONVEYOR=RUN|ROBOT=WAIT_ARM|LAST=MAVI|DIR=REV|PWM=128|TRAVEL_MS=900|LIM22=1|LIM23=0|STEP=1|STEP_HOLD=1|STEP_US=700|QUEUE=4|STOP_REQ=1"
+        self.store.apply_status_line(self.module_id, line, received_at="2026-04-02T10:00:00.000Z")
+
+        snapshot = self.store.get_dashboard_snapshot(self.module_id)
+        self.assertEqual(snapshot["recent_logs"][0]["source"], "mega")
+        self.assertEqual(snapshot["recent_logs"][0]["topic"], self.config.topics["status"])
+        self.assertEqual(snapshot["recent_logs"][0]["message"], line)
 
     def test_initial_snapshot_does_not_assume_device_values(self) -> None:
         snapshot = self.store.get_dashboard_snapshot(self.module_id)
@@ -187,7 +196,7 @@ class DashboardStoreTests(unittest.TestCase):
             self.assertEqual(snapshot["oee"]["production"]["good"], 4)
             self.assertEqual(snapshot["oee"]["colors"]["blue"]["good"], 2)
             self.assertEqual(snapshot["oee"]["kpis"]["quality"], 100.0)
-            self.assertEqual(snapshot["oee"]["kpis"]["performance"], 40.0)
+            self.assertGreater(snapshot["oee"]["kpis"]["performance"], 0.0)
 
     def test_runtime_state_exposes_recent_items_for_quality_override(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

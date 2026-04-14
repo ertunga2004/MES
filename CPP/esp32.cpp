@@ -47,8 +47,12 @@ size_t megaQueueHead = 0;
 size_t megaQueueCount = 0;
 uint32_t droppedUartLines = 0;
 uint32_t droppedPublishLines = 0;
+uint32_t bridgeSequence = 0;
 bool bridgeStatusDirty = true;
 unsigned long lastBridgeStatusMs = 0;
+unsigned long lastMegaRxMs = 0;
+unsigned long lastPublishOkMs = 0;
+size_t maxObservedQueueDepth = 0;
 
 size_t mqttQueueTail();
 void markBridgeStatusDirty();
@@ -102,8 +106,17 @@ bool enqueueMegaLineForPublish(const String& line) {
     return false;
   }
 
-  megaPublishQueue[mqttQueueTail()] = line;
+  String decorated = line;
+  decorated += "|BRIDGE_SEQ=";
+  decorated += ++bridgeSequence;
+  decorated += "|BRIDGE_RX_MS=";
+  decorated += lastMegaRxMs;
+
+  megaPublishQueue[mqttQueueTail()] = decorated;
   megaQueueCount++;
+  if (megaQueueCount > maxObservedQueueDepth) {
+    maxObservedQueueDepth = megaQueueCount;
+  }
   markBridgeStatusDirty();
   return true;
 }
@@ -129,10 +142,11 @@ void flushMegaPublishQueue() {
     if (!client.publish(topic, line.c_str(), retained)) {
       if (!client.connected()) break;
       droppedPublishLines++;
-      dropQueuedLine();
-      continue;
+      markBridgeStatusDirty();
+      break;
     }
 
+    lastPublishOkMs = millis();
     dropQueuedLine();
     sent++;
   }
@@ -146,10 +160,20 @@ void publishBridgeStatus(bool force) {
   payload.reserve(120);
   payload += "ESP32|BRIDGE|QUEUE=";
   payload += megaQueueCount;
+  payload += "|MAX_QUEUE=";
+  payload += maxObservedQueueDepth;
   payload += "|DROP_UART=";
   payload += droppedUartLines;
   payload += "|DROP_PUB=";
   payload += droppedPublishLines;
+  payload += "|LAST_RX_MS=";
+  payload += lastMegaRxMs;
+  payload += "|LAST_PUB_MS=";
+  payload += lastPublishOkMs;
+  payload += "|UPTIME_MS=";
+  payload += millis();
+  payload += "|RSSI=";
+  payload += WiFi.RSSI();
   payload += "|WIFI=";
   payload += (WiFi.status() == WL_CONNECTED) ? "1" : "0";
   payload += "|MQTT=";
@@ -274,6 +298,7 @@ void readMegaSerialAndQueue() {
           megaLineOverflow = false;
         }
 
+        lastMegaRxMs = millis();
         Serial.print("MEGA -> ");
         Serial.println(megaLineBuffer);
         enqueueMegaLineForPublish(megaLineBuffer);

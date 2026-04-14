@@ -55,9 +55,11 @@ Legacy Node-RED akislarini repo disi tutarken, ayni topic kontrati uzerinde yeni
 
 ### OEE Formulu
 
-- `Availability = runtime / elapsed`
-- `runtime = elapsed - unplanned_downtime`
-- `Performance = completed / target` veya `completed / expected_by_cycle`
+- `Availability = runtime / planned_production_elapsed`
+- `planned_production_elapsed = elapsed - prorated_planned_stop_budget`
+- `runtime = planned_production_elapsed - unplanned_downtime`
+- `Performance = completed / expected_by_shift_rate` veya `completed / expected_by_cycle`
+- `TARGET` modunda beklenen adet `runtime / (planlanan_uretim_suresi)` oranina gore akar; planli durus availability kaybi sayilmaz
 - `Quality = good / total`
 - `OEE = Availability * Performance * Quality`
 

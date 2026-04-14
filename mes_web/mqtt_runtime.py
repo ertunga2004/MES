@@ -119,6 +119,8 @@ class MqttIngestClient:
             if self.oee_state_manager is not None and self.oee_state_manager.apply_tablet_fault_log(payload, stamp):
                 self.store.refresh_oee_runtime_state(module_id, force=True)
             self.store.apply_tablet_log(module_id, payload, received_at=stamp)
+            if self.excel_sink is not None:
+                self.excel_sink.record_tablet_log(payload, stamp)
             return
         if topic == topics["vision_status"]:
             self.store.apply_vision_status(module_id, payload, received_at=stamp)

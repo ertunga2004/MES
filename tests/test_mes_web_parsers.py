@@ -28,13 +28,18 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(parsed["step_enabled"])
 
     def test_parse_bridge_status_line(self) -> None:
-        parsed = parse_bridge_status_line("ESP32|BRIDGE|WIFI=1|MQTT=0|QUEUE=2|DROP_UART=1|DROP_PUB=3")
+        parsed = parse_bridge_status_line("ESP32|BRIDGE|WIFI=1|MQTT=0|QUEUE=2|MAX_QUEUE=7|DROP_UART=1|DROP_PUB=3|LAST_RX_MS=1500|LAST_PUB_MS=1400|UPTIME_MS=9000|RSSI=-58")
         self.assertIsNotNone(parsed)
         assert parsed is not None
         self.assertEqual(parsed["state"], "degraded")
         self.assertEqual(parsed["queue"], 2)
+        self.assertEqual(parsed["max_queue"], 7)
         self.assertEqual(parsed["drop_uart"], 1)
         self.assertEqual(parsed["drop_pub"], 3)
+        self.assertEqual(parsed["last_rx_ms"], 1500)
+        self.assertEqual(parsed["last_pub_ms"], 1400)
+        self.assertEqual(parsed["uptime_ms"], 9000)
+        self.assertEqual(parsed["rssi"], -58)
 
     def test_parse_mega_queue_event(self) -> None:
         parsed = parse_mega_event_from_log(

@@ -7,6 +7,8 @@ struct SensorSample {
   int R;
   int G;
   int B;
+  long dXRaw;
+  long relSum;
   String cls;
   bool objectPresent;
   bool confident;
@@ -1189,10 +1191,13 @@ String classifyNearest(int Rm,int Gm,int Bm){
   return label;
 }
 
-String classifyStable(int Rm, int Gm, int Bm, bool &objectPresent, bool &confident){
+String classifyStable(int Rm, int Gm, int Bm, bool &objectPresent, bool &confident,
+                      long *dXRawOut = nullptr, long *relSumOut = nullptr){
   if(!calibrationModelReady){
     objectPresent = false;
     confident = false;
+    if(dXRawOut) *dXRawOut = 0;
+    if(relSumOut) *relSumOut = 0;
     return "CAL";
   }
 
@@ -1204,6 +1209,8 @@ String classifyStable(int Rm, int Gm, int Bm, bool &objectPresent, bool &confide
 
   long dXRaw = dist3(Rm, Gm, Bm, emptyR, emptyG, emptyB);
   long relSum = max(sampleSig.contrastR, 0) + max(sampleSig.contrastG, 0) + max(sampleSig.contrastB, 0);
+  if(dXRawOut) *dXRawOut = dXRaw;
+  if(relSumOut) *relSumOut = relSum;
   objectPresent = ((dXRaw >= emptyDistanceThresholdRaw) && (relSum >= (objectContrastThreshold / 2L)))
                || (relSum >= objectContrastThreshold);
 
@@ -1261,6 +1268,8 @@ SensorSample quickClassifyOnce(){
   s.R = readColor(LOW, LOW);
   s.G = readColor(HIGH, LOW);
   s.B = readColor(LOW, HIGH);
+  s.dXRaw = 0;
+  s.relSum = 0;
   s.objectPresent = false;
   s.confident = false;
 
@@ -1269,7 +1278,7 @@ SensorSample quickClassifyOnce(){
     s.cls = "CAL";
     return s;
   }
-  s.cls = classifyStable(s.R, s.G, s.B, s.objectPresent, s.confident);
+  s.cls = classifyStable(s.R, s.G, s.B, s.objectPresent, s.confident, &s.dXRaw, &s.relSum);
   return s;
 }
 
@@ -1365,14 +1374,18 @@ void logEvent(const char* module, const String& msg){
   Serial1.print("MEGA|");
   Serial1.print(module);
   Serial1.print("|");
-  Serial1.println(msg);
+  Serial1.print(msg);
+  Serial1.print("|SRC_MS=");
+  Serial1.println(millis());
 }
 
 void logAlarm(const char* code, const String& msg){
   Serial1.print("MEGA|ALARM|CODE=");
   Serial1.print(code);
   Serial1.print("|");
-  Serial1.println(msg);
+  Serial1.print(msg);
+  Serial1.print("|SRC_MS=");
+  Serial1.println(millis());
 }
 
 void logSensorReading(const SensorSample& s, const char* state, unsigned long now){
@@ -1393,7 +1406,11 @@ void logSensorReading(const SensorSample& s, const char* state, unsigned long no
     Serial1.print("|OBJ=");
     Serial1.print(s.objectPresent ? 1 : 0);
     Serial1.print("|CONF=");
-    Serial1.println(s.confident ? 1 : 0);
+    Serial1.print(s.confident ? 1 : 0);
+    Serial1.print("|DX=");
+    Serial1.print(s.dXRaw);
+    Serial1.print("|REL=");
+    Serial1.println(s.relSum);
 
     lastSensorLogClass = s.cls;
     lastSensorLogMs = now;
@@ -1429,6 +1446,8 @@ uint8_t sensorClearStreak = 0;
 unsigned long sensorRearmRemainingMs = 0;
 const uint8_t SENSOR_CLEAR_STREAK_N = 1;
 const unsigned long SENSOR_REARM_MIN_RUN_MS = 900;
+const long SENSOR_REARM_SAME_OBJECT_RAW_MAX = 120;
+const long SENSOR_REARM_SAME_OBJECT_DX_DELTA_MAX = 90;
 
 const uint8_t MAX_PENDING_ITEMS = 6;
 PendingItem pendingItems[MAX_PENDING_ITEMS];
@@ -1445,6 +1464,12 @@ String activePickColor = "";
 String activePickDecisionSource = "";
 bool activePickReviewRequired = false;
 bool activePickCompletedLogged = false;
+int lastMeasuredR = 0;
+int lastMeasuredG = 0;
+int lastMeasuredB = 0;
+long lastMeasuredDX = 0;
+uint8_t lastMeasuredLabelCode = 0;
+bool lastMeasuredSnapshotValid = false;
 
 void logActivePickCompleted(const char* stateLabel){
   String trigger = activePickTriggerSource.length() > 0 ? activePickTriggerSource : "TIMER";
@@ -1614,6 +1639,35 @@ String detectHintLabel(uint8_t *bestCountOut = nullptr, uint8_t *secondCountOut 
   if(secondCountOut) *secondCountOut = second;
   if(bestMatches > 1) return "BELIRSIZ";
   return label;
+}
+
+bool isColorDetectCode(uint8_t code){
+  return code == MEAS_LABEL_R || code == MEAS_LABEL_Y || code == MEAS_LABEL_B;
+}
+
+bool isSearchDetectCandidate(const SensorSample& s){
+  uint8_t code = sampleLabelCode(s.cls);
+  if(!s.objectPresent || !s.confident || !isColorDetectCode(code)) return false;
+  if(s.relSum >= objectContrastThreshold) return true;
+  return s.dXRaw >= (emptyDistanceThresholdRaw + 80L);
+}
+
+bool shouldReleaseRearmForSample(const SensorSample& s){
+  if(!isSearchDetectCandidate(s)) return false;
+  if(!lastMeasuredSnapshotValid) return true;
+
+  uint8_t code = sampleLabelCode(s.cls);
+  long rawDelta = dist3(s.R, s.G, s.B, lastMeasuredR, lastMeasuredG, lastMeasuredB);
+  long dxDelta = s.dXRaw - lastMeasuredDX;
+  if(dxDelta < 0) dxDelta = -dxDelta;
+
+  if(code == lastMeasuredLabelCode &&
+     rawDelta < SENSOR_REARM_SAME_OBJECT_RAW_MAX &&
+     dxDelta < SENSOR_REARM_SAME_OBJECT_DX_DELTA_MAX){
+    return false;
+  }
+
+  return true;
 }
 
 void startMeasuring(unsigned long now){
@@ -1996,7 +2050,10 @@ void printStatus(){
   Serial1.print(pendingCount);
 
   Serial1.print("|STOP_REQ=");
-  Serial1.println(stopRequested ? 1 : 0);
+  Serial1.print(stopRequested ? 1 : 0);
+
+  Serial1.print("|SRC_MS=");
+  Serial1.println(millis());
 }
 
 void publishStatusNow(){
@@ -2417,13 +2474,13 @@ void loop() {
         sensorClearStreak = 0;
       }
 
-      if(sensorRearmRequired && sensorRearmRemainingMs == 0 && s.objectPresent){
+      if(sensorRearmRequired && sensorRearmRemainingMs == 0 && shouldReleaseRearmForSample(s)){
         sensorRearmRequired = false;
         sensorClearStreak = 0;
         detectStreak = 0;
         resetDetectLabels();
         resetSearchCentering();
-        logEvent("AUTO", "STATE=SEARCHING|EVENT=REARM_TIMEOUT|ACTION=ALLOW_OBJECT");
+        logEvent("AUTO", String("STATE=SEARCHING|EVENT=REARM_TIMEOUT|ACTION=ALLOW_OBJECT|SEARCH_HINT=") + s.cls);
       }
 
       if(sensorRearmRequired){
@@ -2444,6 +2501,11 @@ void loop() {
       resetDetectLabels();
       resetSearchCentering();
       return; // ürün yok -> bant dönmeye devam
+    }
+
+    if(!isSearchDetectCandidate(s)){
+      resetSearchCentering();
+      return;
     }
 
     noteDetectLabel(s.cls);
@@ -2607,6 +2669,17 @@ void loop() {
       finalSource = "CORE_SCORE_VOTE";
     }
 
+    if(finalCls == "BELIRSIZ" &&
+       medianNearest == "KIRMIZI" &&
+       scoreNearest == "KIRMIZI" &&
+       coreVoteR >= 2 &&
+       coreVoteR > coreVoteY &&
+       coreVoteR > coreVoteB){
+      finalCls = "KIRMIZI";
+      finalSource = "CORE_SCORE_R_FALLBACK";
+      reviewRequired = true;
+    }
+
     if(finalCls == "BELIRSIZ" && searchHintStrong && searchHintFallbackAllowed){
       finalCls = searchHint;
       finalSource = "SEARCH_HINT_STRONG";
@@ -2636,6 +2709,18 @@ void loop() {
     }
 
     lastMeasured = finalCls;
+    if(finalCls == "BOS" || finalCls == "CAL" || finalCls == "BELIRSIZ"){
+      lastMeasuredSnapshotValid = false;
+      lastMeasuredLabelCode = MEAS_LABEL_OTHER;
+      lastMeasuredDX = 0;
+    } else {
+      lastMeasuredSnapshotValid = true;
+      lastMeasuredR = medR;
+      lastMeasuredG = medG;
+      lastMeasuredB = medB;
+      lastMeasuredDX = medDX;
+      lastMeasuredLabelCode = sampleLabelCode(finalCls);
+    }
     unsigned long measuredId = activeMeasureId;
     unsigned long queuedItemId = 0;
     bool queueAccepted = false;

@@ -160,7 +160,7 @@ def _short_time(value: str) -> str:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return "-"
-    return parsed.astimezone().strftime("%H:%M:%S")
+    return parsed.astimezone().strftime("%H:%M:%S.%f")[:-3]
 
 
 def _full_time(value: str) -> str:
@@ -170,7 +170,7 @@ def _full_time(value: str) -> str:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return "-"
-    return parsed.astimezone().strftime("%d.%m.%Y %H:%M:%S")
+    return parsed.astimezone().strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
 
 
 def _merge_clock_with_stamp(time_text: str | None, stamp: str) -> str:
@@ -529,8 +529,18 @@ def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -
 
     shift_active = bool(shift.get("active") and shift.get("startedAt"))
     started_at = _parse_iso(str(shift.get("startedAt") or ""))
+    plan_start = _parse_iso(str(shift.get("planStart") or ""))
     plan_end = _parse_iso(str(shift.get("planEnd") or ""))
     elapsed_ms = int((stamp - started_at).total_seconds() * 1000) if shift_active and started_at is not None else 0
+    shift_window_total_ms = 0
+    if shift_active:
+        window_start = started_at
+        if window_start is None:
+            window_start = plan_start
+        if window_start is not None and plan_end is not None:
+            shift_window_total_ms = max(0, int((plan_end - window_start).total_seconds() * 1000))
+        elif elapsed_ms > 0:
+            shift_window_total_ms = elapsed_ms
 
     active_fault = state.get("activeFault") if isinstance(state.get("activeFault"), dict) else None
     active_fault_started = _parse_iso(str(active_fault.get("startedAt") or "")) if active_fault else None
@@ -538,9 +548,22 @@ def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -
     if shift_active and active_fault_started is not None:
         active_fault_ms = max(0, int((stamp - active_fault_started).total_seconds() * 1000))
 
+    planned_stop_total_ms = min(
+        max(0, round(_numeric(shift.get("plannedStopMin") or state.get("plannedStopMin")) * 60_000.0)),
+        shift_window_total_ms if shift_window_total_ms > 0 else max(0, elapsed_ms),
+    )
+    if planned_stop_total_ms > 0 and shift_window_total_ms > 0:
+        planned_stop_budget_ms = min(
+            planned_stop_total_ms,
+            max(0, round(planned_stop_total_ms * min(1.0, elapsed_ms / shift_window_total_ms))),
+        )
+    else:
+        planned_stop_budget_ms = min(planned_stop_total_ms, max(0, elapsed_ms))
+    planned_production_total_ms = max(0, shift_window_total_ms - planned_stop_total_ms)
+    planned_production_elapsed_ms = max(0, elapsed_ms - planned_stop_budget_ms)
     unplanned_ms = max(0, round(_numeric(state.get("unplannedDowntimeMs")))) + active_fault_ms
-    runtime_ms = max(0, elapsed_ms - unplanned_ms)
-    availability = (runtime_ms / elapsed_ms) if elapsed_ms > 0 else 0.0
+    runtime_ms = max(0, planned_production_elapsed_ms - unplanned_ms)
+    availability = (runtime_ms / planned_production_elapsed_ms) if planned_production_elapsed_ms > 0 else 0.0
     quality = (good / total) if total > 0 else 1.0
 
     expected = 0.0
@@ -554,9 +577,13 @@ def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -
         expected = (runtime_ms / (ideal_cycle_sec * 1000.0)) if runtime_ms > 0 else 0.0
         performance = (total / expected) if expected > 0 else 0.0
         target_text = f"{ideal_cycle_sec:.1f} sn cycle / beklenen {expected:.1f}"
+    elif target_qty > 0 and planned_production_total_ms > 0:
+        expected = float(target_qty) * (runtime_ms / planned_production_total_ms) if runtime_ms > 0 else 0.0
+        performance = (total / expected) if expected > 0 else 0.0
+        target_text = f"{target_qty} adet hedef / beklenen {expected:.1f}"
     elif target_qty > 0:
         expected = float(target_qty)
-        performance = (total / expected) if expected > 0 else 0.0
+        performance = 0.0
         target_text = f"{target_qty} adet hedef"
 
     oee = availability * performance * quality
@@ -594,6 +621,10 @@ def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -
         "expected": expected,
         "gap": gap,
         "elapsedMs": elapsed_ms,
+        "plannedStopMs": planned_stop_total_ms,
+        "plannedStopBudgetMs": planned_stop_budget_ms,
+        "plannedProductionElapsedMs": planned_production_elapsed_ms,
+        "plannedProductionTotalMs": planned_production_total_ms,
         "runtimeMs": runtime_ms,
         "unplannedMs": unplanned_ms,
         "activeFaultMs": active_fault_ms,
@@ -952,7 +983,23 @@ class OeeRuntimeStateManager:
         color = str(parsed.get("color") or "unknown")
         head_key = _head_item_key(state)
 
-        if parsed["event_type"] == "queue_enq" and item_key:
+        if parsed["event_type"] == "measurement_decision" and item_key:
+            item = items.get(item_key, {})
+            item.update(
+                {
+                    "item_id": item_id or item.get("item_id") or item_key,
+                    "measure_id": measure_id or item.get("measure_id") or "",
+                    "sensor_color": color,
+                    "measured_at": received_at,
+                    "detected_at": str(item.get("detected_at") or received_at),
+                    "sensor_decision_source": str(parsed.get("decision_source") or item.get("sensor_decision_source") or ""),
+                    "review_required": bool(parsed.get("review_required")),
+                }
+            )
+            items[item_key] = item
+            changed = True
+
+        elif parsed["event_type"] == "queue_enq" and item_key:
             item = items.get(item_key, {})
             item.update(
                 {
@@ -968,7 +1015,7 @@ class OeeRuntimeStateManager:
                     "mismatch_flag": bool(item.get("mismatch_flag")),
                     "correlation_status": str(item.get("correlation_status") or ""),
                     "review_required": bool(parsed.get("review_required")),
-                    "detected_at": received_at,
+                    "detected_at": str(item.get("detected_at") or item.get("measured_at") or received_at),
                     "queued_at": received_at,
                     "travel_ms": parsed.get("travel_ms"),
                     "travel_ms_initial": parsed.get("travel_ms"),

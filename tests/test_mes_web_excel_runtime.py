@@ -19,7 +19,7 @@ class WorkbookProjectorTests(unittest.TestCase):
             "2026-04-02T10:15:26Z",
         )
         completed_rows = self.projector.consume_mega_log(
-            "MEGA|AUTO|EVENT=PICKPLACE_DONE|ITEM_ID=42|MEASURE_ID=8|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE",
+            "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=42|MEASURE_ID=8|TRIGGER=TIMER",
             "2026-04-02T10:15:29Z",
         )
 
@@ -41,6 +41,10 @@ class WorkbookProjectorTests(unittest.TestCase):
         self.assertEqual(completed_rows["4_Uretim_Tamamlanan"][0]["item_id"], "42")
         self.assertEqual(completed_rows["4_Uretim_Tamamlanan"][0]["status_code"], "COMPLETED")
         self.assertEqual(completed_rows["4_Uretim_Tamamlanan"][0]["travel_ms"], 640)
+        self.assertEqual(completed_rows["4_Uretim_Tamamlanan"][0]["detected_at"], "2026-04-02T10:15:25Z")
+        self.assertEqual(completed_rows["4_Uretim_Tamamlanan"][0]["completed_at"], "2026-04-02T10:15:29Z")
+        self.assertEqual(completed_rows["4_Uretim_Tamamlanan"][0]["flow_ms"], 4000)
+        self.assertEqual(completed_rows["4_Uretim_Tamamlanan"][0]["cycle_ms"], "")
 
     def test_vision_event_creates_vision_and_raw_rows(self) -> None:
         rows = self.projector.consume_vision_event(
@@ -65,6 +69,48 @@ class WorkbookProjectorTests(unittest.TestCase):
         self.assertEqual(rows["1_Olay_Logu"][0]["source_code"], "system")
         self.assertEqual(rows["1_Olay_Logu"][0]["raw_line"], "SYSTEM|COUNTS|RESET")
         self.assertEqual(rows["7_Raw_Logs"][0]["source_topic"], "local/system")
+
+    def test_tablet_oee_log_creates_workbook_rows(self) -> None:
+        rows = self.projector.consume_tablet_log(
+            "|Tablet|OEE|OEE:74.5|KULL:80.0|PERF:90.0|KALITE:95.0|KIRMIZI_S:1|KIRMIZI_R:0|KIRMIZI_H:0|SARI_S:2|SARI_R:1|SARI_H:0|MAVI_S:3|MAVI_R:0|MAVI_H:1",
+            "2026-04-02T10:15:30Z",
+        )
+
+        self.assertEqual(rows["7_Raw_Logs"][0]["source_topic"], "sau/iot/mega/konveyor/tablet/log")
+        self.assertEqual(rows["7_Raw_Logs"][0]["event_type_code"], "tablet_oee_snapshot")
+        self.assertEqual(rows["1_Olay_Logu"][0]["source_code"], "tablet")
+        self.assertEqual(rows["1_Olay_Logu"][0]["event_type_code"], "tablet_oee_snapshot")
+        self.assertIn("toplam=8", rows["1_Olay_Logu"][0]["notes"])
+
+    def test_tablet_fault_log_creates_workbook_rows(self) -> None:
+        rows = self.projector.consume_tablet_log(
+            "|Tablet|Ariza|DURUM:BASLADI|NEDEN:Motor Koruma|SURE_DK:4.5",
+            "2026-04-02T10:15:31Z",
+        )
+
+        self.assertEqual(rows["7_Raw_Logs"][0]["event_type_code"], "tablet_fault")
+        self.assertEqual(rows["1_Olay_Logu"][0]["event_type_code"], "tablet_fault")
+        self.assertIn("neden=Motor Koruma", rows["1_Olay_Logu"][0]["notes"])
+
+    def test_system_oee_control_logs_create_workbook_rows(self) -> None:
+        rows = self.projector.consume_system_oee_log(
+            "SYSTEM|OEE|SET_TARGET_QTY|24",
+            "2026-04-02T10:15:32Z",
+        )
+
+        self.assertEqual(rows["7_Raw_Logs"][0]["source_topic"], "local/oee")
+        self.assertEqual(rows["7_Raw_Logs"][0]["event_type_code"], "oee_control")
+        self.assertEqual(rows["1_Olay_Logu"][0]["event_summary_tr"], "Hedef guncellendi: 24")
+
+    def test_shift_start_system_log_creates_workbook_rows(self) -> None:
+        rows = self.projector.consume_system_oee_log(
+            "|Tablet|Sistem| OLAY:VARDIYA_BASLADI|VARDIYA:SHIFT-A|PLAN_BASLANGIC:02.04.2026 08:00:00|PLAN_BITIS:02.04.2026 16:00:00|PERF_MOD:IDEAL_CYCLE|HEDEF:24|IDEAL_CYCLE_SN:1.8|PLANLI_DURUS_DK:15.0",
+            "2026-04-02T10:15:33Z",
+        )
+
+        self.assertEqual(rows["7_Raw_Logs"][0]["event_type_code"], "shift_start")
+        self.assertEqual(rows["1_Olay_Logu"][0]["event_type_code"], "shift_start")
+        self.assertIn("planned_stop_dk=15.0", rows["1_Olay_Logu"][0]["notes"])
 
     def test_pickplace_return_done_creates_parsed_event_row(self) -> None:
         rows = self.projector.consume_mega_log(
@@ -106,7 +152,7 @@ class WorkbookProjectorTests(unittest.TestCase):
             "2026-04-02T10:15:27.150Z",
         )
         completed_rows = self.projector.consume_mega_log(
-            "MEGA|AUTO|STATE=SEARCHING|EVENT=PICKPLACE_DONE|ITEM_ID=42|MEASURE_ID=8|COLOR=MAVI|DECISION_SOURCE=CORE_STABLE|REVIEW=0|TRIGGER=EARLY|PENDING=0",
+            "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=42|MEASURE_ID=8|TRIGGER=EARLY",
             "2026-04-02T10:15:29Z",
         )
 
@@ -123,6 +169,7 @@ class WorkbookProjectorTests(unittest.TestCase):
         self.assertEqual(row["early_pick_triggered"], 1)
         self.assertEqual(row["early_pick_request_sent_at"], "2026-04-02T10:15:27.100Z")
         self.assertEqual(row["early_pick_accepted_at"], "2026-04-02T10:15:27.150Z")
+        self.assertEqual(row["flow_ms"], 3000)
 
     def test_late_vision_event_marks_audit_columns(self) -> None:
         rows = self.projector.consume_vision_event(
@@ -157,7 +204,7 @@ class WorkbookProjectorTests(unittest.TestCase):
             "2026-04-02T10:15:26Z",
         )
         completed_rows = self.projector.consume_mega_log(
-            "MEGA|AUTO|EVENT=PICKPLACE_DONE|ITEM_ID=42|MEASURE_ID=8|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE",
+            "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=42|MEASURE_ID=8|TRIGGER=TIMER",
             "2026-04-02T10:15:29Z",
         )
 
@@ -181,7 +228,7 @@ class WorkbookProjectorTests(unittest.TestCase):
             "2026-04-02T10:15:26+03:00",
         )
         completed_rows = self.projector.consume_mega_log(
-            "MEGA|AUTO|EVENT=PICKPLACE_DONE|ITEM_ID=42|MEASURE_ID=8|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE",
+            "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=42|MEASURE_ID=8|TRIGGER=TIMER",
             "2026-04-02T10:15:29+03:00",
         )
         row = self.projector.apply_quality_override("42", "SCRAP", "2026-04-02T10:18:00+03:00")
@@ -199,6 +246,37 @@ class WorkbookProjectorTests(unittest.TestCase):
         self.assertEqual(sheet.cell(2, COMPLETED_COLUMNS.index("status_code") + 1).value, "COMPLETED_SCRAP")
         self.assertEqual(sheet.cell(2, COMPLETED_COLUMNS.index("final_quality_code") + 1).value, "SCRAP")
         self.assertEqual(sheet.cell(2, COMPLETED_COLUMNS.index("override_applied_at") + 1).value, "2026-04-02T10:18:00+03:00")
+
+    def test_cycle_ms_is_gap_between_two_release_events(self) -> None:
+        self.projector.consume_mega_log(
+            "MEGA|TCS3200|STATE=MEASURING|ITEM_ID=42|MEASURE_ID=8|FINAL=KIRMIZI|FINAL_SOURCE=CORE_STABLE",
+            "2026-04-02T10:15:25Z",
+        )
+        self.projector.consume_mega_log(
+            "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=42|MEASURE_ID=8|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=640",
+            "2026-04-02T10:15:26Z",
+        )
+        first_rows = self.projector.consume_mega_log(
+            "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=42|MEASURE_ID=8|TRIGGER=TIMER",
+            "2026-04-02T10:15:29Z",
+        )
+
+        self.projector.consume_mega_log(
+            "MEGA|TCS3200|STATE=MEASURING|ITEM_ID=43|MEASURE_ID=9|FINAL=MAVI|FINAL_SOURCE=CORE_STABLE",
+            "2026-04-02T10:15:30Z",
+        )
+        self.projector.consume_mega_log(
+            "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=43|MEASURE_ID=9|COLOR=MAVI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=640",
+            "2026-04-02T10:15:31Z",
+        )
+        second_rows = self.projector.consume_mega_log(
+            "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=43|MEASURE_ID=9|TRIGGER=TIMER",
+            "2026-04-02T10:15:35Z",
+        )
+
+        self.assertEqual(first_rows["4_Uretim_Tamamlanan"][0]["cycle_ms"], "")
+        self.assertEqual(second_rows["4_Uretim_Tamamlanan"][0]["flow_ms"], 5000)
+        self.assertEqual(second_rows["4_Uretim_Tamamlanan"][0]["cycle_ms"], 6000)
 
 
 if __name__ == "__main__":

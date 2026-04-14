@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from mes_web.oee_state import OeeRuntimeStateManager
+from mes_web.oee_state import OeeRuntimeStateManager, build_live_snapshot
 
 
 class OeeRuntimeStateManagerTests(unittest.TestCase):
@@ -151,6 +151,77 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(state["counts"]["byColor"]["blue"]["scrap"], 1)
             self.assertEqual(state["itemsById"]["42"]["classification"], "SCRAP")
             self.assertEqual(result["override"]["previous_classification"], "GOOD")
+
+    def test_planned_stop_is_excluded_from_availability_denominator(self) -> None:
+        state = {
+            "performanceMode": "TARGET",
+            "targetQty": 12,
+            "plannedStopMin": 60.0,
+            "counts": {
+                "total": 3,
+                "good": 3,
+                "rework": 0,
+                "scrap": 0,
+                "byColor": {
+                    "red": {"total": 1, "good": 1, "rework": 0, "scrap": 0},
+                    "yellow": {"total": 1, "good": 1, "rework": 0, "scrap": 0},
+                    "blue": {"total": 1, "good": 1, "rework": 0, "scrap": 0},
+                },
+            },
+            "shift": {
+                "active": True,
+                "startedAt": "2026-04-02T08:00:00+03:00",
+                "planStart": "2026-04-02T08:00:00+03:00",
+                "planEnd": "2026-04-02T16:00:00+03:00",
+                "performanceMode": "TARGET",
+                "targetQty": 12,
+                "plannedStopMin": 60.0,
+                "idealCycleSec": 0.0,
+            },
+            "unplannedDowntimeMs": 30 * 60 * 1000,
+        }
+
+        snapshot = build_live_snapshot(state, now=datetime(2026, 4, 2, 12, 0, 0, tzinfo=timezone(timedelta(hours=3))))
+
+        self.assertEqual(snapshot["plannedStopMs"], 60 * 60 * 1000)
+        self.assertEqual(snapshot["plannedStopBudgetMs"], 30 * 60 * 1000)
+        self.assertEqual(snapshot["plannedProductionElapsedMs"], 3 * 60 * 60 * 1000 + 30 * 60 * 1000)
+        self.assertAlmostEqual(snapshot["availability"], 6.0 / 7.0, places=4)
+
+    def test_target_mode_uses_time_based_expected_output(self) -> None:
+        state = {
+            "performanceMode": "TARGET",
+            "targetQty": 16,
+            "plannedStopMin": 60.0,
+            "counts": {
+                "total": 3,
+                "good": 3,
+                "rework": 0,
+                "scrap": 0,
+                "byColor": {
+                    "red": {"total": 1, "good": 1, "rework": 0, "scrap": 0},
+                    "yellow": {"total": 1, "good": 1, "rework": 0, "scrap": 0},
+                    "blue": {"total": 1, "good": 1, "rework": 0, "scrap": 0},
+                },
+            },
+            "shift": {
+                "active": True,
+                "startedAt": "2026-04-02T08:00:00+03:00",
+                "planStart": "2026-04-02T08:00:00+03:00",
+                "planEnd": "2026-04-02T16:00:00+03:00",
+                "performanceMode": "TARGET",
+                "targetQty": 16,
+                "plannedStopMin": 60.0,
+                "idealCycleSec": 0.0,
+            },
+            "unplannedDowntimeMs": 0,
+        }
+
+        snapshot = build_live_snapshot(state, now=datetime(2026, 4, 2, 12, 0, 0, tzinfo=timezone(timedelta(hours=3))))
+
+        self.assertAlmostEqual(snapshot["expected"], 8.0, places=4)
+        self.assertAlmostEqual(snapshot["performance"], 3.0 / 8.0, places=4)
+        self.assertIn("beklenen 8.0", snapshot["targetText"])
 
     def test_pickplace_return_done_updates_completed_item_trace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

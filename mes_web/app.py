@@ -39,7 +39,14 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     async def index() -> FileResponse:
-        return FileResponse(static_dir / "index.html")
+        return FileResponse(
+            static_dir / "index.html",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
     @app.get("/api/modules")
     async def list_modules() -> list[dict[str, Any]]:
@@ -82,6 +89,7 @@ def create_app() -> FastAPI:
             detail = str(exc)
             status_code = 503 if detail.startswith("MQTT_") else 500
             raise HTTPException(status_code=status_code, detail=detail) from exc
+        store.append_system_log(module_id, f"SYSTEM|CMD|PUBLISH|KIND={kind.upper()}|VALUE={value}", topic="local/command")
 
         return {"status": "accepted", "kind": kind, "value": value, "dispatch": "mqtt"}
 
@@ -103,6 +111,7 @@ def create_app() -> FastAPI:
         recent_log = str(result.get("recent_log") or "").strip()
         if recent_log:
             store.append_system_log(module_id, recent_log, topic="local/oee")
+            runtime_service.excel_sink.record_system_oee_log(recent_log, utc_now_text())
 
         return {
             "status": "accepted",

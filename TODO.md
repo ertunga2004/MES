@@ -13,16 +13,21 @@ Bu dosya, repo genelindeki tum acik isleri tek yerde toplar. Her madde, en cok h
 - [ ] [tests] Sistemi uctan uca calistirip tam saha testi yap.
   Hedef: `mega + raspberry + mes_web + workbook/database` zinciri birlikte dogrulansin.
 
+## Tamamlanan - 2026-04-14
+
+- [x] [mes_web] Manuel kalite override ekrani ekle.
+  Sonuc: OEE tabinda son tamamlanan urunler icin tek tik `GOOD / REWORK / SCRAP` override akisi eklendi.
+
+- [x] [mes_web] Kalite override sonucunu OEE hesabina bagla.
+  Sonuc: override sonrasi kalite, renk dagilimi ve OEE runtime sayaclari yeniden hesaplaniyor.
+
+- [x] [mes_web] Kalite override sonucunu workbook'a yaz.
+  Sonuc: `4_Uretim_Tamamlanan` sheet'indeki kalite ve override alanlari backend tarafinda geri yaziliyor.
+
 ## P0 - Hemen Yapilacaklar
 
-- [ ] [mes_web] Manuel kalite override ekrani ekle.
-  Hedef: operator tamamlanan urunu sonradan `GOOD`, `REWORK` veya `SCRAP` olarak duzeltebilsin.
-
-- [ ] [mes_web] Kalite override sonucunu OEE hesabina bagla.
-  Hedef: urun sonradan `rework` veya `scrap` olarak isaretlenince `quality`, renk bazli dagilim ve trendler yeniden hesaplansin.
-
-- [ ] [mes_web] Kalite override sonucunu workbook'a yaz.
-  Hedef: `4_Uretim_Tamamlanan` sheet'i sadece `COMPLETED` degil, son kalite kararini da tutsun.
+- [ ] [mes_web] Veritabani hatalarini tespit et ve gider.
+  Hedef: `mes_web` veritabani katmanindaki baglanti, sorgu, schema ve veri esleme kaynakli hatalar tekrar uretilebilir sekilde toplanip operasyon akisini bozan DB bug'lari kapatilsin.
 
 - [ ] [mes_web] `planned stop` alanini availability hesabina dahil et.
   Hedef: planli durus, plansiz durus gibi OEE'yi bozmasin; availability hesabinda dogru ele alinsin.
@@ -109,8 +114,8 @@ Bu dosya, repo genelindeki tum acik isleri tek yerde toplar. Her madde, en cok h
 
 ## Karar Bekleyenler
 
-- [ ] [mes_web] Kalite override UI akisini kesinlestir.
-  Karar: operator tamamlanan urunu nasil bulacak, nasil duzeltecek, geri alma olacak mi.
+- [ ] [mes_web] Kalite override ekraninda eski urun bulma ve geri alma akislarini kesinlestir.
+  Karar: operator sadece son urunleri mi gorecek, daha eski item arama olacak mi, override geri alma veya tekrar duzeltme nasil isleyecek.
 
 - [ ] [README] FERP'in ana import nesnesini kesinlestir.
   Karar: workbook dogrudan mi gidecek, yoksa workbook'tan turetilen JSON mu esas olacak.

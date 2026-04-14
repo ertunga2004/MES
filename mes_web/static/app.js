@@ -163,7 +163,18 @@ function formatTime(value) {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString("tr-TR", { hour12: false });
+  const text = String(value);
+  const dateText = date.toLocaleDateString("tr-TR");
+  const timeOptions = {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  };
+  if (/\.\d{1,6}(?:Z|[+-]\d\d:\d\d)?$/.test(text)) {
+    timeOptions.fractionalSecondDigits = 3;
+  }
+  return `${dateText} ${date.toLocaleTimeString("tr-TR", timeOptions)}`;
 }
 
 function formatTrendTime(value) {

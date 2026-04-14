@@ -173,7 +173,10 @@ tutmak
 Amaç:
 
 - queue'dan tamamlanmis urune gecisi kaydetmek
-- `detected_at`, `completed_at`, `travel_ms`, `cycle_ms` gibi alanlari vermek
+- `detected_at` alanini sensor olcum/giris ani olarak tutmak
+- `completed_at` alanini robot birakma/cikis ani olarak tutmak
+- `flow_ms` alanini ayni urunun giris-cikis suresi olarak tutmak
+- `cycle_ms` alanini ard arda iki cikis arasindaki fark olarak tutmak
 
 ### `6_Vision`
 

@@ -10,7 +10,15 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig
-from .parsers import normalize_color, parse_mega_event_from_log, parse_vision_event
+from .parsers import (
+    normalize_color,
+    normalize_token,
+    parse_colon_value_line,
+    parse_mega_event_from_log,
+    parse_tablet_fault_line,
+    parse_tablet_oee_line,
+    parse_vision_event,
+)
 
 
 EVENT_LOG_COLUMNS = [
@@ -30,7 +38,7 @@ MEASUREMENT_COLUMNS = [
 ]
 COMPLETED_COLUMNS = [
     "production_record_id", "item_id", "measure_id", "queue_event_log_id", "completion_event_log_id", "detected_at",
-    "completed_at", "color_id", "color_code", "color_raw", "status_code", "status_tr", "travel_ms", "cycle_ms",
+    "completed_at", "color_id", "color_code", "color_raw", "status_code", "status_tr", "travel_ms", "flow_ms", "cycle_ms",
     "decision_source_id", "decision_source_code", "review_required", "final_quality_code", "final_quality_tr",
     "override_flag", "override_source_code", "override_applied_at", "sensor_color_code", "vision_color_code",
     "final_color_code", "mismatch_flag", "correlation_status", "finalization_reason", "early_pick_triggered",
@@ -69,6 +77,12 @@ EVENT_TYPE_IDS = {
     "pickplace_return_done": 10,
     "vision_event": 11,
     "early_pick_request": 12,
+    "tablet_oee_snapshot": 13,
+    "tablet_fault": 14,
+    "oee_control": 15,
+    "shift_start": 16,
+    "shift_stop": 17,
+    "counts_reset": 18,
 }
 DECISION_SOURCE_IDS = {"CORE_STABLE": 1, "MEDIAN_STABLE": 2, "CORE_VOTE_MATCH": 3, "VISION": 4, "TABLET": 5, "SYSTEM": 6}
 MEGA_STATE_IDS = {"SEARCH": 1, "SEARCHING": 2, "MEASURING": 3, "WAIT_ARM": 4, "PAUSED": 5, "STOPPED": 6, "QUEUE": 7}
@@ -140,6 +154,7 @@ class WorkbookProjector:
         }
         self.completed_state: dict[str, dict[str, Any]] = {}
         self.completed_rows_by_item: dict[str, dict[str, Any]] = {}
+        self.last_completion_at = ""
 
     def prime(self, counters: dict[str, int]) -> None:
         self.counters.update(counters)
@@ -151,6 +166,68 @@ class WorkbookProjector:
 
     def _completed_key(self, item_id: str | None, measure_id: str | None) -> str:
         return str(item_id or "").strip() or f"measure:{str(measure_id or '').strip()}"
+
+    def _duration_ms(self, start_at: Any, end_at: Any) -> int | str:
+        start_text = str(start_at or "").strip()
+        end_text = str(end_at or "").strip()
+        if not start_text or not end_text:
+            return ""
+        try:
+            from datetime import datetime
+
+            start_dt = datetime.fromisoformat(start_text.replace("Z", "+00:00"))
+            end_dt = datetime.fromisoformat(end_text.replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+        delta_ms = int((end_dt - start_dt).total_seconds() * 1000)
+        return delta_ms if delta_ms >= 0 else ""
+
+    def _finalize_completed_row(self, *, state: dict[str, Any], parsed: dict[str, Any], key: str, received_at: str, log_event_id: int) -> dict[str, Any]:
+        completed_at = str(state.get("released_at") or received_at or "").strip()
+        detected_at = str(state.get("detected_at") or state.get("measured_at") or "").strip()
+        flow_ms = self._duration_ms(detected_at, completed_at)
+        cycle_ms = self._duration_ms(self.last_completion_at, completed_at) if self.last_completion_at else ""
+        if completed_at:
+            self.last_completion_at = completed_at
+        row = {
+            "production_record_id": self._next("production_record_id"),
+            "item_id": state.get("item_id", parsed["item_id"]),
+            "measure_id": state.get("measure_id", parsed["measure_id"]),
+            "queue_event_log_id": state.get("queue_event_log_id", ""),
+            "completion_event_log_id": log_event_id,
+            "detected_at": detected_at,
+            "completed_at": completed_at,
+            "color_id": _color_id(state.get("final_color", state.get("sensor_color", parsed["color"]))),
+            "color_code": state.get("final_color", state.get("sensor_color", parsed["color"])),
+            "color_raw": state.get("final_color", state.get("sensor_color", parsed["color"])),
+            "status_code": "COMPLETED_REVIEW" if state.get("review_required", parsed["review_required"]) else "COMPLETED",
+            "status_tr": "Inceleme gerekli" if state.get("review_required", parsed["review_required"]) else "Tamamlandi",
+            "travel_ms": _safe_int(state.get("travel_ms", parsed["travel_ms"])),
+            "flow_ms": flow_ms,
+            "cycle_ms": cycle_ms,
+            "decision_source_id": _decision_source_id(state.get("decision_source", parsed["decision_source"])),
+            "decision_source_code": str(state.get("decision_source", parsed["decision_source"]) or "").upper(),
+            "review_required": 1 if state.get("review_required", parsed["review_required"]) else 0,
+            "final_quality_code": "GOOD",
+            "final_quality_tr": "Saglam",
+            "override_flag": 0,
+            "override_source_code": "",
+            "override_applied_at": "",
+            "sensor_color_code": state.get("sensor_color", parsed["color"]),
+            "vision_color_code": state.get("vision_color", ""),
+            "final_color_code": state.get("final_color", state.get("sensor_color", parsed["color"])),
+            "mismatch_flag": 1 if state.get("mismatch_flag") else 0,
+            "correlation_status": state.get("correlation_status", ""),
+            "finalization_reason": state.get("finalization_reason", "SENSOR_NO_VISION"),
+            "early_pick_triggered": 1 if state.get("early_pick_triggered") else 0,
+            "pick_trigger_source": state.get("pick_trigger_source", str(parsed.get("trigger_source") or "").upper()),
+            "early_pick_request_sent_at": state.get("early_pick_request_sent_at", ""),
+            "early_pick_accepted_at": state.get("early_pick_accepted_at", ""),
+            "final_color_frozen_at": completed_at or received_at,
+        }
+        self.completed_rows_by_item[str(state.get("item_id", parsed["item_id"]) or key)] = row
+        self.completed_state.pop(key, None)
+        return row
 
     def _raw_row(self, *, received_at: str, source_topic: str, source_code: str, raw_payload: Any, parsed_flag: int, event_type_code: str = "", item_id: str = "", measure_id: str = "", color_code: str = "", notes: str = "") -> dict[str, Any]:
         return {
@@ -203,6 +280,128 @@ class WorkbookProjector:
             "1_Olay_Logu": [self._event_row(log_event_id=self._next("log_event_id"), received_at=received_at, source_code="system", event_type_code="counts_reset", notes="UI sayac sifirlama islemi", raw_line="SYSTEM|COUNTS|RESET", event_summary_tr="UI uzerinden renk sayaclari sifirlandi")],
             "7_Raw_Logs": [self._raw_row(received_at=received_at, source_topic="local/system", source_code="system", raw_payload="SYSTEM|COUNTS|RESET", parsed_flag=1, event_type_code="counts_reset", notes="local_only")],
         }
+
+    def consume_tablet_log(self, raw_line: str, received_at: str) -> dict[str, list[dict[str, Any]]]:
+        rows = {"7_Raw_Logs": [self._raw_row(received_at=received_at, source_topic="sau/iot/mega/konveyor/tablet/log", source_code="tablet", raw_payload=raw_line, parsed_flag=0)]}
+        parsed_oee = parse_tablet_oee_line(raw_line)
+        if parsed_oee is not None:
+            rows["7_Raw_Logs"][0].update({"parsed_flag": 1, "event_type_code": "tablet_oee_snapshot"})
+            notes = ";".join(
+                [
+                    f"oee={parsed_oee['oee']}" if parsed_oee.get("oee") is not None else "",
+                    f"kull={parsed_oee['availability']}" if parsed_oee.get("availability") is not None else "",
+                    f"perf={parsed_oee['performance']}" if parsed_oee.get("performance") is not None else "",
+                    f"kalite={parsed_oee['quality']}" if parsed_oee.get("quality") is not None else "",
+                    f"toplam={parsed_oee['production']['total']}",
+                ]
+            ).strip(";")
+            rows["1_Olay_Logu"] = [
+                self._event_row(
+                    log_event_id=self._next("log_event_id"),
+                    received_at=received_at,
+                    source_code="tablet",
+                    event_type_code="tablet_oee_snapshot",
+                    notes=notes,
+                    raw_line=parsed_oee["raw_line"],
+                    event_summary_tr="Tablet OEE ozeti alindi",
+                )
+            ]
+            return rows
+        parsed_fault = parse_tablet_fault_line(raw_line)
+        if parsed_fault is not None:
+            rows["7_Raw_Logs"][0].update({"parsed_flag": 1, "event_type_code": "tablet_fault", "notes": parsed_fault["status"]})
+            note_parts = [f"durum={parsed_fault['status']}", f"neden={parsed_fault['reason']}"]
+            if parsed_fault.get("duration_min") is not None:
+                note_parts.append(f"sure_dk={parsed_fault['duration_min']}")
+            rows["1_Olay_Logu"] = [
+                self._event_row(
+                    log_event_id=self._next("log_event_id"),
+                    received_at=received_at,
+                    source_code="tablet",
+                    event_type_code="tablet_fault",
+                    notes=";".join(note_parts),
+                    raw_line=parsed_fault["raw_line"],
+                    event_summary_tr=f"Tablet ariza: {parsed_fault['status']}",
+                )
+            ]
+        return rows
+
+    def consume_system_oee_log(self, raw_line: str, received_at: str) -> dict[str, list[dict[str, Any]]]:
+        rows = {
+            "7_Raw_Logs": [
+                self._raw_row(
+                    received_at=received_at,
+                    source_topic="local/oee",
+                    source_code="system",
+                    raw_payload=raw_line,
+                    parsed_flag=0,
+                )
+            ]
+        }
+        text = str(raw_line or "").strip()
+        event_type_code = ""
+        notes = ""
+        summary = ""
+        if text.startswith("SYSTEM|OEE|"):
+            parts = [part.strip() for part in text.split("|")]
+            action = parts[2] if len(parts) > 2 else ""
+            value = parts[3] if len(parts) > 3 else ""
+            action_code = normalize_token(action)
+            event_type_code = "oee_control"
+            notes = f"action={action_code}"
+            if value:
+                notes = f"{notes};value={value}"
+            summary_map = {
+                "select_shift": f"Vardiya secimi guncellendi: {value}",
+                "set_performance_mode": f"Performans modu guncellendi: {value}",
+                "set_target_qty": f"Hedef guncellendi: {value}",
+                "set_ideal_cycle_sec": f"Ideal cycle guncellendi: {value}",
+                "set_planned_stop_min": f"Planli durus guncellendi: {value}",
+            }
+            summary = summary_map.get(action_code, f"OEE kontrol aksiyonu: {action_code}")
+        elif "|Tablet|Sistem|" in text:
+            _, fields = parse_colon_value_line(text, min_parts=2)
+            event_name = normalize_token(str(fields.get("OLAY") or ""))
+            shift_code = str(fields.get("VARDIYA") or "").strip()
+            if event_name == "vardiya_basladi":
+                event_type_code = "shift_start"
+                notes = ";".join(
+                    [
+                        f"shift={shift_code}" if shift_code else "",
+                        f"perf_mod={fields.get('PERF_MOD')}" if fields.get("PERF_MOD") else "",
+                        f"hedef={fields.get('HEDEF')}" if fields.get("HEDEF") else "",
+                        f"ideal_cycle_sn={fields.get('IDEAL_CYCLE_SN')}" if fields.get("IDEAL_CYCLE_SN") else "",
+                        f"planned_stop_dk={fields.get('PLANLI_DURUS_DK')}" if fields.get("PLANLI_DURUS_DK") else "",
+                    ]
+                ).strip(";")
+                summary = f"Vardiya basladi: {shift_code}" if shift_code else "Vardiya basladi"
+            elif event_name == "vardiya_bitti":
+                event_type_code = "shift_stop"
+                notes = ";".join(
+                    [
+                        f"shift={shift_code}" if shift_code else "",
+                        f"toplam={fields.get('TOPLAM')}" if fields.get("TOPLAM") else "",
+                        f"saglam={fields.get('SAGLAM')}" if fields.get("SAGLAM") else "",
+                        f"rework={fields.get('REWORK')}" if fields.get("REWORK") else "",
+                        f"hurda={fields.get('HURDA')}" if fields.get("HURDA") else "",
+                    ]
+                ).strip(";")
+                summary = f"Vardiya bitti: {shift_code}" if shift_code else "Vardiya bitti"
+        if not event_type_code:
+            return rows
+        rows["7_Raw_Logs"][0].update({"parsed_flag": 1, "event_type_code": event_type_code, "notes": notes})
+        rows["1_Olay_Logu"] = [
+            self._event_row(
+                log_event_id=self._next("log_event_id"),
+                received_at=received_at,
+                source_code="system",
+                event_type_code=event_type_code,
+                notes=notes,
+                raw_line=text,
+                event_summary_tr=summary or event_type_code,
+            )
+        ]
+        return rows
 
     def consume_mega_log(self, raw_line: str, received_at: str) -> dict[str, list[dict[str, Any]]]:
         rows = {"7_Raw_Logs": [self._raw_row(received_at=received_at, source_topic="sau/iot/mega/konveyor/logs", source_code="mega", raw_payload=raw_line, parsed_flag=0)]}
@@ -295,6 +494,8 @@ class WorkbookProjector:
                 {
                     "item_id": parsed["item_id"],
                     "measure_id": parsed["measure_id"],
+                    "measured_at": received_at,
+                    "detected_at": received_at,
                     "sensor_color": parsed["color"],
                     "final_color": parsed["color"],
                     "decision_source": "SENSOR",
@@ -314,7 +515,8 @@ class WorkbookProjector:
                 {
                     "item_id": parsed["item_id"],
                     "measure_id": parsed["measure_id"],
-                    "detected_at": received_at,
+                    "detected_at": self.completed_state.get(key, {}).get("detected_at", received_at),
+                    "queued_at": received_at,
                     "sensor_color": parsed["color"],
                     "final_color": parsed["color"],
                     "travel_ms": parsed["travel_ms"],
@@ -348,58 +550,25 @@ class WorkbookProjector:
             state = self.completed_state.setdefault(key, {})
             state["reject_reason"] = str(parsed.get("reject_reason") or "").strip().upper()
         elif parsed["event_type"] == "pick_released":
-            self.completed_state.setdefault(key, {}).update({"released_at": received_at})
+            state = self.completed_state.setdefault(key, {})
+            completed_key = str(state.get("item_id", parsed["item_id"]) or key)
+            if completed_key in self.completed_rows_by_item:
+                return rows
+            state["released_at"] = received_at
+            rows["4_Uretim_Tamamlanan"] = [
+                self._finalize_completed_row(state=state, parsed=parsed, key=key, received_at=received_at, log_event_id=log_event_id)
+            ]
         elif parsed["event_type"] == "pick_return_started":
             self.completed_state.setdefault(key, {}).update({"return_started_at": received_at})
         elif parsed["event_type"] == "pick_return_reached":
             self.completed_state.setdefault(key, {}).update({"return_reached_at": received_at})
         elif parsed["event_type"] == "pickplace_done":
             state = self.completed_state.get(key, {})
-            detected_at = state.get("detected_at", "")
-            cycle_ms = ""
-            if detected_at:
-                try:
-                    from datetime import datetime
-                    cycle_ms = int((datetime.fromisoformat(received_at.replace("Z", "+00:00")) - datetime.fromisoformat(str(detected_at).replace("Z", "+00:00"))).total_seconds() * 1000)
-                except ValueError:
-                    cycle_ms = ""
-            rows["4_Uretim_Tamamlanan"] = [{
-                "production_record_id": self._next("production_record_id"),
-                "item_id": state.get("item_id", parsed["item_id"]),
-                "measure_id": state.get("measure_id", parsed["measure_id"]),
-                "queue_event_log_id": state.get("queue_event_log_id", ""),
-                "completion_event_log_id": log_event_id,
-                "detected_at": detected_at,
-                "completed_at": received_at,
-                "color_id": _color_id(state.get("final_color", state.get("sensor_color", parsed["color"]))),
-                "color_code": state.get("final_color", state.get("sensor_color", parsed["color"])),
-                "color_raw": state.get("final_color", state.get("sensor_color", parsed["color"])),
-                "status_code": "COMPLETED_REVIEW" if state.get("review_required", parsed["review_required"]) else "COMPLETED",
-                "status_tr": "Inceleme gerekli" if state.get("review_required", parsed["review_required"]) else "Tamamlandi",
-                "travel_ms": _safe_int(state.get("travel_ms", parsed["travel_ms"])),
-                "cycle_ms": cycle_ms,
-                "decision_source_id": _decision_source_id(state.get("decision_source", parsed["decision_source"])),
-                "decision_source_code": str(state.get("decision_source", parsed["decision_source"]) or "").upper(),
-                "review_required": 1 if state.get("review_required", parsed["review_required"]) else 0,
-                "final_quality_code": "GOOD",
-                "final_quality_tr": "Saglam",
-                "override_flag": 0,
-                "override_source_code": "",
-                "override_applied_at": "",
-                "sensor_color_code": state.get("sensor_color", parsed["color"]),
-                "vision_color_code": state.get("vision_color", ""),
-                "final_color_code": state.get("final_color", state.get("sensor_color", parsed["color"])),
-                "mismatch_flag": 1 if state.get("mismatch_flag") else 0,
-                "correlation_status": state.get("correlation_status", ""),
-                "finalization_reason": state.get("finalization_reason", "SENSOR_NO_VISION"),
-                "early_pick_triggered": 1 if state.get("early_pick_triggered") else 0,
-                "pick_trigger_source": state.get("pick_trigger_source", str(parsed.get("trigger_source") or "").upper()),
-                "early_pick_request_sent_at": state.get("early_pick_request_sent_at", ""),
-                "early_pick_accepted_at": state.get("early_pick_accepted_at", ""),
-                "final_color_frozen_at": received_at,
-            }]
-            self.completed_rows_by_item[str(state.get("item_id", parsed["item_id"]) or key)] = rows["4_Uretim_Tamamlanan"][0]
-            self.completed_state.pop(key, None)
+            completed_key = str(state.get("item_id", parsed["item_id"]) or key)
+            if state and completed_key not in self.completed_rows_by_item:
+                rows["4_Uretim_Tamamlanan"] = [
+                    self._finalize_completed_row(state=state, parsed=parsed, key=key, received_at=received_at, log_event_id=log_event_id)
+                ]
         return rows
 
     def apply_quality_override(self, item_id: str, classification: str, applied_at: str) -> dict[str, Any]:
@@ -573,6 +742,14 @@ class ExcelRuntimeSink:
         if self._enabled:
             self._queue.put(SinkEnvelope(kind="vision_event", received_at=received_at, payload=payload))
 
+    def record_tablet_log(self, raw_line: str, received_at: str) -> None:
+        if self._enabled:
+            self._queue.put(SinkEnvelope(kind="tablet_log", received_at=received_at, payload=raw_line))
+
+    def record_system_oee_log(self, raw_line: str, received_at: str) -> None:
+        if self._enabled:
+            self._queue.put(SinkEnvelope(kind="system_oee_log", received_at=received_at, payload=raw_line))
+
     def record_local_counts_reset(self, received_at: str) -> None:
         if self._enabled:
             self._queue.put(SinkEnvelope(kind="counts_reset", received_at=received_at, payload="SYSTEM|COUNTS|RESET"))
@@ -648,6 +825,10 @@ class ExcelRuntimeSink:
                     rows = self.projector.consume_mega_log(item.payload, item.received_at)
                 elif item.kind == "vision_event":
                     rows = self.projector.consume_vision_event(item.payload, item.received_at)
+                elif item.kind == "tablet_log":
+                    rows = self.projector.consume_tablet_log(item.payload, item.received_at)
+                elif item.kind == "system_oee_log":
+                    rows = self.projector.consume_system_oee_log(item.payload, item.received_at)
                 elif item.kind == "quality_override":
                     row = self.projector.apply_quality_override(item.payload["item_id"], item.payload["classification"], item.received_at)
                     self._update_completed_sheet_row(workbook["4_Uretim_Tamamlanan"], row)
@@ -690,11 +871,19 @@ class ExcelRuntimeSink:
             sheet.cell(target_row, col_index, row.get(header, ""))
 
     def _ensure_sheet_layout(self, sheet: Any, headers: list[str]) -> None:
+        existing_headers = [sheet.cell(1, idx).value for idx in range(1, max(sheet.max_column, 1) + 1)]
+        existing_lookup = {str(value): idx for idx, value in enumerate(existing_headers, start=1) if value not in (None, "")}
+        next_column = max(sheet.max_column, 0) + 1
+        for header in headers:
+            if header in existing_lookup:
+                continue
+            sheet.cell(1, next_column, header)
+            next_column += 1
         if sheet.freeze_panes is None:
             sheet.freeze_panes = "A2"
         if sheet.max_row < 2:
             sheet.append(["" for _ in headers])
-        self._update_auto_filter(sheet, len(headers), max(sheet.max_row, 2), None)
+        self._update_auto_filter(sheet, sheet.max_column, max(sheet.max_row, 2), None)
 
     def _next_write_row(self, sheet: Any, width: int) -> int:
         for row_index in range(2, max(sheet.max_row, 2) + 1):

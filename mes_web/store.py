@@ -206,6 +206,7 @@ class DashboardStore:
             "controls": {
                 "tolerance_minutes": 15.0,
                 "can_start": True,
+                "can_rollback": False,
             },
             "summary": {
                 "queued_count": 0,
@@ -680,6 +681,7 @@ class DashboardStore:
                 "controls": {
                     "tolerance_minutes": _safe_float(work_orders_payload.get("toleranceMinutes") or 0.0),
                     "can_start": active_order is None,
+                    "can_rollback": active_order is not None,
                 },
                 "summary": {
                     "queued_count": len(queue_orders),

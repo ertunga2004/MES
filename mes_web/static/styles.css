@@ -718,6 +718,18 @@ body {
   gap: 10px;
 }
 
+.work-order-active-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.work-order-active-actions span {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
 .work-order-progress-bar {
   position: relative;
   width: 100%;
@@ -1217,6 +1229,7 @@ body {
 
   .work-order-row,
   .work-order-active-head,
+  .work-order-active-actions,
   .work-order-log-head,
   .work-order-log-body,
   .work-order-import-actions {

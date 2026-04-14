@@ -492,6 +492,7 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(work_order["inventoryConsumedQty"], 1)
             self.assertEqual(work_order["remainingQty"], 1)
             self.assertNotIn("red", state["workOrders"]["inventoryByProduct"])
+            self.assertEqual(state["itemsById"]["200"]["work_order_id"], "WO-RED-002")
 
             manager.apply_mega_log(
                 "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=201|MEASURE_ID=21|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=4500|PENDING=1",
@@ -508,6 +509,61 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(work_order["inventoryConsumedQty"], 1)
             self.assertEqual(work_order["productionQty"], 1)
             self.assertEqual(work_order["completedQty"], 2)
+
+    def test_rollback_active_work_order_returns_completed_boxes_to_inventory_and_reassigns_them(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            manager.import_work_orders(
+                [
+                    {"order_id": "WO-ROLLBACK-A", "stock_code": "BOX-RED", "qty": 3, "product_color": "red"},
+                    {"order_id": "WO-ROLLBACK-B", "stock_code": "BOX-RED", "qty": 2, "product_color": "red"},
+                ],
+                now=datetime(2026, 4, 2, 8, 0, 0),
+            )
+
+            manager.apply_mega_log(
+                "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=600|MEASURE_ID=60|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=4500|PENDING=1",
+                "2026-04-02T08:00:30Z",
+            )
+            manager.apply_mega_log(
+                "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=600|MEASURE_ID=60|TRIGGER=TIMER",
+                "2026-04-02T08:00:31Z",
+            )
+
+            manager.start_work_order("WO-ROLLBACK-A", operator_code="OP-ROLL", now=datetime(2026, 4, 2, 8, 1, 0))
+            manager.apply_mega_log(
+                "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=601|MEASURE_ID=61|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=4500|PENDING=1",
+                "2026-04-02T08:02:00Z",
+            )
+            manager.apply_mega_log(
+                "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=601|MEASURE_ID=61|TRIGGER=TIMER",
+                "2026-04-02T08:02:01Z",
+            )
+
+            rollback_result = manager.rollback_active_work_order(now=datetime(2026, 4, 2, 8, 3, 0))
+            state = manager.read_state()
+            rolled_back_order = state["workOrders"]["ordersById"]["WO-ROLLBACK-A"]
+            self.assertEqual(rollback_result["returned_to_inventory"], 2)
+            self.assertEqual(rolled_back_order["status"], "queued")
+            self.assertEqual(rolled_back_order["completedQty"], 0)
+            self.assertEqual(rolled_back_order["remainingQty"], 3)
+            self.assertEqual(state["workOrders"]["inventoryByProduct"]["red"]["quantity"], 2)
+            self.assertCountEqual(state["workOrders"]["inventoryByProduct"]["red"]["itemIds"], ["600", "601"])
+            self.assertEqual(state["itemsById"]["600"]["work_order_id"], "")
+            self.assertEqual(state["itemsById"]["601"]["work_order_id"], "")
+
+            start_result = manager.start_work_order("WO-ROLLBACK-B", operator_code="OP-ROLL", now=datetime(2026, 4, 2, 8, 4, 0))
+            state = manager.read_state()
+            reassigned_order = state["workOrders"]["ordersById"]["WO-ROLLBACK-B"]
+            reassigned_snapshot = build_work_order_snapshot(state, reassigned_order, now=datetime(2026, 4, 2, 8, 4, 0, tzinfo=timezone.utc))
+            self.assertEqual(start_result["inventory_used"], 2)
+            self.assertEqual(reassigned_order["status"], "completed")
+            self.assertEqual(reassigned_order["inventoryConsumedQty"], 2)
+            self.assertEqual(state["itemsById"]["600"]["work_order_id"], "WO-ROLLBACK-B")
+            self.assertEqual(state["itemsById"]["601"]["work_order_id"], "WO-ROLLBACK-B")
+            self.assertNotIn("red", state["workOrders"]["inventoryByProduct"])
+            self.assertEqual(reassigned_snapshot["goodQty"], 2)
+            self.assertEqual(reassigned_snapshot["fulfilledQty"], 2)
 
     def test_work_order_start_requires_reason_after_tolerance_gap(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

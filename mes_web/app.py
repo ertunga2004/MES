@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +11,7 @@ from .config import AppConfig
 from .oee_state import WorkOrderTransitionReasonRequired
 from .runtime import RuntimeService, SnapshotHub
 from .store import DashboardStore, utc_now_text
+from .windows_asyncio import install_windows_connection_reset_filter
 
 
 config = AppConfig.from_env()
@@ -32,6 +32,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def on_startup() -> None:
+        install_windows_connection_reset_filter()
         await runtime_service.start()
 
     @app.on_event("shutdown")
@@ -291,6 +292,37 @@ def create_app() -> FastAPI:
             "summary": summary,
             "inventory_used": int(result.get("inventory_used") or 0),
             "order_id": str(order.get("orderId") or ""),
+        }
+
+    @app.post("/api/modules/{module_id}/work-orders/rollback-active")
+    async def rollback_active_work_order(module_id: str) -> dict[str, Any]:
+        if module_id != config.module_id:
+            raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+
+        try:
+            result = oee_state_manager.rollback_active_work_order()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+
+        store.refresh_oee_runtime_state(module_id, force=True)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        order = result.get("order") if isinstance(result.get("order"), dict) else {}
+        summary = str(result.get("summary") or "Aktif is emri geri alindi.")
+        store.append_system_log(
+            module_id,
+            (
+                f"SYSTEM|WORK_ORDER|ROLLBACK|ORDER={order.get('orderId') or ''}"
+                f"|RETURNED={int(result.get('returned_to_inventory') or 0)}"
+            ),
+            topic="local/work-orders",
+        )
+        return {
+            "status": "accepted",
+            "summary": summary,
+            "order_id": str(order.get("orderId") or ""),
+            "returned_to_inventory": int(result.get("returned_to_inventory") or 0),
         }
 
     @app.websocket("/ws/modules/{module_id}")

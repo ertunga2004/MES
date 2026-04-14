@@ -292,6 +292,16 @@ def _order_match_key(order: dict[str, Any]) -> str:
 
 def _normalize_inventory_row(raw: Any, match_key: str = "") -> dict[str, Any]:
     entry = raw if isinstance(raw, dict) else {}
+    item_ids_raw = entry.get("itemIds") if isinstance(entry.get("itemIds"), list) else entry.get("item_ids")
+    item_ids: list[str] = []
+    seen_item_ids: set[str] = set()
+    if isinstance(item_ids_raw, list):
+        for raw_item_id in item_ids_raw:
+            item_id = str(raw_item_id or "").strip()
+            if not item_id or item_id in seen_item_ids:
+                continue
+            item_ids.append(item_id)
+            seen_item_ids.add(item_id)
     color = _normalize_order_color(
         entry.get("color"),
         entry.get("productColor"),
@@ -299,16 +309,43 @@ def _normalize_inventory_row(raw: Any, match_key: str = "") -> dict[str, Any]:
         entry.get("stockName"),
     )
     resolved_match_key = str(entry.get("matchKey") or "").strip() or match_key or color or str(entry.get("productCode") or entry.get("stockCode") or "").strip()
+    quantity = max(0, round(_numeric(entry.get("quantity") or entry.get("availableQty") or 0)))
     return {
         "matchKey": resolved_match_key,
         "productCode": _text_or_default(entry.get("productCode") or entry.get("stockCode"), resolved_match_key),
         "stockCode": _text_or_default(entry.get("stockCode") or entry.get("productCode"), resolved_match_key),
         "stockName": _text_or_default(entry.get("stockName"), resolved_match_key or color or "Urun"),
         "color": color,
-        "quantity": max(0, round(_numeric(entry.get("quantity") or entry.get("availableQty") or 0))),
+        "quantity": max(quantity, len(item_ids)),
+        "itemIds": item_ids,
         "lastUpdatedAt": _text_or_default(entry.get("lastUpdatedAt")),
         "lastSource": _text_or_default(entry.get("lastSource")),
     }
+
+
+def _inventory_item_ids(entry: dict[str, Any]) -> list[str]:
+    raw_item_ids = entry.get("itemIds") if isinstance(entry.get("itemIds"), list) else entry.get("item_ids")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    if isinstance(raw_item_ids, list):
+        for raw_item_id in raw_item_ids:
+            item_id = str(raw_item_id or "").strip()
+            if not item_id or item_id in seen:
+                continue
+            normalized.append(item_id)
+            seen.add(item_id)
+    entry["itemIds"] = normalized
+    entry["quantity"] = max(max(0, round(_numeric(entry.get("quantity")))), len(normalized))
+    return normalized
+
+
+def _inventory_take_item_ids(entry: dict[str, Any], take_qty: int) -> list[str]:
+    item_ids = _inventory_item_ids(entry)
+    safe_take_qty = max(0, min(len(item_ids), take_qty))
+    taken = item_ids[:safe_take_qty]
+    entry["itemIds"] = item_ids[safe_take_qty:]
+    entry["quantity"] = max(0, round(_numeric(entry.get("quantity"))))
+    return taken
 
 
 def _work_order_requirement_key(raw: Any, fallback: str = "") -> str:
@@ -983,7 +1020,107 @@ def _ensure_inventory_entry(
             match_key,
         )
         inventory[match_key] = entry
+    _inventory_item_ids(entry)
     return entry
+
+
+def _assign_item_to_work_order(
+    item: dict[str, Any],
+    order: dict[str, Any],
+    requirement: dict[str, Any],
+    *,
+    action: str,
+) -> str:
+    match_key = _work_order_requirement_match_key(requirement)
+    item["work_order_id"] = str(order.get("orderId") or "")
+    item["work_order_match_key"] = match_key
+    item["inventoryAction"] = action
+    item["inventory_match_key"] = match_key if action == "consumed_for_work_order" else ""
+    return match_key
+
+
+def _push_inventory_quantity(
+    inventory: dict[str, dict[str, Any]],
+    match_key: str,
+    *,
+    quantity: int,
+    received_at: str,
+    source: str,
+    product_code: str = "",
+    stock_code: str = "",
+    stock_name: str = "",
+    color: str = "",
+) -> dict[str, Any]:
+    entry = _ensure_inventory_entry(
+        inventory,
+        match_key,
+        product_code=product_code,
+        stock_code=stock_code,
+        stock_name=stock_name,
+        color=color,
+    )
+    entry["quantity"] = max(0, round(_numeric(entry.get("quantity")))) + max(0, quantity)
+    entry["lastUpdatedAt"] = received_at
+    entry["lastSource"] = source
+    return entry
+
+
+def _move_completed_item_to_inventory(
+    state: dict[str, Any],
+    item: dict[str, Any],
+    *,
+    match_key: str,
+    received_at: str,
+    source: str,
+    product_code: str = "",
+    stock_code: str = "",
+    stock_name: str = "",
+    color: str = "",
+) -> None:
+    item_id = str(item.get("item_id") or "").strip()
+    inventory = _work_order_inventory(state)
+    entry = _push_inventory_quantity(
+        inventory,
+        match_key,
+        quantity=1,
+        received_at=received_at,
+        source=source,
+        product_code=product_code,
+        stock_code=stock_code,
+        stock_name=stock_name,
+        color=color,
+    )
+    item_ids = _inventory_item_ids(entry)
+    if item_id and item_id not in item_ids:
+        item_ids.append(item_id)
+        entry["itemIds"] = item_ids
+        entry["quantity"] = max(max(0, round(_numeric(entry.get("quantity")))), len(item_ids))
+    item["work_order_id"] = ""
+    item["work_order_match_key"] = ""
+    item["inventoryAction"] = source
+    item["inventory_match_key"] = match_key
+
+
+def _completed_items_for_work_order(state: dict[str, Any], order_id: str) -> list[dict[str, Any]]:
+    normalized_order_id = str(order_id or "").strip()
+    if not normalized_order_id:
+        return []
+    items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
+    related_items = [
+        item
+        for item in items.values()
+        if isinstance(item, dict)
+        and str(item.get("work_order_id") or "").strip() == normalized_order_id
+        and item.get("completed_at")
+    ]
+    related_items.sort(
+        key=lambda row: (
+            str(row.get("completed_at") or ""),
+            str(row.get("updated_at") or ""),
+            str(row.get("item_id") or ""),
+        )
+    )
+    return related_items
 
 
 def _complete_work_order_if_ready(state: dict[str, Any], order: dict[str, Any], *, now: datetime, completed_at: str) -> bool:
@@ -1020,6 +1157,7 @@ def _complete_work_order_if_ready(state: dict[str, Any], order: dict[str, Any], 
 
 def _consume_inventory_for_order(state: dict[str, Any], order: dict[str, Any], *, now: datetime, reason: str = "inventory") -> int:
     inventory = _work_order_inventory(state)
+    items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
     _sync_work_order_row(order)
     total_taken = 0
     notes: list[str] = []
@@ -1036,9 +1174,15 @@ def _consume_inventory_for_order(state: dict[str, Any], order: dict[str, Any], *
         )
         if take_qty <= 0:
             continue
+        taken_item_ids = _inventory_take_item_ids(entry, take_qty)
         entry["quantity"] = max(0, round(_numeric(entry.get("quantity"))) - take_qty)
         entry["lastUpdatedAt"] = _pseudo_iso_text(now)
         entry["lastSource"] = "consumed_for_work_order"
+        for item_id in taken_item_ids:
+            inventory_item = items.get(item_id)
+            if not isinstance(inventory_item, dict) or not inventory_item.get("completed_at"):
+                continue
+            _assign_item_to_work_order(inventory_item, order, requirement, action="consumed_for_work_order")
         if entry["quantity"] <= 0:
             inventory.pop(match_key, None)
         requirement["inventoryConsumedQty"] = max(0, round(_numeric(requirement.get("inventoryConsumedQty")))) + take_qty
@@ -1076,6 +1220,8 @@ def _route_completed_item_to_work_orders(
     active_order = orders.get(active_order_id) if active_order_id else None
     item["inventoryAction"] = ""
     item["work_order_id"] = ""
+    item["work_order_match_key"] = ""
+    item["inventory_match_key"] = ""
 
     matching_requirement = _find_matching_requirement(active_order, item_color) if isinstance(active_order, dict) else None
     if isinstance(active_order, dict) and isinstance(matching_requirement, dict):
@@ -1083,9 +1229,7 @@ def _route_completed_item_to_work_orders(
         matching_requirement["completedQty"] = max(0, round(_numeric(matching_requirement.get("completedQty")))) + 1
         active_order["lastAllocationAt"] = received_at
         _sync_work_order_row(active_order)
-        item["work_order_id"] = str(active_order.get("orderId") or "")
-        item["work_order_match_key"] = _work_order_requirement_match_key(matching_requirement)
-        item["inventoryAction"] = "work_order"
+        _assign_item_to_work_order(item, active_order, matching_requirement, action="work_order")
         if not _complete_work_order_if_ready(state, active_order, now=now, completed_at=received_at):
             _set_summary(
                 state,
@@ -1095,19 +1239,17 @@ def _route_completed_item_to_work_orders(
         return
 
     match_key = item_color or str(item.get("final_color") or item.get("color") or resolved_key)
-    inventory_entry = _ensure_inventory_entry(
-        inventory,
-        match_key,
+    _move_completed_item_to_inventory(
+        state,
+        item,
+        match_key=match_key,
+        received_at=received_at,
+        source="off_order_completion",
         product_code=match_key.upper(),
         stock_code=match_key.upper(),
         stock_name=(item_color or match_key).upper(),
         color=item_color,
     )
-    inventory_entry["quantity"] = max(0, round(_numeric(inventory_entry.get("quantity")))) + 1
-    inventory_entry["lastUpdatedAt"] = received_at
-    inventory_entry["lastSource"] = "off_order_completion"
-    item["inventoryAction"] = "stored"
-    item["inventory_match_key"] = match_key
     _set_summary(
         state,
         f"#{item_id} aktif is emrine uymadigi icin depoya alindi ({match_key}).",
@@ -2101,6 +2243,143 @@ class OeeRuntimeStateManager:
             "summary": state["lastEventSummary"],
             "order": order,
             "inventory_used": inventory_used,
+        }
+
+    @_state_locked
+    def rollback_active_work_order(self, *, now: datetime | None = None) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        rollback_text = _pseudo_iso_text(stamp)
+        state = self.read_state()
+        work_orders = _work_orders_state(state)
+        orders = _work_order_orders(state)
+        active_order_id = str(work_orders.get("activeOrderId") or "").strip()
+        order = orders.get(active_order_id)
+        if not active_order_id or not isinstance(order, dict) or str(order.get("status") or "") != "active":
+            raise ValueError("ACTIVE_WORK_ORDER_NOT_FOUND")
+
+        _sync_work_order_row(order)
+        log_order = dict(order)
+        inventory = _work_order_inventory(state)
+        tracked_items = _completed_items_for_work_order(state, active_order_id)
+        tracked_counts_by_match: dict[str, int] = {}
+        for item in tracked_items:
+            match_key = (
+                str(item.get("work_order_match_key") or "").strip()
+                or str(item.get("inventory_match_key") or "").strip()
+                or _normalize_order_color(item.get("final_color"), item.get("color"), item.get("sensor_color"))
+                or _order_match_key(order)
+                or "unknown"
+            )
+            _move_completed_item_to_inventory(
+                state,
+                item,
+                match_key=match_key,
+                received_at=rollback_text,
+                source="rollback_to_inventory",
+                product_code=str(item.get("product_code") or item.get("final_color") or match_key).upper(),
+                stock_code=str(item.get("stock_code") or item.get("final_color") or match_key).upper(),
+                stock_name=str(item.get("stock_name") or item.get("final_color") or match_key).upper(),
+                color=_normalize_order_color(item.get("final_color"), item.get("color"), item.get("sensor_color")),
+            )
+            tracked_counts_by_match[match_key] = tracked_counts_by_match.get(match_key, 0) + 1
+
+        anonymous_returned = 0
+        tracked_remaining_by_match = dict(tracked_counts_by_match)
+        requirements = _work_order_requirements(order)
+        if requirements:
+            for requirement in requirements:
+                match_key = _work_order_requirement_match_key(requirement) or _order_match_key(order) or "unknown"
+                completed_qty = max(0, round(_numeric(requirement.get("completedQty"))))
+                tracked_for_requirement = min(completed_qty, tracked_remaining_by_match.get(match_key, 0))
+                tracked_remaining_by_match[match_key] = max(0, tracked_remaining_by_match.get(match_key, 0) - tracked_for_requirement)
+                anonymous_qty = max(0, completed_qty - tracked_for_requirement)
+                if anonymous_qty > 0:
+                    _push_inventory_quantity(
+                        inventory,
+                        match_key,
+                        quantity=anonymous_qty,
+                        received_at=rollback_text,
+                        source="rollback_to_inventory",
+                        product_code=str(requirement.get("productCode") or ""),
+                        stock_code=str(requirement.get("stockCode") or ""),
+                        stock_name=str(requirement.get("stockName") or ""),
+                        color=str(requirement.get("color") or ""),
+                    )
+                    anonymous_returned += anonymous_qty
+                requirement["inventoryConsumedQty"] = 0
+                requirement["productionQty"] = 0
+                requirement["completedQty"] = 0
+                requirement["remainingQty"] = max(0, round(_numeric(requirement.get("quantity"))))
+        else:
+            completed_qty = max(0, round(_numeric(order.get("completedQty"))))
+            tracked_total = sum(tracked_counts_by_match.values())
+            anonymous_qty = max(0, completed_qty - tracked_total)
+            if anonymous_qty > 0:
+                _push_inventory_quantity(
+                    inventory,
+                    _order_match_key(order) or "unknown",
+                    quantity=anonymous_qty,
+                    received_at=rollback_text,
+                    source="rollback_to_inventory",
+                    product_code=str(order.get("productCode") or ""),
+                    stock_code=str(order.get("stockCode") or ""),
+                    stock_name=str(order.get("stockName") or ""),
+                    color=str(order.get("productColor") or ""),
+                )
+                anonymous_returned += anonymous_qty
+            order["inventoryConsumedQty"] = 0
+            order["productionQty"] = 0
+            order["completedQty"] = 0
+            order["remainingQty"] = max(0, round(_numeric(order.get("quantity"))))
+
+        order["status"] = "queued"
+        order["startedAt"] = ""
+        order["completedAt"] = ""
+        order["startedBy"] = ""
+        order["startedByName"] = ""
+        order["transitionReason"] = ""
+        order["lastAllocationAt"] = ""
+        work_orders["activeOrderId"] = ""
+        _sync_work_order_row(order)
+        _persist_work_order_metrics(state, order, now=stamp)
+
+        returned_to_inventory = len(tracked_items) + anonymous_returned
+        note = "Aktif is emri kuyruga geri alindi."
+        if returned_to_inventory > 0:
+            note = f"{returned_to_inventory} adet depoya geri alindi."
+            if anonymous_returned > 0:
+                note = f"{note} (izlenen {len(tracked_items)}, sayisal {anonymous_returned})"
+        work_orders["transitionLog"] = _prepend_capped(
+            work_orders["transitionLog"],
+            _work_order_log_row(
+                log_order,
+                event_type="rolled_back",
+                stamp=rollback_text,
+                note=note,
+            ),
+        )
+        if returned_to_inventory > 0:
+            _set_summary(
+                state,
+                f"{active_order_id} geri alindi. {returned_to_inventory} adet depoya tasindi.",
+                now=stamp,
+            )
+        else:
+            _set_summary(
+                state,
+                f"{active_order_id} geri alindi ve yeniden kuyruga alindi.",
+                now=stamp,
+            )
+        self.write_state(state)
+        return {
+            "state": state,
+            "summary": state["lastEventSummary"],
+            "order": order,
+            "returned_to_inventory": returned_to_inventory,
+            "tracked_items": len(tracked_items),
+            "anonymous_returned": anonymous_returned,
         }
 
     @_state_locked

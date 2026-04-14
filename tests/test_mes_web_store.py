@@ -247,6 +247,7 @@ class DashboardStoreTests(unittest.TestCase):
                 snapshot = store.get_dashboard_snapshot(config.module_id)
 
             self.assertEqual(snapshot["work_orders"]["controls"]["tolerance_minutes"], 10.0)
+            self.assertTrue(snapshot["work_orders"]["controls"]["can_rollback"])
             self.assertEqual(snapshot["work_orders"]["summary"]["queued_count"], 1)
             self.assertEqual(snapshot["work_orders"]["summary"]["active_count"], 1)
             self.assertEqual(snapshot["work_orders"]["summary"]["inventory_total"], 2)

@@ -16,13 +16,13 @@ def _configure_event_loop_policy() -> None:
 
 
 def main() -> None:
+    _configure_event_loop_policy()
     try:
         import uvicorn
         from .app import app, config
     except ModuleNotFoundError as exc:
         raise SystemExit(f"Missing dependency: {exc.name}. Install mes_web/requirements.txt first.") from exc
 
-    _configure_event_loop_policy()
     uvicorn.run(app, host=config.host, port=config.port, reload=False)
 
 

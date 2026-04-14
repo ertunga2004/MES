@@ -58,6 +58,8 @@ const TOKEN_LABELS = {
   completed: "Kapatildi",
   consumed_for_work_order: "Depodan Kullanildi",
   off_order_completion: "Depoya Alindi",
+  rollback_to_inventory: "Depoya Geri Alindi",
+  rolled_back: "Geri Alindi",
 };
 
 const OEE_TREND_METRICS = [
@@ -98,6 +100,8 @@ const state = {
     toleranceMinutes: { value: "", dirty: false },
     pendingReason: "",
     pendingStart: null,
+    pendingRollback: null,
+    rollbackConfirmTimer: null,
   },
 };
 
@@ -570,6 +574,29 @@ function resolveWorkOrderDrafts(snapshot) {
   if (state.workOrderDrafts.toleranceMinutes.dirty && comparableValuesMatch(state.workOrderDrafts.toleranceMinutes.value, controls.tolerance_minutes)) {
     clearWorkOrderToleranceDraft();
   }
+  const activeOrderId = String(snapshot?.work_orders?.active_order?.order_id || "");
+  const pendingRollback = state.workOrderDrafts.pendingRollback;
+  if (pendingRollback && pendingRollback.orderId !== activeOrderId) {
+    clearWorkOrderRollbackDraft();
+  }
+}
+
+function clearWorkOrderRollbackDraft() {
+  if (state.workOrderDrafts.rollbackConfirmTimer) {
+    window.clearTimeout(state.workOrderDrafts.rollbackConfirmTimer);
+  }
+  state.workOrderDrafts.pendingRollback = null;
+  state.workOrderDrafts.rollbackConfirmTimer = null;
+}
+
+function armWorkOrderRollback(orderId) {
+  clearWorkOrderRollbackDraft();
+  if (!orderId) return;
+  state.workOrderDrafts.pendingRollback = { orderId: String(orderId) };
+  state.workOrderDrafts.rollbackConfirmTimer = window.setTimeout(() => {
+    clearWorkOrderRollbackDraft();
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }, 5000);
 }
 
 function syncButtonCollection(container, entries, { datasetKey, activeValue = null, disabled = false, baseClass }) {
@@ -1145,6 +1172,7 @@ function renderWorkOrders(snapshot) {
   const completionLog = workOrders.completion_log || [];
   const perf = workOrders.performance_panel || {};
   const source = workOrders.source || {};
+  const rollbackArmed = activeOrder && state.workOrderDrafts.pendingRollback?.orderId === activeOrder.order_id;
 
   syncInputValue(els.workOrderTolerance, effectiveWorkOrderToleranceValue(controls.tolerance_minutes));
   els.workOrderTolerance.disabled = state.workOrderBusy;
@@ -1191,6 +1219,15 @@ function renderWorkOrders(snapshot) {
             <h3>${workOrderTitle(activeOrder)}</h3>
           </div>
           <strong>${formatToken(activeOrder.status)}</strong>
+        </div>
+        <div class="work-order-active-actions">
+          <button
+            class="${rollbackArmed ? "oee-danger-button" : "oee-choice-button"}"
+            type="button"
+            data-work-order-rollback="${activeOrder.order_id}"
+            ${state.workOrderBusy || controls.can_rollback === false ? "disabled" : ""}
+          >${rollbackArmed ? "Tekrar tikla: geri al" : "Aktif Is Emrini Geri Al"}</button>
+          <span>${rollbackArmed ? "5 sn icinde ayni tusa tekrar tikla. Tamamlanan kutular depoya geri gider." : "Yanlis baslatma durumunda is emrini kuyruga geri alir."}</span>
         </div>
         ${workOrderProgressBar(activeOrder)}
         ${renderWorkOrderRequirements(activeOrder)}
@@ -1578,6 +1615,7 @@ async function sendWorkOrderReorder(orderId, direction) {
 }
 
 async function sendWorkOrderStart(orderId, transitionReason = "") {
+  clearWorkOrderRollbackDraft();
   state.workOrderBusy = true;
   setWorkOrderFeedback(`${orderId} baslatiliyor...`, "neutral");
   if (state.snapshot) renderWorkOrders(state.snapshot);
@@ -1612,6 +1650,30 @@ async function sendWorkOrderStart(orderId, transitionReason = "") {
     setWorkOrderFeedback(payload.summary || `${orderId} baslatildi.`, "success");
   } catch (error) {
     setWorkOrderFeedback(`Is emri baslatma hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
+async function sendWorkOrderRollback(orderId) {
+  clearWorkOrderRollbackDraft();
+  state.workOrderBusy = true;
+  setWorkOrderFeedback(`${orderId} geri aliniyor...`, "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/work-orders/rollback-active`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    setWorkOrderFeedback(payload.summary || `${orderId} geri alindi.`, "success");
+  } catch (error) {
+    setWorkOrderFeedback(`Is emri geri alma hatasi: ${error.message}`, "error");
   } finally {
     state.workOrderBusy = false;
     if (state.snapshot) renderWorkOrders(state.snapshot);
@@ -1748,6 +1810,20 @@ els.workOrderQueueList.addEventListener("click", (event) => {
   if (moveButton && !moveButton.disabled) {
     sendWorkOrderReorder(moveButton.dataset.workOrderMove, moveButton.dataset.direction);
   }
+});
+
+els.workOrderActive.addEventListener("click", (event) => {
+  const rollbackButton = event.target.closest("button[data-work-order-rollback]");
+  if (!rollbackButton || rollbackButton.disabled) return;
+  const orderId = String(rollbackButton.dataset.workOrderRollback || "");
+  const pendingRollback = state.workOrderDrafts.pendingRollback;
+  if (pendingRollback && pendingRollback.orderId === orderId) {
+    sendWorkOrderRollback(orderId);
+    return;
+  }
+  armWorkOrderRollback(orderId);
+  setWorkOrderFeedback(`${orderId} geri alma icin ayni tusa tekrar tikla.`, "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
 });
 
 async function bootstrap() {

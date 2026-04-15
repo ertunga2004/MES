@@ -325,6 +325,64 @@ def create_app() -> FastAPI:
             "returned_to_inventory": int(result.get("returned_to_inventory") or 0),
         }
 
+    @app.post("/api/modules/{module_id}/work-orders/reset")
+    async def reset_work_orders(module_id: str) -> dict[str, Any]:
+        if module_id != config.module_id:
+            raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+
+        try:
+            result = oee_state_manager.reset_work_orders()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+
+        store.refresh_oee_runtime_state(module_id, force=True)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        summary = str(result.get("summary") or "Is emirleri sifirlandi.")
+        store.append_system_log(
+            module_id,
+            f"SYSTEM|WORK_ORDER|RESET|CLEARED={int(result.get('cleared_item_count') or 0)}",
+            topic="local/work-orders",
+        )
+        return {
+            "status": "accepted",
+            "summary": summary,
+            "cleared_item_count": int(result.get("cleared_item_count") or 0),
+        }
+
+    @app.post("/api/modules/{module_id}/work-orders/inventory/remove")
+    async def remove_inventory_stock(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if module_id != config.module_id:
+            raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+
+        try:
+            result = oee_state_manager.remove_inventory_stock(
+                str(payload.get("match_key") or payload.get("matchKey") or ""),
+                payload.get("quantity", 1),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+
+        store.refresh_oee_runtime_state(module_id, force=True)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        summary = str(result.get("summary") or "Depo stogu guncellendi.")
+        store.append_system_log(
+            module_id,
+            (
+                f"SYSTEM|WORK_ORDER|INVENTORY_REMOVE|MATCH_KEY={result.get('match_key') or ''}"
+                f"|QTY={int(result.get('removed_qty') or 0)}"
+            ),
+            topic="local/work-orders",
+        )
+        return {
+            "status": "accepted",
+            "summary": summary,
+            "match_key": str(result.get("match_key") or ""),
+            "removed_qty": int(result.get("removed_qty") or 0),
+            "remaining_qty": int(result.get("remaining_qty") or 0),
+        }
+
     @app.websocket("/ws/modules/{module_id}")
     async def module_stream(websocket: WebSocket, module_id: str) -> None:
         if module_id != config.module_id:

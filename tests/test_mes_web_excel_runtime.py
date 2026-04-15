@@ -247,6 +247,36 @@ class WorkbookProjectorTests(unittest.TestCase):
         self.assertEqual(sheet.cell(2, COMPLETED_COLUMNS.index("final_quality_code") + 1).value, "SCRAP")
         self.assertEqual(sheet.cell(2, COMPLETED_COLUMNS.index("override_applied_at") + 1).value, "2026-04-02T10:18:00+03:00")
 
+    def test_sink_strips_illegal_excel_characters_before_row_write(self) -> None:
+        try:
+            from openpyxl import Workbook
+        except ModuleNotFoundError:
+            self.skipTest("openpyxl is not installed")
+        from mes_web.excel_runtime import ExcelRuntimeSink, RAW_LOG_COLUMNS
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "7_Raw_Logs"
+        for col_index, header in enumerate(RAW_LOG_COLUMNS, start=1):
+            sheet.cell(1, col_index, header)
+
+        sink = ExcelRuntimeSink.__new__(ExcelRuntimeSink)
+        sink._write_sheet_row(
+            sheet,
+            2,
+            RAW_LOG_COLUMNS,
+            {
+                "raw_log_id": 1,
+                "source_code": "mega",
+                "event_type_code": "raw",
+                "notes": "bad\x00note\x0btext",
+                "raw_payload": "xx\x01RL$q\x1fyy",
+            },
+        )
+
+        self.assertEqual(sheet.cell(2, RAW_LOG_COLUMNS.index("notes") + 1).value, "badnotetext")
+        self.assertEqual(sheet.cell(2, RAW_LOG_COLUMNS.index("raw_payload") + 1).value, "xxRL$qyy")
+
     def test_cycle_ms_is_gap_between_two_release_events(self) -> None:
         self.projector.consume_mega_log(
             "MEGA|TCS3200|STATE=MEASURING|ITEM_ID=42|MEASURE_ID=8|FINAL=KIRMIZI|FINAL_SOURCE=CORE_STABLE",

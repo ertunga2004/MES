@@ -565,6 +565,104 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(reassigned_snapshot["goodQty"], 2)
             self.assertEqual(reassigned_snapshot["fulfilledQty"], 2)
 
+    def test_reset_work_orders_clears_queue_inventory_and_item_links(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            manager.import_work_orders(
+                [
+                    {"order_id": "WO-RESET-A", "stock_code": "BOX-RED", "qty": 2, "product_color": "red"},
+                    {"order_id": "WO-RESET-B", "stock_code": "BOX-BLUE", "qty": 1, "product_color": "blue"},
+                ],
+                now=datetime(2026, 4, 2, 8, 0, 0),
+            )
+            manager.start_work_order("WO-RESET-A", operator_code="OP-007", now=datetime(2026, 4, 2, 8, 1, 0))
+            state = manager.read_state()
+            state["workOrders"]["inventoryByProduct"] = {
+                "red": {
+                    "matchKey": "red",
+                    "productCode": "BOX-RED",
+                    "stockCode": "BOX-RED",
+                    "stockName": "Kirmizi Kutu",
+                    "color": "red",
+                    "quantity": 1,
+                    "itemIds": ["701"],
+                    "lastUpdatedAt": "2026-04-02T08:02:00+03:00",
+                    "lastSource": "off_order_completion",
+                }
+            }
+            state["itemsById"]["701"] = {
+                "item_id": "701",
+                "completed_at": "2026-04-02T08:02:00+03:00",
+                "work_order_id": "",
+                "work_order_match_key": "",
+                "inventory_match_key": "red",
+                "inventoryAction": "off_order_completion",
+            }
+            state["itemsById"]["702"] = {
+                "item_id": "702",
+                "completed_at": "2026-04-02T08:01:30+03:00",
+                "work_order_id": "WO-RESET-A",
+                "work_order_match_key": "red",
+                "inventory_match_key": "",
+                "inventoryAction": "work_order",
+            }
+            manager.write_state(state)
+
+            result = manager.reset_work_orders(now=datetime(2026, 4, 2, 8, 3, 0))
+
+            state = manager.read_state()
+            self.assertEqual(result["cleared_item_count"], 2)
+            self.assertEqual(state["workOrders"]["ordersById"], {})
+            self.assertEqual(state["workOrders"]["orderSequence"], [])
+            self.assertEqual(state["workOrders"]["inventoryByProduct"], {})
+            self.assertEqual(state["workOrders"]["activeOrderId"], "")
+            self.assertEqual(state["itemsById"]["701"]["inventory_match_key"], "")
+            self.assertEqual(state["itemsById"]["701"]["inventoryAction"], "")
+            self.assertEqual(state["itemsById"]["702"]["work_order_id"], "")
+            self.assertEqual(state["itemsById"]["702"]["work_order_match_key"], "")
+
+    def test_remove_inventory_stock_drops_one_item_and_detaches_latest_tracking(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            state = manager.read_state()
+            state["workOrders"]["inventoryByProduct"] = {
+                "blue": {
+                    "matchKey": "blue",
+                    "productCode": "BOX-BLUE",
+                    "stockCode": "BOX-BLUE",
+                    "stockName": "Mavi Kutu",
+                    "color": "blue",
+                    "quantity": 2,
+                    "itemIds": ["800", "801"],
+                    "lastUpdatedAt": "2026-04-02T08:00:00+03:00",
+                    "lastSource": "off_order_completion",
+                }
+            }
+            state["itemsById"]["800"] = {
+                "item_id": "800",
+                "completed_at": "2026-04-02T08:00:00+03:00",
+                "inventory_match_key": "blue",
+                "inventoryAction": "off_order_completion",
+            }
+            state["itemsById"]["801"] = {
+                "item_id": "801",
+                "completed_at": "2026-04-02T08:01:00+03:00",
+                "inventory_match_key": "blue",
+                "inventoryAction": "off_order_completion",
+            }
+            manager.write_state(state)
+
+            result = manager.remove_inventory_stock("blue", now=datetime(2026, 4, 2, 8, 2, 0))
+
+            state = manager.read_state()
+            self.assertEqual(result["removed_qty"], 1)
+            self.assertEqual(result["remaining_qty"], 1)
+            self.assertEqual(state["workOrders"]["inventoryByProduct"]["blue"]["quantity"], 1)
+            self.assertEqual(state["workOrders"]["inventoryByProduct"]["blue"]["itemIds"], ["800"])
+            self.assertEqual(state["itemsById"]["801"]["inventory_match_key"], "")
+            self.assertEqual(state["itemsById"]["801"]["inventoryAction"], "manual_inventory_removed")
+            self.assertEqual(state["itemsById"]["800"]["inventory_match_key"], "blue")
+
     def test_work_order_start_requires_reason_after_tolerance_gap(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")

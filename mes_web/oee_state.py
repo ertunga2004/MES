@@ -1101,6 +1101,15 @@ def _move_completed_item_to_inventory(
     item["inventory_match_key"] = match_key
 
 
+def _clear_item_work_order_context(item: dict[str, Any], *, updated_at: str = "", inventory_action: str = "") -> None:
+    item["work_order_id"] = ""
+    item["work_order_match_key"] = ""
+    item["inventory_match_key"] = ""
+    item["inventoryAction"] = inventory_action
+    if updated_at:
+        item["updated_at"] = updated_at
+
+
 def _completed_items_for_work_order(state: dict[str, Any], order_id: str) -> list[dict[str, Any]]:
     normalized_order_id = str(order_id or "").strip()
     if not normalized_order_id:
@@ -2380,6 +2389,115 @@ class OeeRuntimeStateManager:
             "returned_to_inventory": returned_to_inventory,
             "tracked_items": len(tracked_items),
             "anonymous_returned": anonymous_returned,
+        }
+
+    @_state_locked
+    def reset_work_orders(self, *, now: datetime | None = None) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        reset_text = _pseudo_iso_text(stamp)
+        state = self.read_state()
+        work_orders = _work_orders_state(state)
+        previous_source = work_orders.get("source") if isinstance(work_orders.get("source"), dict) else {}
+        reset_state = default_work_order_state()
+        reset_state["toleranceMinutes"] = max(0.0, _numeric(work_orders.get("toleranceMinutes") or 0.0))
+        reset_state["source"]["folder"] = str(previous_source.get("folder") or "")
+        work_orders.clear()
+        work_orders.update(reset_state)
+
+        items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
+        cleared_item_count = 0
+        for item in items.values():
+            if not isinstance(item, dict):
+                continue
+            if not any(
+                str(item.get(field) or "").strip()
+                for field in ("work_order_id", "work_order_match_key", "inventory_match_key", "inventoryAction")
+            ):
+                continue
+            _clear_item_work_order_context(item, updated_at=reset_text, inventory_action="")
+            cleared_item_count += 1
+
+        _set_summary(
+            state,
+            f"Is emirleri ve depo sifirlandi. {cleared_item_count} urun baglantisi temizlendi.",
+            now=stamp,
+        )
+        self.write_state(state)
+        return {
+            "state": state,
+            "summary": state["lastEventSummary"],
+            "cleared_item_count": cleared_item_count,
+        }
+
+    @_state_locked
+    def remove_inventory_stock(self, match_key: str, quantity: Any = 1, *, now: datetime | None = None) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        update_text = _pseudo_iso_text(stamp)
+        state = self.read_state()
+        inventory = _work_order_inventory(state)
+        normalized_match_key = str(match_key or "").strip()
+        if not normalized_match_key:
+            raise ValueError("INVALID_INVENTORY_MATCH_KEY")
+
+        resolved_key = next(
+            (
+                key
+                for key in inventory.keys()
+                if str(key or "").strip().lower() == normalized_match_key.lower()
+            ),
+            normalized_match_key,
+        )
+        entry = inventory.get(resolved_key)
+        if not isinstance(entry, dict):
+            raise ValueError("INVENTORY_ENTRY_NOT_FOUND")
+
+        current_qty = max(0, round(_numeric(entry.get("quantity"))))
+        if current_qty <= 0:
+            inventory.pop(resolved_key, None)
+            raise ValueError("INVENTORY_ENTRY_EMPTY")
+
+        requested_qty = max(1, round(_numeric(quantity)))
+        removed_qty = min(current_qty, requested_qty)
+        item_ids = _inventory_item_ids(entry)
+        tracked_remove_count = min(len(item_ids), removed_qty)
+        removed_item_ids = item_ids[-tracked_remove_count:] if tracked_remove_count > 0 else []
+        if tracked_remove_count > 0:
+            entry["itemIds"] = item_ids[:-tracked_remove_count]
+        else:
+            entry["itemIds"] = item_ids
+        entry["quantity"] = max(0, current_qty - removed_qty)
+        entry["lastUpdatedAt"] = update_text
+        entry["lastSource"] = "manual_inventory_removed"
+
+        items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
+        for item_id in removed_item_ids:
+            item = items.get(item_id)
+            if not isinstance(item, dict):
+                continue
+            item["inventory_match_key"] = ""
+            item["inventoryAction"] = "manual_inventory_removed"
+            item["updated_at"] = update_text
+
+        remaining_qty = max(0, round(_numeric(entry.get("quantity"))))
+        label = str(entry.get("stockCode") or entry.get("productCode") or resolved_key or "stok")
+        if remaining_qty <= 0:
+            inventory.pop(resolved_key, None)
+            summary = f"{label} deposundan {removed_qty} adet silindi. Satir temizlendi."
+        else:
+            summary = f"{label} deposundan {removed_qty} adet silindi. Kalan {remaining_qty} adet."
+        _set_summary(state, summary, now=stamp)
+        self.write_state(state)
+        return {
+            "state": state,
+            "summary": state["lastEventSummary"],
+            "match_key": resolved_key,
+            "removed_qty": removed_qty,
+            "remaining_qty": remaining_qty,
+            "removed_item_ids": removed_item_ids,
         }
 
     @_state_locked

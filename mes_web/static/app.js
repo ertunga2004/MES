@@ -59,6 +59,7 @@ const TOKEN_LABELS = {
   consumed_for_work_order: "Depodan Kullanildi",
   off_order_completion: "Depoya Alindi",
   rollback_to_inventory: "Depoya Geri Alindi",
+  manual_inventory_removed: "Elle Silindi",
   rolled_back: "Geri Alindi",
 };
 
@@ -102,6 +103,10 @@ const state = {
     pendingStart: null,
     pendingRollback: null,
     rollbackConfirmTimer: null,
+    pendingReset: null,
+    resetConfirmTimer: null,
+    pendingInventoryRemove: null,
+    inventoryRemoveConfirmTimer: null,
   },
 };
 
@@ -166,6 +171,7 @@ const els = {
   workOrderActive: document.getElementById("work-order-active"),
   workOrderSource: document.getElementById("work-order-source"),
   workOrderReloadSubmit: document.getElementById("work-order-reload-submit"),
+  workOrderResetSubmit: document.getElementById("work-order-reset-submit"),
   workOrderQueueList: document.getElementById("work-order-queue-list"),
   workOrderInventory: document.getElementById("work-order-inventory"),
   workOrderPerformance: document.getElementById("work-order-performance"),
@@ -579,6 +585,18 @@ function resolveWorkOrderDrafts(snapshot) {
   if (pendingRollback && pendingRollback.orderId !== activeOrderId) {
     clearWorkOrderRollbackDraft();
   }
+  const summary = snapshot?.work_orders?.summary || {};
+  if (state.workOrderDrafts.pendingReset && Number(summary.queued_count || 0) === 0 && Number(summary.active_count || 0) === 0 && Number(summary.inventory_total || 0) === 0) {
+    clearWorkOrderResetDraft();
+  }
+  const inventoryRows = snapshot?.work_orders?.inventory || [];
+  const pendingInventoryRemove = state.workOrderDrafts.pendingInventoryRemove;
+  if (pendingInventoryRemove) {
+    const currentRow = inventoryRows.find((row) => String(row.match_key || "") === pendingInventoryRemove.matchKey);
+    if (!currentRow || Number(currentRow.quantity || 0) !== pendingInventoryRemove.quantity) {
+      clearWorkOrderInventoryRemoveDraft();
+    }
+  }
 }
 
 function clearWorkOrderRollbackDraft() {
@@ -595,6 +613,44 @@ function armWorkOrderRollback(orderId) {
   state.workOrderDrafts.pendingRollback = { orderId: String(orderId) };
   state.workOrderDrafts.rollbackConfirmTimer = window.setTimeout(() => {
     clearWorkOrderRollbackDraft();
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }, 5000);
+}
+
+function clearWorkOrderResetDraft() {
+  if (state.workOrderDrafts.resetConfirmTimer) {
+    window.clearTimeout(state.workOrderDrafts.resetConfirmTimer);
+  }
+  state.workOrderDrafts.pendingReset = null;
+  state.workOrderDrafts.resetConfirmTimer = null;
+}
+
+function armWorkOrderReset() {
+  clearWorkOrderResetDraft();
+  state.workOrderDrafts.pendingReset = { armed: true };
+  state.workOrderDrafts.resetConfirmTimer = window.setTimeout(() => {
+    clearWorkOrderResetDraft();
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }, 5000);
+}
+
+function clearWorkOrderInventoryRemoveDraft() {
+  if (state.workOrderDrafts.inventoryRemoveConfirmTimer) {
+    window.clearTimeout(state.workOrderDrafts.inventoryRemoveConfirmTimer);
+  }
+  state.workOrderDrafts.pendingInventoryRemove = null;
+  state.workOrderDrafts.inventoryRemoveConfirmTimer = null;
+}
+
+function armWorkOrderInventoryRemove(matchKey, quantity) {
+  clearWorkOrderInventoryRemoveDraft();
+  if (!matchKey) return;
+  state.workOrderDrafts.pendingInventoryRemove = {
+    matchKey: String(matchKey),
+    quantity: Number(quantity || 0),
+  };
+  state.workOrderDrafts.inventoryRemoveConfirmTimer = window.setTimeout(() => {
+    clearWorkOrderInventoryRemoveDraft();
     if (state.snapshot) renderWorkOrders(state.snapshot);
   }, 5000);
 }
@@ -1173,12 +1229,16 @@ function renderWorkOrders(snapshot) {
   const perf = workOrders.performance_panel || {};
   const source = workOrders.source || {};
   const rollbackArmed = activeOrder && state.workOrderDrafts.pendingRollback?.orderId === activeOrder.order_id;
+  const resetArmed = Boolean(state.workOrderDrafts.pendingReset);
 
   syncInputValue(els.workOrderTolerance, effectiveWorkOrderToleranceValue(controls.tolerance_minutes));
   els.workOrderTolerance.disabled = state.workOrderBusy;
   els.workOrderToleranceApply.disabled = state.workOrderBusy;
   els.workOrderReasonSubmit.disabled = state.workOrderBusy;
   els.workOrderReloadSubmit.disabled = state.workOrderBusy;
+  els.workOrderResetSubmit.disabled = state.workOrderBusy;
+  els.workOrderResetSubmit.textContent = resetArmed ? "Tekrar tikla: Is Emirlerini + Depoyu Sifirla" : "Is Emirlerini + Depoyu Sifirla";
+  els.workOrderResetSubmit.className = resetArmed ? "oee-danger-button is-active" : "oee-danger-button";
 
   els.workOrderSummary.innerHTML = `
     <article class="work-order-metric-card">
@@ -1320,10 +1380,22 @@ function renderWorkOrders(snapshot) {
   } else {
     els.workOrderInventory.innerHTML = inventory
       .map((row) => `
-        <div class="status-row">
-          <span>${row.stock_code || row.match_key}</span>
-          <strong>${formatNumber(row.quantity)} | ${formatToken(row.color)}</strong>
-        </div>
+        <article class="status-row work-order-inventory-row">
+          <div class="work-order-inventory-meta">
+            <span>${row.stock_code || row.match_key}</span>
+            <small>${formatToken(row.color)} | Kaynak ${formatToken(row.last_source)} | Son ${formatTime(row.last_updated_at)}</small>
+          </div>
+          <div class="work-order-inventory-actions">
+            <strong>${formatNumber(row.quantity)}</strong>
+            <button
+              class="${state.workOrderDrafts.pendingInventoryRemove?.matchKey === String(row.match_key || "") && Number(state.workOrderDrafts.pendingInventoryRemove?.quantity || 0) === Number(row.quantity || 0) ? "oee-danger-button" : "oee-choice-button"}"
+              type="button"
+              data-inventory-remove="${row.match_key}"
+              data-inventory-quantity="${row.quantity}"
+              ${state.workOrderBusy ? "disabled" : ""}
+            >${state.workOrderDrafts.pendingInventoryRemove?.matchKey === String(row.match_key || "") && Number(state.workOrderDrafts.pendingInventoryRemove?.quantity || 0) === Number(row.quantity || 0) ? "Tekrar: 1 Adet Sil" : "1 Adet Sil"}</button>
+          </div>
+        </article>
       `)
       .join("");
   }
@@ -1561,6 +1633,9 @@ async function sendWorkOrderTolerance() {
 }
 
 async function sendWorkOrderReload() {
+  clearWorkOrderRollbackDraft();
+  clearWorkOrderResetDraft();
+  clearWorkOrderInventoryRemoveDraft();
   state.workOrderBusy = true;
   setWorkOrderFeedback("Is emri kaynagi klasorden yenileniyor...", "neutral");
   if (state.snapshot) renderWorkOrders(state.snapshot);
@@ -1585,6 +1660,9 @@ async function sendWorkOrderReload() {
 
 async function sendWorkOrderReorder(orderId, direction) {
   if (!state.snapshot?.work_orders?.queue?.length) return;
+  clearWorkOrderRollbackDraft();
+  clearWorkOrderResetDraft();
+  clearWorkOrderInventoryRemoveDraft();
   const queue = [...state.snapshot.work_orders.queue];
   const index = queue.findIndex((order) => order.order_id === orderId);
   if (index < 0) return;
@@ -1616,6 +1694,8 @@ async function sendWorkOrderReorder(orderId, direction) {
 
 async function sendWorkOrderStart(orderId, transitionReason = "") {
   clearWorkOrderRollbackDraft();
+  clearWorkOrderResetDraft();
+  clearWorkOrderInventoryRemoveDraft();
   state.workOrderBusy = true;
   setWorkOrderFeedback(`${orderId} baslatiliyor...`, "neutral");
   if (state.snapshot) renderWorkOrders(state.snapshot);
@@ -1658,6 +1738,8 @@ async function sendWorkOrderStart(orderId, transitionReason = "") {
 
 async function sendWorkOrderRollback(orderId) {
   clearWorkOrderRollbackDraft();
+  clearWorkOrderResetDraft();
+  clearWorkOrderInventoryRemoveDraft();
   state.workOrderBusy = true;
   setWorkOrderFeedback(`${orderId} geri aliniyor...`, "neutral");
   if (state.snapshot) renderWorkOrders(state.snapshot);
@@ -1674,6 +1756,58 @@ async function sendWorkOrderRollback(orderId) {
     setWorkOrderFeedback(payload.summary || `${orderId} geri alindi.`, "success");
   } catch (error) {
     setWorkOrderFeedback(`Is emri geri alma hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
+async function sendWorkOrderReset() {
+  clearWorkOrderRollbackDraft();
+  clearWorkOrderResetDraft();
+  clearWorkOrderInventoryRemoveDraft();
+  state.workOrderBusy = true;
+  setWorkOrderFeedback("Is emirleri ve depo sifirlaniyor...", "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/work-orders/reset`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    setWorkOrderFeedback(payload.summary || "Is emirleri sifirlandi.", "success");
+  } catch (error) {
+    setWorkOrderFeedback(`Is emri reset hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
+async function sendWorkOrderInventoryRemove(matchKey) {
+  clearWorkOrderRollbackDraft();
+  clearWorkOrderResetDraft();
+  clearWorkOrderInventoryRemoveDraft();
+  state.workOrderBusy = true;
+  setWorkOrderFeedback(`${matchKey} icin depodan 1 adet siliniyor...`, "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/work-orders/inventory/remove`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ match_key: matchKey, quantity: 1 }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    setWorkOrderFeedback(payload.summary || `${matchKey} deposundan 1 adet silindi.`, "success");
+  } catch (error) {
+    setWorkOrderFeedback(`Depo silme hatasi: ${error.message}`, "error");
   } finally {
     state.workOrderBusy = false;
     if (state.snapshot) renderWorkOrders(state.snapshot);
@@ -1785,6 +1919,15 @@ els.workOrderTolerance.addEventListener("keydown", (event) => {
 });
 
 els.workOrderReloadSubmit.addEventListener("click", () => sendWorkOrderReload());
+els.workOrderResetSubmit.addEventListener("click", () => {
+  if (state.workOrderDrafts.pendingReset) {
+    sendWorkOrderReset();
+    return;
+  }
+  armWorkOrderReset();
+  setWorkOrderFeedback("Tum is emirlerini ve depo kayitlarini sifirlamak icin ayni tusa tekrar tikla.", "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+});
 
 els.workOrderReasonInput.addEventListener("input", () => {
   state.workOrderDrafts.pendingReason = els.workOrderReasonInput.value;
@@ -1823,6 +1966,25 @@ els.workOrderActive.addEventListener("click", (event) => {
   }
   armWorkOrderRollback(orderId);
   setWorkOrderFeedback(`${orderId} geri alma icin ayni tusa tekrar tikla.`, "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+});
+
+els.workOrderInventory.addEventListener("click", (event) => {
+  const removeButton = event.target.closest("button[data-inventory-remove]");
+  if (!removeButton || removeButton.disabled) return;
+  const matchKey = String(removeButton.dataset.inventoryRemove || "");
+  const quantity = Number(removeButton.dataset.inventoryQuantity || 0);
+  const pendingInventoryRemove = state.workOrderDrafts.pendingInventoryRemove;
+  if (
+    pendingInventoryRemove
+    && pendingInventoryRemove.matchKey === matchKey
+    && Number(pendingInventoryRemove.quantity || 0) === quantity
+  ) {
+    sendWorkOrderInventoryRemove(matchKey);
+    return;
+  }
+  armWorkOrderInventoryRemove(matchKey, quantity);
+  setWorkOrderFeedback(`${matchKey} icin depodan 1 adet silmek icin ayni tusa tekrar tikla.`, "neutral");
   if (state.snapshot) renderWorkOrders(state.snapshot);
 });
 

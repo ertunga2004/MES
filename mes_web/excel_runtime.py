@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import shutil
 import threading
 from copy import copy
@@ -100,6 +101,7 @@ EVENT_TYPE_IDS = {
 }
 DECISION_SOURCE_IDS = {"CORE_STABLE": 1, "MEDIAN_STABLE": 2, "CORE_VOTE_MATCH": 3, "VISION": 4, "TABLET": 5, "SYSTEM": 6}
 MEGA_STATE_IDS = {"SEARCH": 1, "SEARCHING": 2, "MEASURING": 3, "WAIT_ARM": 4, "PAUSED": 5, "STOPPED": 6, "QUEUE": 7}
+EXCEL_ILLEGAL_CHARACTERS_RE = re.compile(r"[\x00-\x08\x0B-\x0C\x0E-\x1F]")
 
 
 def _station_for_event(event_type_code: str) -> int:
@@ -130,6 +132,12 @@ def _json_text(payload: Any) -> str:
     if isinstance(payload, str):
         return payload
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _excel_cell_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return EXCEL_ILLEGAL_CHARACTERS_RE.sub("", value)
+    return value
 
 
 def _safe_int(value: Any) -> int | str:
@@ -873,8 +881,7 @@ class ExcelRuntimeSink:
                         target_row = self._next_write_row(sheet, len(headers))
                         if target_row > 2:
                             self._copy_row_style(sheet, source_row=2, target_row=target_row, width=len(headers))
-                        for col_index, header in enumerate(headers, start=1):
-                            sheet.cell(target_row, col_index, row.get(header, ""))
+                        self._write_sheet_row(sheet, target_row, headers, row)
                         self._update_auto_filter(sheet, len(headers), target_row, get_column_letter)
                         dirty = True
             if dirty:
@@ -994,8 +1001,7 @@ class ExcelRuntimeSink:
             target_row = self._next_write_row(sheet, len(headers))
             if target_row > 2:
                 self._copy_row_style(sheet, source_row=2, target_row=target_row, width=len(headers))
-        for col_index, header in enumerate(headers, start=1):
-            sheet.cell(target_row, col_index, row.get(header, ""))
+        self._write_sheet_row(sheet, target_row, headers, row)
 
     def _zero_missing_inventory_rows(self, sheet: Any, active_keys: set[str], received_at: str) -> None:
         headers = [sheet.cell(1, idx).value for idx in range(1, sheet.max_column + 1)]
@@ -1009,9 +1015,9 @@ class ExcelRuntimeSink:
             if not row_key or row_key in active_keys:
                 continue
             if quantity_index is not None:
-                sheet.cell(row_index, quantity_index, 0)
+                sheet.cell(row_index, quantity_index, _excel_cell_value(0))
             if notes_index is not None:
-                sheet.cell(row_index, notes_index, f"updated_at={received_at};depleted=1")
+                sheet.cell(row_index, notes_index, _excel_cell_value(f"updated_at={received_at};depleted=1"))
 
     def _update_completed_sheet_row(self, sheet: Any, row: dict[str, Any]) -> None:
         headers = [sheet.cell(1, idx).value for idx in range(1, sheet.max_column + 1)]
@@ -1026,8 +1032,11 @@ class ExcelRuntimeSink:
                 break
         if target_row is None:
             raise KeyError("WORKBOOK_COMPLETED_ROW_NOT_FOUND")
+        self._write_sheet_row(sheet, target_row, headers, row)
+
+    def _write_sheet_row(self, sheet: Any, target_row: int, headers: list[str], row: dict[str, Any]) -> None:
         for col_index, header in enumerate(headers, start=1):
-            sheet.cell(target_row, col_index, row.get(header, ""))
+            sheet.cell(target_row, col_index, _excel_cell_value(row.get(header, "")))
 
     def _ensure_sheet_layout(self, sheet: Any, headers: list[str]) -> None:
         existing_headers = [sheet.cell(1, idx).value for idx in range(1, max(sheet.max_column, 1) + 1)]

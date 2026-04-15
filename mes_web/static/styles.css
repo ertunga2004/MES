@@ -841,7 +841,35 @@ body {
 
 .work-order-import-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   justify-content: flex-end;
+}
+
+.work-order-inventory-row {
+  align-items: center;
+}
+
+.work-order-inventory-meta {
+  display: grid;
+  gap: 6px;
+  flex: 1 1 auto;
+}
+
+.work-order-inventory-meta small {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.work-order-inventory-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.work-order-inventory-actions strong {
+  min-width: 28px;
+  text-align: right;
 }
 
 .work-order-log-grid {
@@ -1230,6 +1258,8 @@ body {
   .work-order-row,
   .work-order-active-head,
   .work-order-active-actions,
+  .work-order-inventory-row,
+  .work-order-inventory-actions,
   .work-order-log-head,
   .work-order-log-body,
   .work-order-import-actions {

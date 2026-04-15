@@ -176,6 +176,27 @@ class DashboardStoreTests(unittest.TestCase):
             self.assertEqual(snapshot["oee"]["controls"]["performance_mode"], "IDEAL_CYCLE")
             self.assertEqual(snapshot["oee"]["controls"]["planned_stop_min"], 5.5)
 
+    def test_runtime_state_clamps_trend_outliers_to_percent_range(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "oee_runtime_state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"trend":[{"time":"2026-04-02T10:00:00Z","oee":1200.0,"availability":101.0,"performance":6000.0,"quality":150.0,"loss":999.0},'
+                    '{"time":"2026-04-02T10:05:00Z","oee":-25.0,"availability":-1.0,"performance":-9.0,"quality":40.0,"loss":-5.0}]}'
+                )
+
+            with patch.dict(os.environ, {"MES_WEB_OEE_RUNTIME_STATE_PATH": state_path}, clear=False):
+                config = AppConfig.from_env()
+                store = DashboardStore(config)
+                snapshot = store.get_dashboard_snapshot(config.module_id)
+
+            self.assertEqual(snapshot["oee"]["trend"][0]["oee"], 100.0)
+            self.assertEqual(snapshot["oee"]["trend"][0]["performance"], 100.0)
+            self.assertEqual(snapshot["oee"]["trend"][0]["loss"], 100.0)
+            self.assertEqual(snapshot["oee"]["trend"][1]["oee"], 0.0)
+            self.assertEqual(snapshot["oee"]["trend"][1]["availability"], 0.0)
+            self.assertEqual(snapshot["oee"]["trend"][1]["quality"], 40.0)
+
     def test_runtime_state_builds_live_oee_from_completed_counts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "oee_runtime_state.json")
@@ -254,12 +275,47 @@ class DashboardStoreTests(unittest.TestCase):
             self.assertEqual(snapshot["work_orders"]["active_order"]["order_id"], "WO-1")
             self.assertEqual(snapshot["work_orders"]["active_order"]["inventory_consumed_qty"], 1)
             self.assertEqual(snapshot["work_orders"]["active_order"]["ideal_cycle_sec"], 10.0)
+            self.assertIsNone(snapshot["work_orders"]["active_order"]["availability"])
+            self.assertIsNone(snapshot["work_orders"]["active_order"]["oee"])
+            self.assertEqual(snapshot["work_orders"]["active_order"]["unplanned_stop_min"], 0.0)
+            self.assertGreaterEqual(snapshot["work_orders"]["active_order"]["performance"], 0.0)
+            self.assertGreaterEqual(snapshot["work_orders"]["active_order"]["quality"], 0.0)
             self.assertEqual(len(snapshot["work_orders"]["active_order"]["requirements"]), 3)
             self.assertEqual(snapshot["work_orders"]["active_order"]["requirements"][2]["color"], "blue")
             self.assertEqual(snapshot["work_orders"]["queue"][0]["order_id"], "WO-2")
             self.assertEqual(snapshot["work_orders"]["inventory"][0]["quantity"], 2)
             self.assertEqual(snapshot["work_orders"]["source"]["folder"], "C:/erp-cache")
             self.assertEqual(snapshot["work_orders"]["source"]["file"], "work_orders.json")
+
+    def test_runtime_state_projects_pending_approval_order_as_active_and_accept_required(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "oee_runtime_state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"idealCycleSec":10,'
+                    '"shift":{"active":true,"code":"SHIFT-A","startedAt":"2026-04-02T08:00:00+03:00","planStart":"2026-04-02T08:00:00+03:00","planEnd":"2026-04-02T16:00:00+03:00","performanceMode":"TARGET","targetQty":12},'
+                    '"counts":{"total":1,"good":1,"rework":0,"scrap":0,"byColor":{"red":{"total":1,"good":1,"rework":0,"scrap":0},"yellow":{"total":0,"good":0,"rework":0,"scrap":0},"blue":{"total":0,"good":0,"rework":0,"scrap":0}}},'
+                    '"itemsById":{"1":{"item_id":"1","work_order_id":"WO-PEND-1","completed_at":"2026-04-02T08:10:00+03:00","classification":"GOOD","color":"red"}},'
+                    '"workOrders":{"toleranceMinutes":10.0,'
+                    '"ordersById":{"WO-PEND-1":{"orderId":"WO-PEND-1","stockCode":"BOX-RED","stockName":"Kirmizi Kutu","quantity":1,"completedQty":1,"remainingQty":0,"productionQty":1,"inventoryConsumedQty":0,"productColor":"red","status":"pending_approval","startedAt":"2026-04-02T08:00:00+03:00","autoCompletedAt":"2026-04-02T08:10:00+03:00","startedBy":"OP-001","startedByName":"Ayse","cycleTimeSec":10}},'
+                    '"orderSequence":["WO-PEND-1"],'
+                    '"activeOrderId":"",'
+                    '"transitionLog":[{"eventType":"auto_completed","time":"2026-04-02T08:10:00+03:00","orderId":"WO-PEND-1","note":"Operator onayi bekleniyor."}]}}'
+                )
+
+            with patch.dict(os.environ, {"MES_WEB_OEE_RUNTIME_STATE_PATH": state_path}, clear=False):
+                config = AppConfig.from_env()
+                store = DashboardStore(config)
+                snapshot = store.get_dashboard_snapshot(config.module_id)
+
+            self.assertEqual(snapshot["work_orders"]["active_order"]["order_id"], "WO-PEND-1")
+            self.assertEqual(snapshot["work_orders"]["active_order"]["status"], "pending_approval")
+            self.assertTrue(snapshot["work_orders"]["active_order"]["acceptance_pending"])
+            self.assertEqual(snapshot["work_orders"]["active_order"]["auto_completed_at"], "2026-04-02T08:10:00+03:00")
+            self.assertFalse(snapshot["work_orders"]["controls"]["can_start"])
+            self.assertTrue(snapshot["work_orders"]["controls"]["can_accept"])
+            self.assertTrue(snapshot["work_orders"]["controls"]["can_rollback"])
+            self.assertEqual(snapshot["work_orders"]["summary"]["active_count"], 1)
 
     def test_runtime_state_exposes_vision_runtime_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

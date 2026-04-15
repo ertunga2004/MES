@@ -602,6 +602,7 @@ body {
 
 .work-order-metric-card,
 .work-order-active-card,
+.work-order-completed-card,
 .work-order-row,
 .work-order-log-card,
 .work-order-kpi-chip,
@@ -679,13 +680,15 @@ body {
   gap: 12px;
 }
 
-.work-order-active-card {
+.work-order-active-card,
+.work-order-completed-card {
   padding: 18px;
   display: grid;
   gap: 14px;
 }
 
 .work-order-active-head,
+.work-order-completed-head,
 .work-order-row,
 .work-order-log-head,
 .work-order-log-body {
@@ -711,6 +714,31 @@ body {
 .work-order-active-head h3 {
   margin: 10px 0 0;
   font-size: 24px;
+}
+
+.work-order-completed-head h3 {
+  margin: 10px 0 0;
+  font-size: 20px;
+}
+
+.work-order-completed-score {
+  min-width: 108px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(88, 166, 255, 0.22);
+  background: linear-gradient(135deg, rgba(88, 166, 255, 0.16), rgba(36, 199, 141, 0.1));
+}
+
+.work-order-completed-score span {
+  display: block;
+  color: var(--text-soft);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.work-order-completed-score strong {
+  display: block;
+  font-size: 28px;
 }
 
 .work-order-progress {
@@ -791,6 +819,31 @@ body {
 
 .work-order-kpi-chip {
   background: rgba(255, 255, 255, 0.04);
+}
+
+.work-order-completed-metrics {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.work-order-completed-chip {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.work-order-completed-chip span {
+  display: block;
+  color: var(--text-soft);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.work-order-completed-chip strong {
+  display: block;
+  font-size: 18px;
 }
 
 .work-order-meta-grid {
@@ -1257,6 +1310,7 @@ body {
 
   .work-order-row,
   .work-order-active-head,
+  .work-order-completed-head,
   .work-order-active-actions,
   .work-order-inventory-row,
   .work-order-inventory-actions,

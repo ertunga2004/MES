@@ -24,8 +24,24 @@ function Resolve-PythonCommand {
         (Join-Path (Split-Path -Parent $WorkingDir) ".venv\Scripts\python.exe")
     ) | Select-Object -Unique
 
+    function Test-PythonCommand {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Exe,
+            [string[]]$Prefix = @()
+        )
+
+        try {
+            & $Exe @Prefix -c "import sys" *> $null
+            $exitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
+            return $exitCode -eq 0
+        } catch {
+            return $false
+        }
+    }
+
     foreach ($candidate in $candidatePaths) {
-        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate) -and (Test-PythonCommand -Exe $candidate)) {
             return @{
                 Exe = $candidate
                 Prefix = @()
@@ -33,19 +49,19 @@ function Resolve-PythonCommand {
         }
     }
 
-    $py = Get-Command py -ErrorAction SilentlyContinue
-    if ($py) {
-        return @{
-            Exe = $py.Source
-            Prefix = @("-3")
-        }
-    }
-
     $python = Get-Command python -ErrorAction SilentlyContinue
-    if ($python) {
+    if ($python -and (Test-PythonCommand -Exe $python.Source)) {
         return @{
             Exe = $python.Source
             Prefix = @()
+        }
+    }
+
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if ($py -and (Test-PythonCommand -Exe $py.Source -Prefix @("-3"))) {
+        return @{
+            Exe = $py.Source
+            Prefix = @("-3")
         }
     }
 

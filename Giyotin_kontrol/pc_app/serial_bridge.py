@@ -1,5 +1,10 @@
 import time
 import serial
+from serial.tools import list_ports
+
+
+def list_serial_ports():
+    return [port.device for port in list_ports.comports()]
 
 class NanoGiyotin:
     def __init__(self, port: str = "COM12", baud: int = 9600, timeout: float = 0.2):

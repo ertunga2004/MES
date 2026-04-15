@@ -53,6 +53,25 @@ def _safe_float(value: Any) -> float:
         return 0.0
 
 
+def _clamp_pct(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(max(0.0, min(100.0, numeric)), 1)
+
+
+def _ratio_to_pct(value: Any) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(max(0.0, min(1.0, numeric)) * 100.0, 1)
+
+
+WORK_ORDER_ACTIVE_STATUSES = {"active", "pending_approval"}
+
+
 class DashboardStore:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -206,6 +225,7 @@ class DashboardStore:
             "controls": {
                 "tolerance_minutes": 15.0,
                 "can_start": True,
+                "can_accept": False,
                 "can_rollback": False,
             },
             "summary": {
@@ -497,10 +517,10 @@ class DashboardStore:
                 for color in ("red", "yellow", "blue")
             }
             oee["kpis"] = {
-                "oee": round(float(live["oee"]) * 100.0, 1),
-                "availability": round(float(live["availability"]) * 100.0, 1),
-                "performance": round(float(live["performance"]) * 100.0, 1),
-                "quality": round(float(live["quality"]) * 100.0, 1),
+                "oee": _ratio_to_pct(live["oee"]),
+                "availability": _ratio_to_pct(live["availability"]),
+                "performance": _ratio_to_pct(live["performance"]),
+                "quality": _ratio_to_pct(live["quality"]),
             }
 
             trend = []
@@ -508,11 +528,11 @@ class DashboardStore:
                 trend.append(
                     {
                         "time": row.get("time"),
-                        "oee": row.get("oee"),
-                        "availability": row.get("availability"),
-                        "performance": row.get("performance"),
-                        "quality": row.get("quality"),
-                        "loss": row.get("loss"),
+                        "oee": _clamp_pct(row.get("oee")),
+                        "availability": _clamp_pct(row.get("availability")),
+                        "performance": _clamp_pct(row.get("performance")),
+                        "quality": _clamp_pct(row.get("quality")),
+                        "loss": _clamp_pct(row.get("loss")),
                     }
                 )
             oee["trend"] = trend
@@ -549,6 +569,7 @@ class DashboardStore:
 
             def project_work_order(order_id: str, order: dict[str, Any]) -> dict[str, Any]:
                 metrics = build_work_order_snapshot(payload, order, now=datetime.now().astimezone())
+                status = str(order.get("status") or "queued")
                 quantity = max(0, _safe_int(order.get("quantity")))
                 completed_qty = max(0, _safe_int(order.get("completedQty")))
                 inventory_qty = max(0, _safe_int(order.get("inventoryConsumedQty")))
@@ -604,13 +625,15 @@ class DashboardStore:
                     "product_code": str(order.get("productCode") or ""),
                     "product_color": str(order.get("productColor") or ""),
                     "requirements": requirements,
-                    "status": str(order.get("status") or "queued"),
+                    "status": status,
                     "queued_at": order.get("queuedAt"),
                     "started_at": order.get("startedAt"),
+                    "auto_completed_at": order.get("autoCompletedAt"),
                     "completed_at": order.get("completedAt"),
                     "started_by": str(order.get("startedBy") or ""),
                     "started_by_name": str(order.get("startedByName") or ""),
                     "transition_reason": str(order.get("transitionReason") or ""),
+                    "acceptance_pending": status == "pending_approval",
                     "inventory_consumed_qty": inventory_qty,
                     "production_qty": production_qty,
                     "completed_qty": completed_qty,
@@ -624,10 +647,10 @@ class DashboardStore:
                     "planned_duration_min": round(float(metrics["plannedDurationMs"]) / 60000.0, 1),
                     "runtime_min": round(float(metrics["runtimeMs"]) / 60000.0, 1),
                     "unplanned_stop_min": round(float(metrics["unplannedMs"]) / 60000.0, 1),
-                    "availability": round(float(metrics["availability"]) * 100.0, 1),
-                    "performance": round(float(metrics["performance"]) * 100.0, 1),
-                    "quality": round(float(metrics["quality"]) * 100.0, 1),
-                    "oee": round(float(metrics["oee"]) * 100.0, 1),
+                    "availability": None,
+                    "performance": _ratio_to_pct(metrics["performance"]),
+                    "quality": _ratio_to_pct(metrics["quality"]),
+                    "oee": None,
                 }
 
             projected_by_id: dict[str, dict[str, Any]] = {}
@@ -649,7 +672,7 @@ class DashboardStore:
             active_order_id = str(work_orders_payload.get("activeOrderId") or "").strip()
             active_order = projected_by_id.get(active_order_id)
             if active_order is None:
-                active_order = next((row for row in projected_by_id.values() if row["status"] == "active"), None)
+                active_order = next((row for row in projected_by_id.values() if row["status"] in WORK_ORDER_ACTIVE_STATUSES), None)
 
             queue_orders = [projected_by_id[order_id] for order_id in projected_sequence if projected_by_id.get(order_id, {}).get("status") == "queued"]
             completed_orders = [projected_by_id[order_id] for order_id in projected_sequence if projected_by_id.get(order_id, {}).get("status") == "completed"]
@@ -681,6 +704,7 @@ class DashboardStore:
                 "controls": {
                     "tolerance_minutes": _safe_float(work_orders_payload.get("toleranceMinutes") or 0.0),
                     "can_start": active_order is None,
+                    "can_accept": bool(active_order and active_order.get("status") == "pending_approval"),
                     "can_rollback": active_order is not None,
                 },
                 "summary": {
@@ -703,10 +727,10 @@ class DashboardStore:
                 "transition_log": copy.deepcopy((work_orders_payload.get("transitionLog") or [])[:10]),
                 "completion_log": copy.deepcopy((work_orders_payload.get("completionLog") or [])[:10]),
                 "performance_panel": {
-                    "oee": round(float(live["oee"]) * 100.0, 1),
-                    "availability": round(float(live["availability"]) * 100.0, 1),
-                    "performance": round(float(live["performance"]) * 100.0, 1),
-                    "quality": round(float(live["quality"]) * 100.0, 1),
+                    "oee": _ratio_to_pct(live["oee"]),
+                    "availability": _ratio_to_pct(live["availability"]),
+                    "performance": _ratio_to_pct(live["performance"]),
+                    "quality": _ratio_to_pct(live["quality"]),
                     "planned_stop_min": round(float(live["plannedStopMs"]) / 60000.0, 1),
                     "unplanned_stop_min": round(float(live["unplannedMs"]) / 60000.0, 1),
                     "runtime_min": round(float(live["runtimeMs"]) / 60000.0, 1),

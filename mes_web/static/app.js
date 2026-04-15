@@ -55,7 +55,9 @@ const TOKEN_LABELS = {
   reconnecting: "Reconnect",
   queued: "Kuyrukta",
   started: "Basladi",
+  pending_approval: "Onay Bekliyor",
   completed: "Kapatildi",
+  auto_completed: "Oto Tamam",
   consumed_for_work_order: "Depodan Kullanildi",
   off_order_completion: "Depoya Alindi",
   rollback_to_inventory: "Depoya Geri Alindi",
@@ -169,6 +171,7 @@ const els = {
   workOrderReasonSubmit: document.getElementById("work-order-reason-submit"),
   workOrderFeedback: document.getElementById("work-order-feedback"),
   workOrderActive: document.getElementById("work-order-active"),
+  workOrderCompletedList: document.getElementById("work-order-completed-list"),
   workOrderSource: document.getElementById("work-order-source"),
   workOrderReloadSubmit: document.getElementById("work-order-reload-submit"),
   workOrderResetSubmit: document.getElementById("work-order-reset-submit"),
@@ -1222,6 +1225,10 @@ function renderWorkOrders(snapshot) {
   const summary = workOrders.summary || {};
   const controls = workOrders.controls || {};
   const activeOrder = workOrders.active_order;
+  const acceptancePending = Boolean(activeOrder && (activeOrder.acceptance_pending || activeOrder.status === "pending_approval"));
+  const completed = [...(workOrders.completed || [])].sort(
+    (left, right) => String(right.completed_at || right.auto_completed_at || "").localeCompare(String(left.completed_at || left.auto_completed_at || "")) || String(right.order_id || "").localeCompare(String(left.order_id || ""))
+  );
   const queue = workOrders.queue || [];
   const inventory = workOrders.inventory || [];
   const transitionLog = workOrders.transition_log || [];
@@ -1246,7 +1253,7 @@ function renderWorkOrders(snapshot) {
       <strong>${formatNumber(summary.queued_count)}</strong>
     </article>
     <article class="work-order-metric-card">
-      <span>Aktif</span>
+      <span>Acik Is Emri</span>
       <strong>${formatNumber(summary.active_count)}</strong>
     </article>
     <article class="work-order-metric-card">
@@ -1281,14 +1288,33 @@ function renderWorkOrders(snapshot) {
           <strong>${formatToken(activeOrder.status)}</strong>
         </div>
         <div class="work-order-active-actions">
+          ${acceptancePending ? `
+          <button
+            class="oee-primary-button"
+            type="button"
+            data-work-order-accept="${activeOrder.order_id}"
+            ${state.workOrderBusy || controls.can_accept === false ? "disabled" : ""}
+          >Operator Onayi Ver</button>
+          ` : ""}
           <button
             class="${rollbackArmed ? "oee-danger-button" : "oee-choice-button"}"
             type="button"
             data-work-order-rollback="${activeOrder.order_id}"
             ${state.workOrderBusy || controls.can_rollback === false ? "disabled" : ""}
           >${rollbackArmed ? "Tekrar tikla: geri al" : "Aktif Is Emrini Geri Al"}</button>
-          <span>${rollbackArmed ? "5 sn icinde ayni tusa tekrar tikla. Tamamlanan kutular depoya geri gider." : "Yanlis baslatma durumunda is emrini kuyruga geri alir."}</span>
+          <span>${acceptancePending
+            ? `Otomatik tamamlanma ${formatTime(activeOrder.auto_completed_at)}. Performans suresi bu anda durur; operator onayi bekleniyor.`
+            : rollbackArmed
+              ? "5 sn icinde ayni tusa tekrar tikla. Tamamlanan kutular depoya geri gider."
+              : "Yanlis baslatma durumunda is emrini kuyruga geri alir."}</span>
         </div>
+        ${acceptancePending ? `
+        <div class="work-order-row-meta">
+          <span>Oto Tamam ${formatTime(activeOrder.auto_completed_at)}</span>
+          <span>Metrik Bitis ${formatTime(activeOrder.auto_completed_at)}</span>
+          <span>Operator onayi bekleniyor</span>
+        </div>
+        ` : ""}
         ${workOrderProgressBar(activeOrder)}
         ${renderWorkOrderRequirements(activeOrder)}
         <div class="work-order-kpi-grid">
@@ -1309,12 +1335,12 @@ function renderWorkOrders(snapshot) {
             <strong>${formatNumber(activeOrder.remaining_qty)}</strong>
           </div>
           <div class="work-order-kpi-chip">
-            <span>WO OEE</span>
-            <strong>${formatPercent(activeOrder.oee)}</strong>
+            <span>Plansiz Durus</span>
+            <strong>${formatMinutes(activeOrder.unplanned_stop_min)}</strong>
           </div>
           <div class="work-order-kpi-chip">
-            <span>WO Kull</span>
-            <strong>${formatPercent(activeOrder.availability)}</strong>
+            <span>Runtime</span>
+            <strong>${formatMinutes(activeOrder.runtime_min)}</strong>
           </div>
           <div class="work-order-kpi-chip">
             <span>WO Perf</span>
@@ -1328,6 +1354,7 @@ function renderWorkOrders(snapshot) {
         <div class="work-order-meta-grid">
           <div class="status-row"><span>Operator</span><strong>${activeOrder.started_by_name || activeOrder.started_by || "-"}</strong></div>
           <div class="status-row"><span>Baslangic</span><strong>${formatTime(activeOrder.started_at)}</strong></div>
+          <div class="status-row"><span>Oto Tamam</span><strong>${formatTime(activeOrder.auto_completed_at)}</strong></div>
           <div class="status-row"><span>Proje</span><strong>${activeOrder.project_code || "-"}</strong></div>
           <div class="status-row"><span>Vardiya</span><strong>${activeOrder.shift_code || "-"}</strong></div>
           <div class="status-row"><span>Is Merkezi</span><strong>${activeOrder.work_center_code || "-"}</strong></div>
@@ -1337,6 +1364,53 @@ function renderWorkOrders(snapshot) {
         </div>
       </article>
     `;
+  }
+
+  if (!completed.length) {
+    els.workOrderCompletedList.innerHTML = `<p class="empty-state">Tamamlanan is emri henuz yok.</p>`;
+  } else {
+    els.workOrderCompletedList.innerHTML = completed
+      .map((order) => `
+        <article class="work-order-completed-card">
+          <div class="work-order-completed-head">
+            <div>
+              <span class="work-order-badge">${order.order_id}</span>
+              <h3>${workOrderTitle(order)}</h3>
+            </div>
+            <div class="work-order-completed-score">
+              <span>WO Perf</span>
+              <strong>${formatPercent(order.performance)}</strong>
+            </div>
+          </div>
+          <div class="work-order-row-meta">
+            <span>Oto Tamam ${formatTime(order.auto_completed_at)}</span>
+            <span>Onay ${formatTime(order.completed_at)}</span>
+            <span>Plan ${formatNumber(order.qty)} ${order.unit || "adet"}</span>
+            <span>Tamamlanan ${formatNumber(order.completed_qty)}</span>
+            <span>Operator ${order.started_by_name || order.started_by || "-"}</span>
+          </div>
+          ${renderWorkOrderRequirements(order, true)}
+          <div class="work-order-completed-metrics">
+            <div class="work-order-completed-chip">
+              <span>Runtime</span>
+              <strong>${formatMinutes(order.runtime_min)}</strong>
+            </div>
+            <div class="work-order-completed-chip">
+              <span>Toplam Plansiz Durus</span>
+              <strong>${formatMinutes(order.unplanned_stop_min)}</strong>
+            </div>
+            <div class="work-order-completed-chip">
+              <span>Kalite</span>
+              <strong>${formatPercent(order.quality)}</strong>
+            </div>
+            <div class="work-order-completed-chip">
+              <span>Ilerleme</span>
+              <strong>${formatNumber(order.completed_qty)}/${formatNumber(order.qty)}</strong>
+            </div>
+          </div>
+        </article>
+      `)
+      .join("");
   }
 
   renderFieldGrid(els.workOrderSource, [
@@ -1736,6 +1810,32 @@ async function sendWorkOrderStart(orderId, transitionReason = "") {
   }
 }
 
+async function sendWorkOrderAccept(orderId) {
+  clearWorkOrderRollbackDraft();
+  clearWorkOrderResetDraft();
+  clearWorkOrderInventoryRemoveDraft();
+  state.workOrderBusy = true;
+  setWorkOrderFeedback(`${orderId} operator onayina gonderiliyor...`, "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/work-orders/accept-active`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    setWorkOrderFeedback(payload.summary || `${orderId} operator onayi ile kapatildi.`, "success");
+  } catch (error) {
+    setWorkOrderFeedback(`Is emri onay hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
 async function sendWorkOrderRollback(orderId) {
   clearWorkOrderRollbackDraft();
   clearWorkOrderResetDraft();
@@ -1956,6 +2056,11 @@ els.workOrderQueueList.addEventListener("click", (event) => {
 });
 
 els.workOrderActive.addEventListener("click", (event) => {
+  const acceptButton = event.target.closest("button[data-work-order-accept]");
+  if (acceptButton && !acceptButton.disabled) {
+    sendWorkOrderAccept(String(acceptButton.dataset.workOrderAccept || ""));
+    return;
+  }
   const rollbackButton = event.target.closest("button[data-work-order-rollback]");
   if (!rollbackButton || rollbackButton.disabled) return;
   const orderId = String(rollbackButton.dataset.workOrderRollback || "");

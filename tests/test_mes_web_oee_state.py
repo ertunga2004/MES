@@ -234,6 +234,41 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot["performance"], 3.0 / 8.0, places=4)
         self.assertIn("beklenen 8.0", snapshot["targetText"])
 
+    def test_live_performance_is_capped_at_100_percent(self) -> None:
+        state = {
+            "performanceMode": "TARGET",
+            "targetQty": 1,
+            "plannedStopMin": 0.0,
+            "counts": {
+                "total": 20,
+                "good": 20,
+                "rework": 0,
+                "scrap": 0,
+                "byColor": {
+                    "red": {"total": 20, "good": 20, "rework": 0, "scrap": 0},
+                    "yellow": {"total": 0, "good": 0, "rework": 0, "scrap": 0},
+                    "blue": {"total": 0, "good": 0, "rework": 0, "scrap": 0},
+                },
+            },
+            "shift": {
+                "active": True,
+                "startedAt": "2026-04-02T08:00:00+03:00",
+                "planStart": "2026-04-02T08:00:00+03:00",
+                "planEnd": "2026-04-02T16:00:00+03:00",
+                "performanceMode": "TARGET",
+                "targetQty": 1,
+                "plannedStopMin": 0.0,
+                "idealCycleSec": 0.0,
+            },
+            "unplannedDowntimeMs": 0,
+        }
+
+        snapshot = build_live_snapshot(state, now=datetime(2026, 4, 2, 12, 0, 0, tzinfo=timezone(timedelta(hours=3))))
+
+        self.assertGreater(snapshot["expected"], 0.0)
+        self.assertEqual(snapshot["performance"], 1.0)
+        self.assertLessEqual(snapshot["oee"], 1.0)
+
     def test_pickplace_return_done_updates_completed_item_trace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
@@ -376,7 +411,7 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(item["finalization_reason"], "SENSOR_LATE_VISION")
             self.assertEqual(state["vision"]["metrics"]["lateAuditCount"], 1)
 
-    def test_work_order_completes_when_required_quantity_is_finished(self) -> None:
+    def test_work_order_moves_to_pending_approval_when_required_quantity_is_finished(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
             manager.import_work_orders(
@@ -407,13 +442,59 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             state = manager.read_state()
             work_order = state["workOrders"]["ordersById"]["WO-RED-001"]
             work_order_snapshot = build_work_order_snapshot(state, work_order, now=datetime(2026, 4, 2, 8, 3, 0, tzinfo=timezone.utc))
-            self.assertEqual(work_order["status"], "completed")
+            self.assertEqual(work_order["status"], "pending_approval")
             self.assertEqual(work_order["completedQty"], 2)
             self.assertEqual(work_order["productionQty"], 2)
             self.assertEqual(work_order["remainingQty"], 0)
-            self.assertGreaterEqual(float(work_order_snapshot["oee"]), 0.0)
-            self.assertIn("OEE=", state["workOrders"]["completionLog"][0]["note"])
+            self.assertTrue(str(work_order["autoCompletedAt"]).startswith("2026-04-02T08:03:00"))
+            self.assertGreaterEqual(float(work_order_snapshot["performance"]), 0.0)
+            self.assertEqual(state["workOrders"]["transitionLog"][0]["eventType"], "auto_completed")
+            self.assertIn("PERF=", state["workOrders"]["transitionLog"][0]["note"])
+            self.assertIn("Plansiz Durus=", state["workOrders"]["transitionLog"][0]["note"])
+            self.assertEqual(state["workOrders"]["activeOrderId"], "WO-RED-001")
+
+    def test_operator_acceptance_closes_pending_work_order_but_metrics_stop_at_auto_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            local_tz = timezone(timedelta(hours=3))
+            manager.import_work_orders(
+                [
+                    {
+                        "order_id": "WO-RED-ACCEPT",
+                        "stock_code": "BOX-RED",
+                        "stock_name": "Kirmizi Kutu",
+                        "qty": 1,
+                        "unit": "ADET",
+                        "product_color": "red",
+                        "cycle_time_sec": 10,
+                    }
+                ],
+                now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=local_tz),
+            )
+            manager.start_work_order("WO-RED-ACCEPT", operator_code="OP-001", now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=local_tz))
+            manager.apply_mega_log(
+                "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=150|MEASURE_ID=15|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=4500|PENDING=1",
+                "2026-04-02T08:10:00+03:00",
+            )
+            manager.apply_mega_log(
+                "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=150|MEASURE_ID=15|TRIGGER=TIMER",
+                "2026-04-02T08:10:00+03:00",
+            )
+
+            accept_result = manager.accept_active_work_order(now=datetime(2026, 4, 2, 8, 16, 0, tzinfo=local_tz))
+
+            state = manager.read_state()
+            work_order = state["workOrders"]["ordersById"]["WO-RED-ACCEPT"]
+            snapshot = build_work_order_snapshot(state, work_order, now=datetime(2026, 4, 2, 8, 16, 0, tzinfo=local_tz))
+            self.assertEqual(work_order["status"], "completed")
+            self.assertEqual(work_order["completedAt"], "2026-04-02T08:16:00.000+03:00")
+            self.assertEqual(work_order["autoCompletedAt"], "2026-04-02T08:10:00+03:00")
+            self.assertEqual(snapshot["elapsedMs"], 10 * 60 * 1000)
             self.assertEqual(state["workOrders"]["activeOrderId"], "")
+            self.assertEqual(state["workOrders"]["lastCompletedOrderId"], "WO-RED-ACCEPT")
+            self.assertEqual(state["workOrders"]["lastCompletedAt"], "2026-04-02T08:16:00.000+03:00")
+            self.assertIn("Oto Tamam=2026-04-02T08:10:00+03:00", state["workOrders"]["completionLog"][0]["note"])
+            self.assertEqual(accept_result["order"]["status"], "completed")
 
     def test_work_order_snapshot_uses_target_qty_and_reference_cycle(self) -> None:
         local_tz = timezone(timedelta(hours=3))
@@ -450,10 +531,10 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
         self.assertEqual(snapshot["fulfilledQty"], 3)
         self.assertEqual(snapshot["goodQty"], 2)
         self.assertEqual(snapshot["scrapQty"], 1)
-        self.assertAlmostEqual(snapshot["availability"], 40.0 / 60.0, places=4)
+        self.assertIsNone(snapshot["availability"])
         self.assertAlmostEqual(snapshot["performance"], 30.0 / 40.0, places=4)
         self.assertAlmostEqual(snapshot["quality"], 2.0 / 3.0, places=4)
-        self.assertAlmostEqual(snapshot["oee"], 1.0 / 3.0, places=4)
+        self.assertIsNone(snapshot["oee"])
 
     def test_off_order_completion_goes_to_inventory_and_is_consumed_first(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -505,10 +586,11 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
 
             state = manager.read_state()
             work_order = state["workOrders"]["ordersById"]["WO-RED-002"]
-            self.assertEqual(work_order["status"], "completed")
+            self.assertEqual(work_order["status"], "pending_approval")
             self.assertEqual(work_order["inventoryConsumedQty"], 1)
             self.assertEqual(work_order["productionQty"], 1)
             self.assertEqual(work_order["completedQty"], 2)
+            self.assertEqual(state["workOrders"]["activeOrderId"], "WO-RED-002")
 
     def test_rollback_active_work_order_returns_completed_boxes_to_inventory_and_reassigns_them(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -557,7 +639,7 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             reassigned_order = state["workOrders"]["ordersById"]["WO-ROLLBACK-B"]
             reassigned_snapshot = build_work_order_snapshot(state, reassigned_order, now=datetime(2026, 4, 2, 8, 4, 0, tzinfo=timezone.utc))
             self.assertEqual(start_result["inventory_used"], 2)
-            self.assertEqual(reassigned_order["status"], "completed")
+            self.assertEqual(reassigned_order["status"], "pending_approval")
             self.assertEqual(reassigned_order["inventoryConsumedQty"], 2)
             self.assertEqual(state["itemsById"]["600"]["work_order_id"], "WO-ROLLBACK-B")
             self.assertEqual(state["itemsById"]["601"]["work_order_id"], "WO-ROLLBACK-B")
@@ -685,6 +767,11 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
                 "2026-04-02T08:01:00+03:00",
             )
 
+            with self.assertRaisesRegex(ValueError, "ACTIVE_WORK_ORDER_EXISTS"):
+                manager.start_work_order("WO-BLUE-003", operator_code="OP-003", now=datetime(2026, 4, 2, 8, 1, 30, tzinfo=local_tz))
+
+            manager.accept_active_work_order(now=datetime(2026, 4, 2, 8, 2, 0, tzinfo=local_tz))
+
             with self.assertRaises(WorkOrderTransitionReasonRequired):
                 manager.start_work_order("WO-BLUE-003", operator_code="OP-003", now=datetime(2026, 4, 2, 8, 5, 0, tzinfo=local_tz))
 
@@ -756,11 +843,73 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
 
             state = manager.read_state()
             work_order = state["workOrders"]["ordersById"]["WO-MIX-001"]
-            self.assertEqual(work_order["status"], "completed")
+            self.assertEqual(work_order["status"], "pending_approval")
             self.assertEqual(work_order["completedQty"], 3)
             self.assertEqual(work_order["remainingQty"], 0)
             self.assertEqual(work_order["productionQty"], 3)
-            self.assertEqual(state["workOrders"]["activeOrderId"], "")
+            self.assertEqual(state["workOrders"]["activeOrderId"], "WO-MIX-001")
+
+    def test_quality_override_reopens_pending_work_order_until_operator_accepts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            local_tz = timezone(timedelta(hours=3))
+            manager.import_work_orders(
+                [
+                    {
+                        "order_id": "WO-RED-REOPEN",
+                        "stock_code": "BOX-RED",
+                        "stock_name": "Kirmizi Kutu",
+                        "qty": 1,
+                        "unit": "ADET",
+                        "product_color": "red",
+                        "cycle_time_sec": 10,
+                    }
+                ],
+                now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=local_tz),
+            )
+            manager.start_work_order("WO-RED-REOPEN", operator_code="OP-009", now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=local_tz))
+
+            manager.apply_mega_log(
+                "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=910|MEASURE_ID=91|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=4500|PENDING=1",
+                "2026-04-02T08:10:00+03:00",
+            )
+            manager.apply_mega_log(
+                "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=910|MEASURE_ID=91|TRIGGER=TIMER",
+                "2026-04-02T08:10:00+03:00",
+            )
+
+            state = manager.read_state()
+            self.assertEqual(state["workOrders"]["ordersById"]["WO-RED-REOPEN"]["status"], "pending_approval")
+
+            manager.apply_quality_override("910", "SCRAP", now=datetime(2026, 4, 2, 8, 12, 0, tzinfo=local_tz))
+
+            state = manager.read_state()
+            reopened_order = state["workOrders"]["ordersById"]["WO-RED-REOPEN"]
+            self.assertEqual(reopened_order["status"], "active")
+            self.assertEqual(reopened_order["completedQty"], 0)
+            self.assertEqual(reopened_order["remainingQty"], 1)
+            self.assertEqual(reopened_order["autoCompletedAt"], "")
+
+            manager.apply_mega_log(
+                "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=911|MEASURE_ID=92|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=4500|PENDING=1",
+                "2026-04-02T08:15:00+03:00",
+            )
+            manager.apply_mega_log(
+                "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=911|MEASURE_ID=92|TRIGGER=TIMER",
+                "2026-04-02T08:15:00+03:00",
+            )
+            manager.accept_active_work_order(now=datetime(2026, 4, 2, 8, 16, 0, tzinfo=local_tz))
+
+            state = manager.read_state()
+            closed_order = state["workOrders"]["ordersById"]["WO-RED-REOPEN"]
+            snapshot = build_work_order_snapshot(state, closed_order, now=datetime(2026, 4, 2, 8, 16, 0, tzinfo=local_tz))
+            self.assertEqual(closed_order["status"], "completed")
+            self.assertEqual(closed_order["autoCompletedAt"], "2026-04-02T08:15:00+03:00")
+            self.assertEqual(closed_order["completedAt"], "2026-04-02T08:16:00.000+03:00")
+            self.assertEqual(snapshot["elapsedMs"], 15 * 60 * 1000)
+            self.assertEqual(snapshot["goodQty"], 1)
+            self.assertEqual(snapshot["scrapQty"], 1)
+            self.assertEqual(snapshot["fulfilledQty"], 1)
 
 
 if __name__ == "__main__":

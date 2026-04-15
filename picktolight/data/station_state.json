@@ -5,15 +5,15 @@
   "phase": "active",
   "completed_counts": {
     "lego_vagon": 10,
-    "lego_vidali_vagon": 3
+    "lego_vidali_vagon": 4
   },
-  "last_event_at": "2026-03-31T15:59:17+03:00",
+  "last_event_at": "2026-04-15T14:52:29+03:00",
   "last_event_type": "cycle_reset",
   "last_button_source": "gui",
-  "last_operation_duration_ms": 2309,
-  "last_cycle_duration_ms": 72309,
-  "current_cycle_started_at": "2026-03-31T15:59:17+03:00",
-  "current_operation_started_at": "2026-03-31T15:59:17+03:00",
+  "last_operation_duration_ms": 2856,
+  "last_cycle_duration_ms": 1289733272,
+  "current_cycle_started_at": "2026-04-15T14:52:29+03:00",
+  "current_operation_started_at": "2026-04-15T14:52:29+03:00",
   "selected_operator_id": "OP001",
   "current_operation_index": 0,
   "undo_stack": []

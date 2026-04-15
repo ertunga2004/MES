@@ -294,6 +294,33 @@ def create_app() -> FastAPI:
             "order_id": str(order.get("orderId") or ""),
         }
 
+    @app.post("/api/modules/{module_id}/work-orders/accept-active")
+    async def accept_active_work_order(module_id: str) -> dict[str, Any]:
+        if module_id != config.module_id:
+            raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+
+        try:
+            result = oee_state_manager.accept_active_work_order()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+
+        store.refresh_oee_runtime_state(module_id, force=True)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        order = result.get("order") if isinstance(result.get("order"), dict) else {}
+        summary = str(result.get("summary") or "Is emri operator onayi ile kapatildi.")
+        store.append_system_log(
+            module_id,
+            f"SYSTEM|WORK_ORDER|ACCEPT|ORDER={order.get('orderId') or ''}",
+            topic="local/work-orders",
+        )
+        return {
+            "status": "accepted",
+            "summary": summary,
+            "order_id": str(order.get("orderId") or ""),
+        }
+
     @app.post("/api/modules/{module_id}/work-orders/rollback-active")
     async def rollback_active_work_order(module_id: str) -> dict[str, Any]:
         if module_id != config.module_id:

@@ -27,7 +27,8 @@ SHIFT_PRESETS: dict[str, dict[str, str]] = {
     "SHIFT-C": {"name": "C Vardiyasi", "start": "00:00:00", "end": "08:00:00"},
 }
 
-WORK_ORDER_STATUSES = {"queued", "active", "completed"}
+WORK_ORDER_STATUSES = {"queued", "active", "pending_approval", "completed"}
+WORK_ORDER_BLOCKING_STATUSES = {"active", "pending_approval"}
 
 
 def empty_color_counts() -> dict[str, int]:
@@ -662,6 +663,7 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         "status": status,
         "queuedAt": _text_or_default(entry.get("queuedAt") or current.get("queuedAt"), queued_at),
         "startedAt": _text_or_default(entry.get("startedAt") or current.get("startedAt")),
+        "autoCompletedAt": _text_or_default(entry.get("autoCompletedAt") or current.get("autoCompletedAt")),
         "completedAt": _text_or_default(entry.get("completedAt") or current.get("completedAt")),
         "startedBy": _text_or_default(entry.get("startedBy") or current.get("startedBy")),
         "startedByName": _text_or_default(entry.get("startedByName") or current.get("startedByName")),
@@ -742,10 +744,18 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
         normalized["inventoryConsumedQty"] = min(normalized["completedQty"], normalized["inventoryConsumedQty"])
         normalized["productionQty"] = min(normalized["quantity"], normalized["productionQty"])
         normalized["remainingQty"] = max(0, normalized["quantity"] - normalized["completedQty"])
+        if normalized["status"] == "pending_approval" and normalized["remainingQty"] > 0:
+            normalized["status"] = "active"
+            normalized["autoCompletedAt"] = ""
         if normalized["status"] == "completed" and not normalized["completedAt"]:
             normalized["completedAt"] = normalized["lastAllocationAt"] or normalized["startedAt"]
+        if normalized["status"] in {"pending_approval", "completed"} and not normalized["autoCompletedAt"]:
+            normalized["autoCompletedAt"] = normalized["lastAllocationAt"] or normalized["completedAt"] or normalized["startedAt"]
         if normalized["status"] == "active" and not normalized["startedAt"]:
             normalized["status"] = "queued"
+        if normalized["status"] == "queued":
+            normalized["autoCompletedAt"] = ""
+            normalized["completedAt"] = ""
         normalized_orders[order_id] = normalized
     base["workOrders"]["ordersById"] = normalized_orders
     raw_sequence = work_orders.get("orderSequence") if isinstance(work_orders.get("orderSequence"), list) else []
@@ -759,10 +769,10 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
             sequence.append(order_id)
     base["workOrders"]["orderSequence"] = sequence
     active_order_id = str(work_orders.get("activeOrderId") or "").strip()
-    if active_order_id not in normalized_orders or normalized_orders.get(active_order_id, {}).get("status") != "active":
+    if active_order_id not in normalized_orders or normalized_orders.get(active_order_id, {}).get("status") not in WORK_ORDER_BLOCKING_STATUSES:
         active_order_id = ""
         for order_id in sequence:
-            if normalized_orders.get(order_id, {}).get("status") == "active":
+            if normalized_orders.get(order_id, {}).get("status") in WORK_ORDER_BLOCKING_STATUSES:
                 active_order_id = order_id
                 break
     base["workOrders"]["activeOrderId"] = active_order_id
@@ -990,10 +1000,10 @@ def _persist_work_order_metrics(state: dict[str, Any], order: dict[str, Any], *,
     order["plannedDurationMs"] = snapshot["plannedDurationMs"]
     order["runtimeMs"] = snapshot["runtimeMs"]
     order["unplannedMs"] = snapshot["unplannedMs"]
-    order["availability"] = round(snapshot["availability"] * 100.0, 1)
+    order["availability"] = None
     order["performance"] = round(snapshot["performance"] * 100.0, 1)
     order["quality"] = round(snapshot["quality"] * 100.0, 1)
-    order["oee"] = round(snapshot["oee"] * 100.0, 1)
+    order["oee"] = None
     return snapshot
 
 
@@ -1132,36 +1142,53 @@ def _completed_items_for_work_order(state: dict[str, Any], order_id: str) -> lis
     return related_items
 
 
-def _complete_work_order_if_ready(state: dict[str, Any], order: dict[str, Any], *, now: datetime, completed_at: str) -> bool:
+def _mark_work_order_pending_approval_if_ready(state: dict[str, Any], order: dict[str, Any], *, now: datetime, completed_at: str) -> bool:
     _sync_work_order_row(order)
     if order.get("status") != "active":
         return False
     if max(0, round(_numeric(order.get("remainingQty")))) > 0:
         return False
     stamp = completed_at or _pseudo_iso_text(now)
-    order["status"] = "completed"
-    order["completedAt"] = stamp
+    order["status"] = "pending_approval"
+    order["autoCompletedAt"] = stamp
+    order["completedAt"] = ""
     work_orders = _work_orders_state(state)
-    if work_orders.get("activeOrderId") == order.get("orderId"):
-        work_orders["activeOrderId"] = ""
-    work_orders["lastCompletedOrderId"] = str(order.get("orderId") or "")
-    work_orders["lastCompletedAt"] = stamp
+    work_orders["activeOrderId"] = str(order.get("orderId") or "")
     metrics = _persist_work_order_metrics(state, order, now=now)
-    work_orders["completionLog"] = _prepend_capped(
-        work_orders["completionLog"],
+    work_orders["transitionLog"] = _prepend_capped(
+        work_orders["transitionLog"],
         _work_order_log_row(
             order,
-            event_type="completed",
+            event_type="auto_completed",
             stamp=stamp,
-            note=f"Is emri sistem tarafindan kapatildi. OEE={round(metrics['oee'] * 100.0, 1)}%",
+            note=(
+                "Is emri otomatik tamamlandi. Operator onayi bekleniyor. "
+                f"PERF={round(metrics['performance'] * 100.0, 1)}% | "
+                f"KALITE={round(metrics['quality'] * 100.0, 1)}% | "
+                f"Plansiz Durus={round(metrics['unplannedMs'] / 60000.0, 1)} dk"
+            ),
         ),
     )
     _set_summary(
         state,
-        f"{order.get('orderId') or 'Is emri'} kapatildi. {order.get('completedQty')}/{order.get('quantity')} tamamlandi.",
+        f"{order.get('orderId') or 'Is emri'} otomatik tamamlandi. Operator onayi bekleniyor.",
         now=now,
     )
     return True
+
+
+def _work_order_completion_counts_toward_fulfillment(classification: Any) -> bool:
+    return _normalize_classification(classification) == "GOOD"
+
+
+def _find_work_order_requirement_by_match(order: dict[str, Any] | None, match_key: str) -> dict[str, Any] | None:
+    normalized_match = str(match_key or "").strip().lower()
+    if not normalized_match or not isinstance(order, dict):
+        return None
+    for requirement in _work_order_requirements(order):
+        if _work_order_requirement_match_key(requirement).lower() == normalized_match:
+            return requirement
+    return None
 
 
 def _consume_inventory_for_order(state: dict[str, Any], order: dict[str, Any], *, now: datetime, reason: str = "inventory") -> int:
@@ -1208,7 +1235,7 @@ def _consume_inventory_for_order(state: dict[str, Any], order: dict[str, Any], *
         f"{order.get('orderId') or 'Is emri'} icin depodan {total_taken} adet kullanildi ({', '.join(notes)}).",
         now=now,
     )
-    _complete_work_order_if_ready(state, order, now=now, completed_at=str(order.get("lastAllocationAt") or _pseudo_iso_text(now)))
+    _mark_work_order_pending_approval_if_ready(state, order, now=now, completed_at=str(order.get("lastAllocationAt") or _pseudo_iso_text(now)))
     return total_taken
 
 
@@ -1239,7 +1266,7 @@ def _route_completed_item_to_work_orders(
         active_order["lastAllocationAt"] = received_at
         _sync_work_order_row(active_order)
         _assign_item_to_work_order(item, active_order, matching_requirement, action="work_order")
-        if not _complete_work_order_if_ready(state, active_order, now=now, completed_at=received_at):
+        if not _mark_work_order_pending_approval_if_ready(state, active_order, now=now, completed_at=received_at):
             _set_summary(
                 state,
                 f"#{item_id} aktif {active_order.get('orderId')} is emrine {item_color} olarak yazildi. Kalan {active_order.get('remainingQty')} adet.",
@@ -1507,6 +1534,7 @@ def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -
         performance = 0.0
         target_text = f"{target_qty} adet hedef"
 
+    performance = max(0.0, min(1.0, performance))
     oee = availability * performance * quality
     loss = (((scrap + rework) / total) * 100.0) if total > 0 else 0.0
     remaining_ms = max(0, int((plan_end - stamp).total_seconds() * 1000)) if shift_active and plan_end is not None else 0
@@ -1632,18 +1660,21 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
         ideal_cycle_sec = 10.0
     planned_duration_ms = int(target_qty * ideal_cycle_sec * 1000.0)
     started_at = _parse_iso(str(order.get("startedAt") or ""))
+    auto_completed_at = _parse_iso(str(order.get("autoCompletedAt") or ""))
     completed_at = _parse_iso(str(order.get("completedAt") or ""))
-    end_at = completed_at or stamp
+    status = str(order.get("status") or "")
+    end_at = (
+        auto_completed_at
+        if status in {"pending_approval", "completed"} and auto_completed_at is not None
+        else completed_at or stamp
+    )
     elapsed_ms = int((end_at - started_at).total_seconds() * 1000) if started_at is not None and end_at >= started_at else 0
     unplanned_ms = _work_order_fault_ms(state, start_at=started_at, end_at=end_at) if started_at is not None and elapsed_ms > 0 else 0
     runtime_ms = max(0, elapsed_ms - unplanned_ms)
-    availability = (runtime_ms / planned_duration_ms) if planned_duration_ms > 0 else 0.0
-    availability = max(0.0, min(1.0, availability))
     performance = ((production_qty * ideal_cycle_sec * 1000.0) / runtime_ms) if runtime_ms > 0 else 0.0
     performance = max(0.0, min(1.0, performance))
     quality = (good / total) if total > 0 else 1.0
     quality = max(0.0, min(1.0, quality))
-    oee = availability * performance * quality
     return {
         "orderId": order_id,
         "targetQty": target_qty,
@@ -1659,10 +1690,10 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
         "elapsedMs": elapsed_ms,
         "runtimeMs": runtime_ms,
         "unplannedMs": unplanned_ms,
-        "availability": availability,
+        "availability": None,
         "performance": performance,
         "quality": quality,
-        "oee": oee,
+        "oee": None,
     }
 
 
@@ -2218,6 +2249,7 @@ class OeeRuntimeStateManager:
 
         order["status"] = "active"
         order["startedAt"] = start_text
+        order["autoCompletedAt"] = ""
         order["completedAt"] = ""
         order["startedBy"] = str(operator_code or "").strip() or "OPERATOR"
         order["startedByName"] = str(operator_name or "").strip()
@@ -2234,10 +2266,10 @@ class OeeRuntimeStateManager:
                 note=cleaned_reason or (f"Depodan {inventory_used} adet dusuldu." if inventory_used else "Operator baslatti."),
             ),
         )
-        if str(order.get("status") or "") == "completed":
+        if str(order.get("status") or "") == "pending_approval":
             _set_summary(
                 state,
-                f"{normalized_order_id} baslatildi ve depodaki stok ile kapatildi.",
+                f"{normalized_order_id} baslatildi ve otomatik tamamlandi. Operator onayi bekleniyor.",
                 now=start_dt,
             )
         else:
@@ -2255,6 +2287,55 @@ class OeeRuntimeStateManager:
         }
 
     @_state_locked
+    def accept_active_work_order(self, *, now: datetime | None = None) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        accepted_text = _pseudo_iso_text(stamp)
+        state = self.read_state()
+        work_orders = _work_orders_state(state)
+        orders = _work_order_orders(state)
+        active_order_id = str(work_orders.get("activeOrderId") or "").strip()
+        order = orders.get(active_order_id)
+        if not active_order_id or not isinstance(order, dict) or str(order.get("status") or "") != "pending_approval":
+            raise ValueError("WORK_ORDER_PENDING_APPROVAL_NOT_FOUND")
+
+        order["status"] = "completed"
+        order["completedAt"] = accepted_text
+        if not str(order.get("autoCompletedAt") or "").strip():
+            order["autoCompletedAt"] = str(order.get("lastAllocationAt") or accepted_text)
+        work_orders["activeOrderId"] = ""
+        work_orders["lastCompletedOrderId"] = active_order_id
+        work_orders["lastCompletedAt"] = accepted_text
+        metrics = _persist_work_order_metrics(state, order, now=stamp)
+        work_orders["completionLog"] = _prepend_capped(
+            work_orders["completionLog"],
+            _work_order_log_row(
+                order,
+                event_type="completed",
+                stamp=accepted_text,
+                note=(
+                    "Operator onayi ile kapatildi. "
+                    f"Oto Tamam={order.get('autoCompletedAt') or '-'} | "
+                    f"PERF={round(metrics['performance'] * 100.0, 1)}% | "
+                    f"KALITE={round(metrics['quality'] * 100.0, 1)}% | "
+                    f"Plansiz Durus={round(metrics['unplannedMs'] / 60000.0, 1)} dk"
+                ),
+            ),
+        )
+        _set_summary(
+            state,
+            f"{active_order_id} operator onayi ile kapatildi.",
+            now=stamp,
+        )
+        self.write_state(state)
+        return {
+            "state": state,
+            "summary": state["lastEventSummary"],
+            "order": order,
+        }
+
+    @_state_locked
     def rollback_active_work_order(self, *, now: datetime | None = None) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
         if stamp.tzinfo is None:
@@ -2265,7 +2346,7 @@ class OeeRuntimeStateManager:
         orders = _work_order_orders(state)
         active_order_id = str(work_orders.get("activeOrderId") or "").strip()
         order = orders.get(active_order_id)
-        if not active_order_id or not isinstance(order, dict) or str(order.get("status") or "") != "active":
+        if not active_order_id or not isinstance(order, dict) or str(order.get("status") or "") not in WORK_ORDER_BLOCKING_STATUSES:
             raise ValueError("ACTIVE_WORK_ORDER_NOT_FOUND")
 
         _sync_work_order_row(order)
@@ -2345,6 +2426,7 @@ class OeeRuntimeStateManager:
 
         order["status"] = "queued"
         order["startedAt"] = ""
+        order["autoCompletedAt"] = ""
         order["completedAt"] = ""
         order["startedBy"] = ""
         order["startedByName"] = ""
@@ -2697,6 +2779,8 @@ class OeeRuntimeStateManager:
     @_state_locked
     def apply_quality_override(self, item_id: str, classification: Any, *, now: datetime | None = None) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
         state = self.read_state()
         normalized_item_id = str(item_id or "").strip()
         if not normalized_item_id:
@@ -2726,11 +2810,55 @@ class OeeRuntimeStateManager:
         item["override_applied_at"] = item["updated_at"]
         item["override_source"] = "MANUAL"
         _recompute_item_counts(state)
+        work_order_note = ""
         work_order_id = str(item.get("work_order_id") or "").strip()
         if work_order_id:
             order = _work_order_orders(state).get(work_order_id)
             if isinstance(order, dict):
-                _persist_work_order_metrics(state, order, now=stamp)
+                blocking_status = str(order.get("status") or "") in WORK_ORDER_BLOCKING_STATUSES
+                previous_counts = _work_order_completion_counts_toward_fulfillment(previous_classification)
+                next_counts = _work_order_completion_counts_toward_fulfillment(next_classification)
+                fulfillment_delta = int(next_counts) - int(previous_counts)
+                if blocking_status and fulfillment_delta != 0:
+                    requirement = _find_work_order_requirement_by_match(
+                        order,
+                        str(item.get("work_order_match_key") or item.get("inventory_match_key") or ""),
+                    )
+                    inventory_delta = fulfillment_delta if str(item.get("inventoryAction") or "") == "consumed_for_work_order" else 0
+                    if isinstance(requirement, dict):
+                        requirement["completedQty"] = max(0, round(_numeric(requirement.get("completedQty"))) + fulfillment_delta)
+                        if inventory_delta:
+                            requirement["inventoryConsumedQty"] = max(0, round(_numeric(requirement.get("inventoryConsumedQty"))) + inventory_delta)
+                        _sync_work_order_requirement(requirement)
+                    else:
+                        order["completedQty"] = max(0, round(_numeric(order.get("completedQty"))) + fulfillment_delta)
+                        if inventory_delta:
+                            order["inventoryConsumedQty"] = max(0, round(_numeric(order.get("inventoryConsumedQty"))) + inventory_delta)
+                    _sync_work_order_row(order)
+                    if fulfillment_delta < 0 and str(order.get("status") or "") == "pending_approval":
+                        order["status"] = "active"
+                        order["autoCompletedAt"] = ""
+                        order["completedAt"] = ""
+                        _work_orders_state(state)["activeOrderId"] = work_order_id
+                        inventory_used = _consume_inventory_for_order(state, order, now=stamp, reason="quality_override_recovery")
+                        if str(order.get("status") or "") == "pending_approval":
+                            work_order_note = f" {work_order_id} yeniden otomatik tamamlandi ve operator onayi bekliyor."
+                            if inventory_used > 0:
+                                work_order_note = f" {work_order_id} kalite override sonrasi depodan {inventory_used} adet ile yeniden otomatik tamamlandi."
+                        else:
+                            work_order_note = f" {work_order_id} kalite override nedeniyle yeniden aktif oldu."
+                            if inventory_used > 0:
+                                work_order_note = f" {work_order_id} kalite override sonrasi depodan {inventory_used} adet kullanildi."
+                    elif fulfillment_delta > 0 and str(order.get("status") or "") == "active":
+                        auto_completed_at = str(item.get("completed_at") or item["updated_at"] or _pseudo_iso_text(stamp))
+                        if _mark_work_order_pending_approval_if_ready(state, order, now=stamp, completed_at=auto_completed_at):
+                            work_order_note = f" {work_order_id} yeniden otomatik tamamlandi ve operator onayi bekliyor."
+                        else:
+                            _persist_work_order_metrics(state, order, now=stamp)
+                    else:
+                        _persist_work_order_metrics(state, order, now=stamp)
+                else:
+                    _persist_work_order_metrics(state, order, now=stamp)
         override_row = {
             "item_id": normalized_item_id,
             "measure_id": str(item.get("measure_id") or ""),
@@ -2742,7 +2870,11 @@ class OeeRuntimeStateManager:
         history = state["qualityOverrideLog"] if isinstance(state.get("qualityOverrideLog"), list) else []
         history.insert(0, override_row)
         state["qualityOverrideLog"] = history[:20]
-        _set_summary(state, f"#{normalized_item_id} kalite karari {previous_classification} -> {next_classification} olarak guncellendi.", now=stamp)
+        _set_summary(
+            state,
+            f"#{normalized_item_id} kalite karari {previous_classification} -> {next_classification} olarak guncellendi.{work_order_note}",
+            now=stamp,
+        )
         self.write_state(state)
         return {
             "state": state,

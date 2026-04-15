@@ -308,6 +308,67 @@ class WorkbookProjectorTests(unittest.TestCase):
         self.assertEqual(second_rows["4_Uretim_Tamamlanan"][0]["flow_ms"], 5000)
         self.assertEqual(second_rows["4_Uretim_Tamamlanan"][0]["cycle_ms"], 6000)
 
+    def test_work_order_sheet_leaves_unused_availability_and_oee_blank(self) -> None:
+        try:
+            from openpyxl import Workbook
+        except ModuleNotFoundError:
+            self.skipTest("openpyxl is not installed")
+        from mes_web.excel_runtime import ExcelRuntimeSink, INVENTORY_COLUMNS, WORK_ORDER_COLUMNS
+
+        workbook = Workbook()
+        work_order_sheet = workbook.active
+        work_order_sheet.title = "8_Is_Emirleri"
+        inventory_sheet = workbook.create_sheet("9_Depo_Stok")
+        sink = ExcelRuntimeSink.__new__(ExcelRuntimeSink)
+        sink._ensure_sheet_layout(work_order_sheet, WORK_ORDER_COLUMNS)
+        sink._ensure_sheet_layout(inventory_sheet, INVENTORY_COLUMNS)
+
+        sink._sync_work_order_sheets(
+            workbook,
+            {
+                "itemsById": {
+                    "1": {"work_order_id": "WO-1", "completed_at": "2026-04-02T08:00:30+03:00", "classification": "GOOD"},
+                    "2": {"work_order_id": "WO-1", "completed_at": "2026-04-02T08:00:55+03:00", "classification": "GOOD"},
+                },
+                "faultHistory": [
+                    {"startedAt": "2026-04-02T08:00:10+03:00", "endedAt": "2026-04-02T08:00:20+03:00"},
+                ],
+                "workOrders": {
+                    "ordersById": {
+                        "WO-1": {
+                            "orderId": "WO-1",
+                            "erpType": "Is Emirleri",
+                            "stockCode": "BOX-RED",
+                            "stockName": "Kirmizi Kutu",
+                            "productColor": "red",
+                            "quantity": 2,
+                            "completedQty": 2,
+                            "productionQty": 2,
+                            "inventoryConsumedQty": 0,
+                            "startedAt": "2026-04-02T08:00:00+03:00",
+                            "completedAt": "2026-04-02T08:01:00+03:00",
+                            "status": "completed",
+                            "cycleTimeSec": 10,
+                            "startedBy": "OP-1",
+                            "startedByName": "Ayse",
+                        }
+                    },
+                    "orderSequence": ["WO-1"],
+                    "source": {"file": "orders.json"},
+                    "inventoryByProduct": {},
+                },
+            },
+            "2026-04-02T08:01:00+03:00",
+        )
+
+        headers = [work_order_sheet.cell(1, idx).value for idx in range(1, work_order_sheet.max_column + 1)]
+        self.assertEqual(work_order_sheet.cell(2, headers.index("order_id") + 1).value, "WO-1")
+        self.assertEqual(work_order_sheet.cell(2, headers.index("unplanned_downtime_sec") + 1).value, 10.0)
+        self.assertEqual(work_order_sheet.cell(2, headers.index("performance_pct") + 1).value, 40.0)
+        self.assertEqual(work_order_sheet.cell(2, headers.index("quality_pct") + 1).value, 100.0)
+        self.assertIsNone(work_order_sheet.cell(2, headers.index("availability_pct") + 1).value)
+        self.assertIsNone(work_order_sheet.cell(2, headers.index("oee_pct") + 1).value)
+
 
 if __name__ == "__main__":
     unittest.main()

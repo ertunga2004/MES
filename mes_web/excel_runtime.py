@@ -149,6 +149,15 @@ def _safe_int(value: Any) -> int | str:
         return ""
 
 
+def _optional_pct(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return round(float(value) * 100.0, 1)
+    except (TypeError, ValueError):
+        return None
+
+
 def _measurement_error_info(final_color: str, confidence: Any) -> tuple[int, str]:
     if final_color in {"empty", "uncertain"}:
         return 1, "final_color_invalid"
@@ -935,10 +944,10 @@ class ExcelRuntimeSink:
                 "planned_duration_sec": round(float(snapshot["plannedDurationMs"]) / 1000.0, 1),
                 "runtime_sec": round(float(snapshot["runtimeMs"]) / 1000.0, 1),
                 "unplanned_downtime_sec": round(float(snapshot["unplannedMs"]) / 1000.0, 1),
-                "availability_pct": round(float(snapshot["availability"]) * 100.0, 1),
-                "performance_pct": round(float(snapshot["performance"]) * 100.0, 1),
-                "quality_pct": round(float(snapshot["quality"]) * 100.0, 1),
-                "oee_pct": round(float(snapshot["oee"]) * 100.0, 1),
+                "availability_pct": _optional_pct(snapshot.get("availability")),
+                "performance_pct": _optional_pct(snapshot.get("performance")),
+                "quality_pct": _optional_pct(snapshot.get("quality")),
+                "oee_pct": _optional_pct(snapshot.get("oee")),
                 "started_by": str(order.get("startedBy") or ""),
                 "started_by_name": str(order.get("startedByName") or ""),
                 "transition_reason": str(order.get("transitionReason") or ""),
@@ -1036,7 +1045,7 @@ class ExcelRuntimeSink:
 
     def _write_sheet_row(self, sheet: Any, target_row: int, headers: list[str], row: dict[str, Any]) -> None:
         for col_index, header in enumerate(headers, start=1):
-            sheet.cell(target_row, col_index, _excel_cell_value(row.get(header, "")))
+            sheet.cell(target_row, col_index).value = _excel_cell_value(row.get(header, ""))
 
     def _ensure_sheet_layout(self, sheet: Any, headers: list[str]) -> None:
         existing_headers = [sheet.cell(1, idx).value for idx in range(1, max(sheet.max_column, 1) + 1)]

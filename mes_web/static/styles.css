@@ -1145,6 +1145,37 @@ body {
   grid-template-columns: repeat(var(--trend-axis-columns, 1), minmax(0, 1fr));
 }
 
+.oee-trend-log {
+  display: grid;
+  gap: 10px;
+}
+
+.oee-trend-log-row {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(4, 11, 18, 0.62);
+}
+
+.oee-trend-log-head,
+.oee-trend-log-metrics {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.oee-trend-log-head span,
+.oee-trend-log-metrics span {
+  color: var(--text-soft);
+}
+
+.oee-trend-log-metrics strong {
+  color: var(--text-main);
+}
+
 .oee-trend-tick {
   padding: 10px 8px;
   text-align: center;
@@ -1289,7 +1320,9 @@ body {
 
   .oee-trend-band,
   .oee-trend-card-head,
-  .oee-trend-card-foot {
+  .oee-trend-card-foot,
+  .oee-trend-log-head,
+  .oee-trend-log-metrics {
     display: grid;
   }
 

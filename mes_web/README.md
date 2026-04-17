@@ -82,8 +82,11 @@ Doldurulan sheet'ler:
 - `1_Olay_Logu`
 - `2_Olcumler`
 - `4_Uretim_Tamamlanan`
+- `5_OEE_Anliklari`
 - `6_Vision`
-- `7_Raw_Logs`
+- `99_Raw_Logs` (`hidden`)
+- `7_Is_Emirleri`
+- `8_Depo_Stok`
 
 Template dosya korunur. Runtime, template'in uzerine yazmaz; gunluk kopya uzerinde calisir.
 

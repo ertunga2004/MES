@@ -85,7 +85,14 @@ def create_app() -> FastAPI:
 
         if is_local_only_command(kind, value):
             stamp = utc_now_text()
+            runtime_result: dict[str, Any] | None = None
+            try:
+                runtime_result = oee_state_manager.reset_runtime_counts()
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
             store.reset_counts(module_id, received_at=stamp)
+            store.refresh_oee_runtime_state(module_id, force=True)
+            sync_work_order_runtime(runtime_result.get("state") if isinstance(runtime_result, dict) and isinstance(runtime_result.get("state"), dict) else None)
             runtime_service.excel_sink.record_local_counts_reset(stamp)
             return {"status": "accepted", "kind": kind, "value": value, "dispatch": "local_only"}
 

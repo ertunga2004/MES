@@ -175,6 +175,7 @@ def parse_mega_event_from_log(line: str) -> dict[str, Any] | None:
         return None
     parts, fields = parse_key_value_line(line, min_parts=2)
     module_name = parts[1] if len(parts) > 1 else ""
+    trigger_value = str(fields.get("TRIGGER") or "").strip().rstrip("=")
     base = {
         "source": "mega",
         "module_name": module_name,
@@ -186,7 +187,7 @@ def parse_mega_event_from_log(line: str) -> dict[str, Any] | None:
         "travel_ms": parse_int(fields.get("TRAVEL_MS")),
         "queue_depth": parse_int(fields.get("PENDING") or fields.get("QUEUE")),
         "mega_state": normalize_token(fields.get("STATE")),
-        "trigger_source": normalize_token(fields.get("TRIGGER")),
+        "trigger_source": normalize_token(trigger_value),
         "reject_reason": normalize_token(fields.get("REASON")),
         "raw": fields,
         "event_type": "",
@@ -210,6 +211,12 @@ def parse_mega_event_from_log(line: str) -> dict[str, Any] | None:
         return base
     if module_name == "AUTO" and fields.get("EVENT") == "PICKPLACE_RETURN_DONE":
         base["event_type"] = "pickplace_return_done"
+        return base
+    if module_name == "ROBOT" and fields.get("PICKPLACE") == "START":
+        base["event_type"] = "pickplace_started"
+        return base
+    if module_name == "ROBOT" and fields.get("PICKPLACE") == "DROP_REACHED":
+        base["event_type"] = "pick_drop_reached"
         return base
     if module_name == "ROBOT" and fields.get("EVENT") == "RELEASED":
         base["event_type"] = "pick_released"

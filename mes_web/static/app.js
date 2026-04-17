@@ -245,6 +245,28 @@ function formatTrendIndex(index, total) {
   return offset <= 0 ? "N" : `N-${offset}`;
 }
 
+function formatTrendReason(reason, summary = "") {
+  const key = String(reason || "").trim().toLowerCase();
+  const labels = {
+    periodic_30s: "30 sn periyodik snapshot",
+    shift_start: "Vardiya baslatildi",
+    shift_stop: "Vardiya kapatildi",
+    pick_released: "Urun tamamlandi",
+    pickplace_done: "Birakma tamamlandi",
+    quality_override: "Kalite override",
+    fault_started: "Fault basladi",
+    fault_cleared: "Fault kapandi",
+    tablet_snapshot: "Tablet OEE snapshot",
+    "control:set_performance_mode": "Performans modu degisti",
+    "control:set_target_qty": "Hedef degisti",
+    "control:set_ideal_cycle_sec": "Ideal cevrim degisti",
+    "control:set_planned_stop_min": "Planli durus degisti",
+  };
+  if (labels[key]) return labels[key];
+  if (summary) return summary;
+  return formatToken(key);
+}
+
 function formatTrendDelta(current, previous) {
   if (current === null || previous === null) {
     return { text: "Ilk veri", tone: "flat" };
@@ -411,6 +433,27 @@ function renderOeeTrend(trendRows) {
             <article class="oee-trend-tick">
               <strong>${formatTrendIndex(index, rows.length)}</strong>
               <span>${formatTrendTime(row.time)}</span>
+            </article>
+          `
+        )
+        .join("")}
+    </div>
+
+    <div class="oee-trend-log">
+      ${rows
+        .map(
+          (row) => `
+            <article class="oee-trend-log-row">
+              <div class="oee-trend-log-head">
+                <strong>${formatTrendTime(row.time)}</strong>
+                <span>${formatTrendReason(row.reason, row.summary)}</span>
+              </div>
+              <div class="oee-trend-log-metrics">
+                <span>OEE <strong>${formatPercent(row.oee)}</strong></span>
+                <span>Kull <strong>${formatPercent(row.availability)}</strong></span>
+                <span>Perf <strong>${formatPercent(row.performance)}</strong></span>
+                <span>Kalite <strong>${formatPercent(row.quality)}</strong></span>
+              </div>
             </article>
           `
         )

@@ -69,6 +69,85 @@ def _ratio_to_pct(value: Any) -> float:
     return round(max(0.0, min(1.0, numeric)) * 100.0, 1)
 
 
+def _project_recent_item(item_key: str, item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "item_id": str(item.get("item_id") or item_key),
+        "measure_id": str(item.get("measure_id") or ""),
+        "color": str(item.get("color") or ""),
+        "sensor_color": str(item.get("sensor_color") or ""),
+        "vision_color": str(item.get("vision_color") or ""),
+        "final_color": str(item.get("final_color") or item.get("color") or ""),
+        "classification": str(item.get("classification") or "GOOD"),
+        "completed_at": item.get("completed_at"),
+        "updated_at": item.get("updated_at"),
+        "decision_source": str(item.get("decision_source") or ""),
+        "finalization_reason": str(item.get("finalization_reason") or ""),
+        "correlation_status": str(item.get("correlation_status") or ""),
+        "pick_trigger_source": str(item.get("pick_trigger_source") or ""),
+        "review_required": bool(item.get("review_required")),
+    }
+
+
+def _recent_completed_items(
+    items: dict[str, Any],
+    recent_item_ids: list[Any],
+    *,
+    limit: int = 10,
+    min_completed_at: datetime | None = None,
+    require_counted: bool = False,
+) -> list[dict[str, Any]]:
+    projected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def eligible(item: dict[str, Any]) -> bool:
+        if require_counted and not bool(item.get("count_in_oee")):
+            return False
+        if min_completed_at is not None:
+            completed_at = parse_iso_text(str(item.get("completed_at") or ""))
+            if completed_at is None or completed_at < min_completed_at:
+                return False
+        return True
+
+    def append_item(item_key: Any) -> None:
+        normalized_key = str(item_key or "").strip()
+        if not normalized_key or normalized_key in seen:
+            return
+        item = items.get(normalized_key)
+        if not isinstance(item, dict) or not item.get("completed_at") or not eligible(item):
+            return
+        projected.append(_project_recent_item(normalized_key, item))
+        seen.add(normalized_key)
+
+    for item_key in recent_item_ids:
+        append_item(item_key)
+        if len(projected) >= limit:
+            return projected
+
+    if projected:
+        return projected
+
+    def sort_key(entry: tuple[str, dict[str, Any]]) -> tuple[str, str, str]:
+        item_key, item = entry
+        return (
+            str(item.get("completed_at") or ""),
+            str(item.get("updated_at") or ""),
+            str(item.get("item_id") or item_key),
+        )
+
+    ranked_items = sorted(
+        (
+            (item_key, item)
+            for item_key, item in items.items()
+            if isinstance(item, dict) and item.get("completed_at") and eligible(item)
+        ),
+        key=sort_key,
+        reverse=True,
+    )
+    for item_key, _item in ranked_items[:limit]:
+        append_item(item_key)
+    return projected
+
+
 WORK_ORDER_ACTIVE_STATUSES = {"active", "pending_approval"}
 
 
@@ -416,6 +495,8 @@ class DashboardStore:
         oee["last_event_summary"] = "Tablet OEE snapshot alindi."
         trend_row = {
             "time": received_at,
+            "reason": "tablet_snapshot",
+            "summary": "Tablet OEE snapshot alindi.",
             "oee": parsed["oee"],
             "availability": parsed["availability"],
             "performance": parsed["performance"],
@@ -528,6 +609,8 @@ class DashboardStore:
                 trend.append(
                     {
                         "time": row.get("time"),
+                        "reason": str(row.get("reason") or ""),
+                        "summary": str(row.get("summary") or ""),
                         "oee": _clamp_pct(row.get("oee")),
                         "availability": _clamp_pct(row.get("availability")),
                         "performance": _clamp_pct(row.get("performance")),
@@ -538,37 +621,26 @@ class DashboardStore:
             oee["trend"] = trend
             items = payload.get("itemsById") if isinstance(payload.get("itemsById"), dict) else {}
             recent_item_ids = payload.get("recentItemIds") if isinstance(payload.get("recentItemIds"), list) else []
-            recent_items: list[dict[str, Any]] = []
-            for item_key in recent_item_ids:
-                item = items.get(item_key)
-                if not isinstance(item, dict) or not item.get("completed_at"):
-                    continue
-                recent_items.append(
-                    {
-                        "item_id": str(item.get("item_id") or item_key),
-                        "measure_id": str(item.get("measure_id") or ""),
-                        "color": str(item.get("color") or ""),
-                        "sensor_color": str(item.get("sensor_color") or ""),
-                        "vision_color": str(item.get("vision_color") or ""),
-                        "final_color": str(item.get("final_color") or item.get("color") or ""),
-                        "classification": str(item.get("classification") or "GOOD"),
-                        "completed_at": item.get("completed_at"),
-                        "updated_at": item.get("updated_at"),
-                        "decision_source": str(item.get("decision_source") or ""),
-                        "finalization_reason": str(item.get("finalization_reason") or ""),
-                        "correlation_status": str(item.get("correlation_status") or ""),
-                        "pick_trigger_source": str(item.get("pick_trigger_source") or ""),
-                        "review_required": bool(item.get("review_required")),
-                    }
-                )
+            shift_started_at = parse_iso_text(str(shift.get("startedAt") or "")) if bool(shift.get("active")) else None
+            quality_reset_at = parse_iso_text(str(payload.get("qualityOverrideResetAt") or ""))
+            min_completed_at = shift_started_at
+            if quality_reset_at is not None and (min_completed_at is None or quality_reset_at > min_completed_at):
+                min_completed_at = quality_reset_at
+            recent_items = _recent_completed_items(
+                items,
+                recent_item_ids,
+                min_completed_at=min_completed_at,
+                require_counted=bool(shift_started_at),
+            )
             oee["recent_items"] = recent_items
             oee["quality_override_log"] = copy.deepcopy((payload.get("qualityOverrideLog") or [])[:10])
             work_orders_payload = payload.get("workOrders") if isinstance(payload.get("workOrders"), dict) else {}
             raw_work_orders = work_orders_payload.get("ordersById") if isinstance(work_orders_payload.get("ordersById"), dict) else {}
             raw_sequence = work_orders_payload.get("orderSequence") if isinstance(work_orders_payload.get("orderSequence"), list) else []
+            work_order_snapshot_time = parse_iso_text(str(payload.get("lastUpdatedAt") or payload.get("lastSnapshotLoggedAt") or ""))
 
             def project_work_order(order_id: str, order: dict[str, Any]) -> dict[str, Any]:
-                metrics = build_work_order_snapshot(payload, order, now=datetime.now().astimezone())
+                metrics = build_work_order_snapshot(payload, order, now=work_order_snapshot_time)
                 status = str(order.get("status") or "queued")
                 quantity = max(0, _safe_int(order.get("quantity")))
                 completed_qty = max(0, _safe_int(order.get("completedQty")))
@@ -647,10 +719,10 @@ class DashboardStore:
                     "planned_duration_min": round(float(metrics["plannedDurationMs"]) / 60000.0, 1),
                     "runtime_min": round(float(metrics["runtimeMs"]) / 60000.0, 1),
                     "unplanned_stop_min": round(float(metrics["unplannedMs"]) / 60000.0, 1),
-                    "availability": None,
+                    "availability": _ratio_to_pct(metrics["availability"]),
                     "performance": _ratio_to_pct(metrics["performance"]),
                     "quality": _ratio_to_pct(metrics["quality"]),
-                    "oee": None,
+                    "oee": _ratio_to_pct(metrics["oee"]),
                 }
 
             projected_by_id: dict[str, dict[str, Any]] = {}

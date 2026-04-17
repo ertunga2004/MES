@@ -127,8 +127,11 @@ class RuntimeService:
     async def _watchdog_loop(self) -> None:
         while True:
             await asyncio.sleep(1)
-            tick_changed = self.oee_manager.tick(now=datetime.now().astimezone())
+            tick_now = datetime.now().astimezone()
+            tick_changed = self.oee_manager.tick(now=tick_now)
             self.store.refresh_oee_runtime_state(self.config.module_id, force=tick_changed)
+            if tick_changed:
+                self.excel_sink.record_work_order_state(self.oee_manager.read_state(), utc_now_text(tick_now))
             fingerprint = self.store.connection_fingerprint(
                 self.config.module_id,
                 now=datetime.now(timezone.utc),

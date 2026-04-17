@@ -29,6 +29,8 @@ SHIFT_PRESETS: dict[str, dict[str, str]] = {
 
 WORK_ORDER_STATUSES = {"queued", "active", "pending_approval", "completed"}
 WORK_ORDER_BLOCKING_STATUSES = {"active", "pending_approval"}
+OEE_TREND_INTERVAL_SEC = 30
+OEE_TREND_HISTORY_LIMIT = 120
 
 
 def empty_color_counts() -> dict[str, int]:
@@ -123,6 +125,7 @@ def default_runtime_state() -> dict[str, Any]:
         "unplannedDowntimeMs": 0,
         "trend": [],
         "qualityOverrideLog": [],
+        "qualityOverrideResetAt": "",
         "earlyPickRejectLog": [],
         "vision": {
             "healthState": "offline",
@@ -179,8 +182,14 @@ def _parse_clock(value: str) -> tuple[int, int, int]:
     return hour, minute, second
 
 
+def _local_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.astimezone()
+
+
 def _pseudo_iso_text(value: datetime) -> str:
-    base = value if value.tzinfo is not None else value.astimezone()
+    base = _local_datetime(value) or datetime.now().astimezone()
     return base.astimezone().isoformat(timespec="milliseconds")
 
 
@@ -679,6 +688,129 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
     return order
 
 
+def _completed_item_match_key(item: dict[str, Any], item_key: str = "") -> str:
+    return _normalize_order_color(
+        item.get("final_color"),
+        item.get("color"),
+        item.get("sensor_color"),
+        item.get("product_code"),
+        item.get("stock_code"),
+        item.get("stock_name"),
+    )
+
+
+def _inventory_backfill_disabled(item: dict[str, Any]) -> bool:
+    return bool(item.get("inventory_backfill_disabled"))
+
+
+def _backfill_completed_item_inventory(state: dict[str, Any]) -> None:
+    items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
+    work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else default_work_order_state()
+    inventory = work_orders.get("inventoryByProduct") if isinstance(work_orders.get("inventoryByProduct"), dict) else {}
+    work_orders["inventoryByProduct"] = inventory
+    state["workOrders"] = work_orders
+
+    for item_key, item in items.items():
+        if not isinstance(item, dict) or not item.get("completed_at"):
+            continue
+        if str(item.get("work_order_id") or "").strip():
+            continue
+        if _inventory_backfill_disabled(item):
+            continue
+
+        item_id = str(item.get("item_id") or item_key).strip()
+        if not item_id:
+            continue
+
+        match_key = str(item.get("inventory_match_key") or "").strip() or _completed_item_match_key(item, item_key)
+        if not match_key:
+            continue
+
+        color = _normalize_order_color(item.get("final_color"), item.get("color"), item.get("sensor_color"), match_key)
+        product_code = str(item.get("product_code") or item.get("stock_code") or "").strip() or match_key.upper()
+        stock_code = str(item.get("stock_code") or item.get("product_code") or "").strip() or product_code or match_key.upper()
+        stock_name = str(item.get("stock_name") or "").strip() or (color or match_key).upper()
+        entry = _ensure_inventory_entry(
+            inventory,
+            match_key,
+            product_code=product_code,
+            stock_code=stock_code,
+            stock_name=stock_name,
+            color=color,
+        )
+        item_ids = _inventory_item_ids(entry)
+        if item_id not in item_ids:
+            item_ids.append(item_id)
+            entry["itemIds"] = item_ids
+        entry["quantity"] = max(max(0, round(_numeric(entry.get("quantity")))), len(item_ids))
+        entry["lastUpdatedAt"] = str(item.get("updated_at") or item.get("completed_at") or entry.get("lastUpdatedAt") or "")
+        entry["lastSource"] = str(entry.get("lastSource") or item.get("inventoryAction") or "legacy_inventory_backfill")
+
+        item["inventory_match_key"] = match_key
+        if not str(item.get("inventoryAction") or "").strip():
+            item["inventoryAction"] = "legacy_inventory_backfill"
+        item["inventory_backfill_disabled"] = False
+        item["work_order_match_key"] = str(item.get("work_order_match_key") or "")
+        item["work_order_id"] = str(item.get("work_order_id") or "")
+
+
+def _detach_inventory_item_reference(state: dict[str, Any], item_key: str) -> None:
+    if not item_key:
+        return
+    inventory = _work_order_inventory(state)
+    for entry in inventory.values():
+        if not isinstance(entry, dict):
+            continue
+        item_ids = _inventory_item_ids(entry)
+        if item_key not in item_ids:
+            continue
+        next_ids = [value for value in item_ids if value != item_key]
+        entry["itemIds"] = next_ids
+        entry["quantity"] = max(max(0, round(_numeric(entry.get("quantity")))), len(next_ids))
+
+
+def _has_new_cycle_after_completion(item: dict[str, Any]) -> bool:
+    completed_at = _parse_iso(str(item.get("completed_at") or ""))
+    if completed_at is None:
+        return False
+    for field in ("queued_at", "measured_at", "detected_at", "picked_at"):
+        observed_at = _parse_iso(str(item.get(field) or ""))
+        if observed_at is not None and observed_at > completed_at:
+            return True
+    return False
+
+
+def _sanitize_reused_items_after_load(state: dict[str, Any]) -> None:
+    items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
+    recent_ids = state.get("recentItemIds") if isinstance(state.get("recentItemIds"), list) else []
+    sanitized_recent = [value for value in recent_ids if value in items]
+    changed_recent = len(sanitized_recent) != len(recent_ids)
+
+    for item_key, item in items.items():
+        if not isinstance(item, dict) or not _has_new_cycle_after_completion(item):
+            continue
+        _detach_inventory_item_reference(state, item_key)
+        sanitized_recent = [value for value in sanitized_recent if value != item_key]
+        for field in (
+            "completed_at",
+            "released_at",
+            "return_started_at",
+            "return_reached_at",
+            "return_done_at",
+            "final_color_frozen_at",
+            "override_applied_at",
+            "override_source",
+            "work_order_id",
+            "work_order_match_key",
+            "inventory_match_key",
+            "inventoryAction",
+        ):
+            item[field] = ""
+        item["queue_status"] = str(item.get("queue_status") or "waiting_travel")
+    if changed_recent or len(sanitized_recent) != len(recent_ids):
+        state["recentItemIds"] = sanitized_recent[:10]
+
+
 def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     candidate = payload if isinstance(payload, dict) else {}
     base = default_runtime_state()
@@ -784,6 +916,8 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
         for key, value in inventory.items()
         if str(key or "").strip()
     }
+    _sanitize_reused_items_after_load(base)
+    _backfill_completed_item_inventory(base)
     base["workOrders"]["transitionLog"] = work_orders.get("transitionLog") if isinstance(work_orders.get("transitionLog"), list) else []
     base["workOrders"]["completionLog"] = work_orders.get("completionLog") if isinstance(work_orders.get("completionLog"), list) else []
     source = work_orders.get("source") if isinstance(work_orders.get("source"), dict) else {}
@@ -798,6 +932,7 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     base["unplannedDowntimeMs"] = max(0, round(_numeric(candidate.get("unplannedDowntimeMs"))))
     base["trend"] = candidate.get("trend") if isinstance(candidate.get("trend"), list) else []
     base["qualityOverrideLog"] = candidate.get("qualityOverrideLog") if isinstance(candidate.get("qualityOverrideLog"), list) else []
+    base["qualityOverrideResetAt"] = str(candidate.get("qualityOverrideResetAt") or "")
     base["earlyPickRejectLog"] = candidate.get("earlyPickRejectLog") if isinstance(candidate.get("earlyPickRejectLog"), list) else []
     vision = candidate.get("vision") if isinstance(candidate.get("vision"), dict) else {}
     base["vision"]["healthState"] = str(vision.get("healthState") or "offline")
@@ -1046,6 +1181,7 @@ def _assign_item_to_work_order(
     item["work_order_match_key"] = match_key
     item["inventoryAction"] = action
     item["inventory_match_key"] = match_key if action == "consumed_for_work_order" else ""
+    item["inventory_backfill_disabled"] = False
     return match_key
 
 
@@ -1109,6 +1245,7 @@ def _move_completed_item_to_inventory(
     item["work_order_match_key"] = ""
     item["inventoryAction"] = source
     item["inventory_match_key"] = match_key
+    item["inventory_backfill_disabled"] = False
 
 
 def _clear_item_work_order_context(item: dict[str, Any], *, updated_at: str = "", inventory_action: str = "") -> None:
@@ -1351,6 +1488,107 @@ def _append_recent_id(state: dict[str, Any], item_key: str) -> None:
     state["recentItemIds"] = recent_ids[:10]
 
 
+def _archived_item_key(items: dict[str, dict[str, Any]], item_key: str, *, suffix: str = "") -> str:
+    raw_suffix = "".join(ch for ch in str(suffix or "") if ch.isdigit()) or str(int(time.time() * 1000))
+    base = f"archived:{item_key}:{raw_suffix}"
+    candidate = base
+    index = 1
+    while candidate in items:
+        candidate = f"{base}:{index}"
+        index += 1
+    return candidate
+
+
+def _archive_completed_item(
+    state: dict[str, Any],
+    items: dict[str, dict[str, Any]],
+    item_key: str,
+    *,
+    archived_at: str = "",
+) -> str:
+    item = items.get(item_key)
+    if not isinstance(item, dict):
+        return ""
+
+    archive_key = _archived_item_key(
+        items,
+        item_key,
+        suffix=str(item.get("completed_at") or item.get("updated_at") or archived_at or item.get("item_id") or item_key),
+    )
+    items[archive_key] = dict(item)
+
+    recent_ids = state.get("recentItemIds")
+    if isinstance(recent_ids, list):
+        state["recentItemIds"] = [archive_key if value == item_key else value for value in recent_ids]
+
+    inventory = _work_order_inventory(state)
+    for entry in inventory.values():
+        if not isinstance(entry, dict):
+            continue
+        item_ids = _inventory_item_ids(entry)
+        if item_key not in item_ids:
+            continue
+        replaced_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for value in item_ids:
+            normalized = archive_key if value == item_key else value
+            if not normalized or normalized in seen_ids:
+                continue
+            replaced_ids.append(normalized)
+            seen_ids.add(normalized)
+        entry["itemIds"] = replaced_ids
+        entry["quantity"] = max(max(0, round(_numeric(entry.get("quantity")))), len(replaced_ids))
+    return archive_key
+
+
+def _prepare_item_for_new_cycle(
+    state: dict[str, Any],
+    items: dict[str, dict[str, Any]],
+    item_key: str,
+    *,
+    received_at: str,
+) -> dict[str, Any]:
+    item = items.get(item_key, {})
+    if not isinstance(item, dict):
+        item = {}
+    if item.get("completed_at"):
+        _archive_completed_item(state, items, item_key, archived_at=received_at)
+        item = {}
+        items[item_key] = item
+    return item
+
+
+def _resolve_item_lookup_key(items: dict[str, dict[str, Any]], item_id: str, *, completed_only: bool = False) -> str:
+    normalized_item_id = str(item_id or "").strip()
+    if not normalized_item_id:
+        return ""
+
+    direct = items.get(normalized_item_id)
+    if isinstance(direct, dict) and (not completed_only or direct.get("completed_at")):
+        return normalized_item_id
+
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for item_key, item in items.items():
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("item_id") or "").strip() != normalized_item_id:
+            continue
+        if completed_only and not item.get("completed_at"):
+            continue
+        candidates.append((item_key, item))
+    if not candidates:
+        return ""
+    candidates.sort(
+        key=lambda row: (
+            str(row[1].get("completed_at") or ""),
+            str(row[1].get("updated_at") or ""),
+            str(row[0]),
+        ),
+        reverse=True,
+    )
+    return candidates[0][0]
+
+
 def _head_item_key(state: dict[str, Any]) -> str:
     for item_key in list(_queue_order(state)):
         if item_key:
@@ -1467,7 +1705,7 @@ def _update_vision_health(
 
 
 def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
-    stamp = now or datetime.now().astimezone()
+    stamp = _local_datetime(now) or datetime.now().astimezone()
     counts = state.get("counts") if isinstance(state.get("counts"), dict) else {}
     shift = state.get("shift") if isinstance(state.get("shift"), dict) else {}
     total = max(0, round(_numeric(counts.get("total"))))
@@ -1476,9 +1714,9 @@ def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -
     scrap = max(0, round(_numeric(counts.get("scrap"))))
 
     shift_active = bool(shift.get("active") and shift.get("startedAt"))
-    started_at = _parse_iso(str(shift.get("startedAt") or ""))
-    plan_start = _parse_iso(str(shift.get("planStart") or ""))
-    plan_end = _parse_iso(str(shift.get("planEnd") or ""))
+    started_at = _local_datetime(_parse_iso(str(shift.get("startedAt") or "")))
+    plan_start = _local_datetime(_parse_iso(str(shift.get("planStart") or "")))
+    plan_end = _local_datetime(_parse_iso(str(shift.get("planEnd") or "")))
     elapsed_ms = int((stamp - started_at).total_seconds() * 1000) if shift_active and started_at is not None else 0
     shift_window_total_ms = 0
     if shift_active:
@@ -1491,7 +1729,7 @@ def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -
             shift_window_total_ms = elapsed_ms
 
     active_fault = state.get("activeFault") if isinstance(state.get("activeFault"), dict) else None
-    active_fault_started = _parse_iso(str(active_fault.get("startedAt") or "")) if active_fault else None
+    active_fault_started = _local_datetime(_parse_iso(str(active_fault.get("startedAt") or ""))) if active_fault else None
     active_fault_ms = 0
     if shift_active and active_fault_started is not None:
         active_fault_ms = max(0, int((stamp - active_fault_started).total_seconds() * 1000))
@@ -1525,14 +1763,10 @@ def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -
         expected = (runtime_ms / (ideal_cycle_sec * 1000.0)) if runtime_ms > 0 else 0.0
         performance = (total / expected) if expected > 0 else 0.0
         target_text = f"{ideal_cycle_sec:.1f} sn cycle / beklenen {expected:.1f}"
-    elif target_qty > 0 and planned_production_total_ms > 0:
-        expected = float(target_qty) * (runtime_ms / planned_production_total_ms) if runtime_ms > 0 else 0.0
-        performance = (total / expected) if expected > 0 else 0.0
-        target_text = f"{target_qty} adet hedef / beklenen {expected:.1f}"
     elif target_qty > 0:
         expected = float(target_qty)
-        performance = 0.0
-        target_text = f"{target_qty} adet hedef"
+        performance = (total / expected) if expected > 0 else 0.0
+        target_text = f"{target_qty} adet hedef / beklenen {expected:.1f}"
 
     performance = max(0.0, min(1.0, performance))
     oee = availability * performance * quality
@@ -1583,6 +1817,70 @@ def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -
         "lossPct": loss,
         "colorSummary": color_summary,
     }
+
+
+def _next_snapshot_time_text(trend_rows: list[Any], stamp: datetime) -> str:
+    candidate = stamp
+    recent_times = {
+        str(row.get("time") or "").strip()
+        for row in trend_rows[-5:]
+        if isinstance(row, dict)
+    }
+    candidate_text = _pseudo_iso_text(candidate)
+    while candidate_text in recent_times:
+        candidate = candidate + timedelta(milliseconds=1)
+        candidate_text = _pseudo_iso_text(candidate)
+    return candidate_text
+
+
+def _append_oee_trend_snapshot(
+    state: dict[str, Any],
+    *,
+    now: datetime,
+    reason: str,
+    force: bool = False,
+    snapshot: dict[str, Any] | None = None,
+) -> bool:
+    stamp = _local_datetime(now) or datetime.now().astimezone()
+    trend = state["trend"] if isinstance(state.get("trend"), list) else []
+    last_logged = _local_datetime(_parse_iso(str(state.get("lastSnapshotLoggedAt") or "")))
+    if not force and last_logged is not None and (stamp - last_logged).total_seconds() < OEE_TREND_INTERVAL_SEC:
+        return False
+
+    resolved_snapshot = snapshot if isinstance(snapshot, dict) else build_live_snapshot(state, now=stamp)
+    if not resolved_snapshot.get("shiftActive") and reason != "shift_stop":
+        return False
+
+    color_summary = resolved_snapshot.get("colorSummary") if isinstance(resolved_snapshot.get("colorSummary"), dict) else {}
+    blue = color_summary.get("blue") if isinstance(color_summary.get("blue"), dict) else {}
+    yellow = color_summary.get("yellow") if isinstance(color_summary.get("yellow"), dict) else {}
+    red = color_summary.get("red") if isinstance(color_summary.get("red"), dict) else {}
+    snapshot_time = _next_snapshot_time_text(trend, stamp)
+    trend.append(
+        {
+            "time": snapshot_time,
+            "reason": str(reason or "").strip().lower() or "periodic_30s",
+            "summary": str(state.get("lastEventSummary") or "").strip(),
+            "oee": round(float(resolved_snapshot.get("oee") or 0.0) * 100.0, 1),
+            "availability": round(float(resolved_snapshot.get("availability") or 0.0) * 100.0, 1),
+            "performance": round(float(resolved_snapshot.get("performance") or 0.0) * 100.0, 1),
+            "quality": round(float(resolved_snapshot.get("quality") or 0.0) * 100.0, 1),
+            "loss": round(float(resolved_snapshot.get("lossPct") or 0.0), 1),
+            "mavi_s": max(0, round(_numeric(blue.get("good")))),
+            "mavi_r": max(0, round(_numeric(blue.get("rework")))),
+            "mavi_h": max(0, round(_numeric(blue.get("scrap")))),
+            "sari_s": max(0, round(_numeric(yellow.get("good")))),
+            "sari_r": max(0, round(_numeric(yellow.get("rework")))),
+            "sari_h": max(0, round(_numeric(yellow.get("scrap")))),
+            "kirmizi_s": max(0, round(_numeric(red.get("good")))),
+            "kirmizi_r": max(0, round(_numeric(red.get("rework")))),
+            "kirmizi_h": max(0, round(_numeric(red.get("scrap")))),
+        }
+    )
+    state["trend"] = trend[-OEE_TREND_HISTORY_LIMIT:]
+    state["lastSnapshotLoggedAt"] = snapshot_time
+    state["lastUpdatedAt"] = snapshot_time
+    return True
 
 
 def _overlap_ms(start_at: datetime, end_at: datetime, window_start: datetime, window_end: datetime) -> int:
@@ -1637,6 +1935,16 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
         else:
             good += 1
     total = good + rework + scrap
+    persisted_good = max(0, round(_numeric(order.get("goodQty"))))
+    persisted_rework = max(0, round(_numeric(order.get("reworkQty"))))
+    persisted_scrap = max(0, round(_numeric(order.get("scrapQty"))))
+    persisted_total = persisted_good + persisted_rework + persisted_scrap
+    status = str(order.get("status") or "")
+    if persisted_total > total and status in {"pending_approval", "completed"}:
+        good = persisted_good
+        rework = persisted_rework
+        scrap = persisted_scrap
+        total = persisted_total
     requirements = _work_order_requirements(order)
     if requirements:
         target_qty = sum(max(0, round(_numeric(requirement.get("quantity")))) for requirement in requirements)
@@ -1662,7 +1970,6 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
     started_at = _parse_iso(str(order.get("startedAt") or ""))
     auto_completed_at = _parse_iso(str(order.get("autoCompletedAt") or ""))
     completed_at = _parse_iso(str(order.get("completedAt") or ""))
-    status = str(order.get("status") or "")
     end_at = (
         auto_completed_at
         if status in {"pending_approval", "completed"} and auto_completed_at is not None
@@ -1671,10 +1978,14 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
     elapsed_ms = int((end_at - started_at).total_seconds() * 1000) if started_at is not None and end_at >= started_at else 0
     unplanned_ms = _work_order_fault_ms(state, start_at=started_at, end_at=end_at) if started_at is not None and elapsed_ms > 0 else 0
     runtime_ms = max(0, elapsed_ms - unplanned_ms)
+    availability = (runtime_ms / elapsed_ms) if elapsed_ms > 0 else None
+    if availability is not None:
+        availability = max(0.0, min(1.0, availability))
     performance = ((production_qty * ideal_cycle_sec * 1000.0) / runtime_ms) if runtime_ms > 0 else 0.0
     performance = max(0.0, min(1.0, performance))
     quality = (good / total) if total > 0 else 1.0
     quality = max(0.0, min(1.0, quality))
+    oee = (availability * performance * quality) if availability is not None else None
     return {
         "orderId": order_id,
         "targetQty": target_qty,
@@ -1690,10 +2001,10 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
         "elapsedMs": elapsed_ms,
         "runtimeMs": runtime_ms,
         "unplannedMs": unplanned_ms,
-        "availability": None,
+        "availability": availability,
         "performance": performance,
         "quality": quality,
-        "oee": None,
+        "oee": oee,
     }
 
 
@@ -1939,24 +2250,32 @@ class OeeRuntimeStateManager:
             _touch_shift_config(state)
             mode_text = "Ideal Cycle" if state["performanceMode"] == "IDEAL_CYCLE" else "Hedef Bazli"
             _set_summary(state, f"Performans modu {mode_text} olarak ayarlandi.", now=stamp)
+            if state["shift"]["active"]:
+                _append_oee_trend_snapshot(state, now=stamp, reason="control:set_performance_mode", force=True)
             recent_log = f"SYSTEM|OEE|SET_PERFORMANCE_MODE|{state['performanceMode']}"
 
         elif normalized_action == "set_target_qty":
             state["targetQty"] = max(0, round(_numeric(value)))
             _touch_shift_config(state)
             _set_summary(state, f"Hedef {state['targetQty']} adet olarak guncellendi.", now=stamp)
+            if state["shift"]["active"]:
+                _append_oee_trend_snapshot(state, now=stamp, reason="control:set_target_qty", force=True)
             recent_log = f"SYSTEM|OEE|SET_TARGET_QTY|{state['targetQty']}"
 
         elif normalized_action == "set_ideal_cycle_sec":
             state["idealCycleSec"] = max(0.0, _numeric(value))
             _touch_shift_config(state)
             _set_summary(state, f"Ideal cycle {state['idealCycleSec']:.1f} sn olarak guncellendi.", now=stamp)
+            if state["shift"]["active"]:
+                _append_oee_trend_snapshot(state, now=stamp, reason="control:set_ideal_cycle_sec", force=True)
             recent_log = f"SYSTEM|OEE|SET_IDEAL_CYCLE_SEC|{state['idealCycleSec']:.1f}"
 
         elif normalized_action == "set_planned_stop_min":
             state["plannedStopMin"] = max(0.0, _numeric(value))
             _touch_shift_config(state)
             _set_summary(state, f"Planli durus rezervi {state['plannedStopMin']:.1f} dk olarak guncellendi.", now=stamp)
+            if state["shift"]["active"]:
+                _append_oee_trend_snapshot(state, now=stamp, reason="control:set_planned_stop_min", force=True)
             recent_log = f"SYSTEM|OEE|SET_PLANNED_STOP_MIN|{state['plannedStopMin']:.1f}"
 
         elif normalized_action == "shift_start":
@@ -2011,6 +2330,7 @@ class OeeRuntimeStateManager:
                 state["lastSnapshotLoggedAt"] = ""
                 state["lastTabletLine"] = ""
                 _set_summary(state, f"{state['shift']['code']} basladi. OEE sayaclari sifirlandi.", now=stamp)
+                _append_oee_trend_snapshot(state, now=stamp, reason="shift_start", force=True)
                 system_line = _system_log_line("START", state, now=stamp)
                 recent_log = system_line
 
@@ -2021,10 +2341,12 @@ class OeeRuntimeStateManager:
             else:
                 if isinstance(state.get("activeFault"), dict):
                     _close_active_fault(state, ended_at=_pseudo_iso_text(stamp))
+                _set_summary(state, f"{state['shift']['code']} kapatildi. Vardiya ozeti kilitlendi.", now=stamp)
+                final_snapshot = build_live_snapshot(state, now=stamp)
+                _append_oee_trend_snapshot(state, now=stamp, reason="shift_stop", force=True, snapshot=final_snapshot)
                 system_line = _system_log_line("STOP", state, now=stamp)
                 state["shift"]["active"] = False
                 state["shift"]["endedAt"] = _pseudo_iso_text(stamp)
-                _set_summary(state, f"{state['shift']['code']} kapatildi. Vardiya ozeti kilitlendi.", now=stamp)
                 recent_log = system_line
 
         self.write_state(state)
@@ -2487,12 +2809,17 @@ class OeeRuntimeStateManager:
         reset_state["source"]["folder"] = str(previous_source.get("folder") or "")
         work_orders.clear()
         work_orders.update(reset_state)
+        state["recentItemIds"] = []
+        state["qualityOverrideLog"] = []
+        state["qualityOverrideResetAt"] = reset_text
 
         items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
         cleared_item_count = 0
         for item in items.values():
             if not isinstance(item, dict):
                 continue
+            if item.get("completed_at"):
+                item["inventory_backfill_disabled"] = True
             if not any(
                 str(item.get(field) or "").strip()
                 for field in ("work_order_id", "work_order_match_key", "inventory_match_key", "inventoryAction")
@@ -2511,6 +2838,48 @@ class OeeRuntimeStateManager:
             "state": state,
             "summary": state["lastEventSummary"],
             "cleared_item_count": cleared_item_count,
+        }
+
+    @_state_locked
+    def reset_runtime_counts(self, *, now: datetime | None = None) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        reset_text = _pseudo_iso_text(stamp)
+        state = self.read_state()
+        state["counts"] = {
+            "total": 0,
+            "good": 0,
+            "rework": 0,
+            "scrap": 0,
+            "byColor": {
+                "red": empty_color_counts(),
+                "yellow": empty_color_counts(),
+                "blue": empty_color_counts(),
+            },
+        }
+        state["recentItemIds"] = []
+        state["qualityOverrideLog"] = []
+        state["qualityOverrideResetAt"] = reset_text
+        state["earlyPickRejectLog"] = []
+        state["trend"] = []
+        items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
+        muted_completed_count = 0
+        for item in items.values():
+            if not isinstance(item, dict) or not item.get("completed_at"):
+                continue
+            item["count_in_oee"] = False
+            muted_completed_count += 1
+        _set_summary(
+            state,
+            f"OEE sayaclari sifirlandi. {muted_completed_count} tamamlanmis urun kalite listesi disina alindi.",
+            now=stamp,
+        )
+        self.write_state(state)
+        return {
+            "state": state,
+            "summary": state["lastEventSummary"],
+            "muted_completed_count": muted_completed_count,
         }
 
     @_state_locked
@@ -2562,6 +2931,7 @@ class OeeRuntimeStateManager:
                 continue
             item["inventory_match_key"] = ""
             item["inventoryAction"] = "manual_inventory_removed"
+            item["inventory_backfill_disabled"] = True
             item["updated_at"] = update_text
 
         remaining_qty = max(0, round(_numeric(entry.get("quantity"))))
@@ -2599,7 +2969,7 @@ class OeeRuntimeStateManager:
         head_key = _head_item_key(state)
 
         if parsed["event_type"] == "measurement_decision" and item_key:
-            item = items.get(item_key, {})
+            item = _prepare_item_for_new_cycle(state, items, item_key, received_at=received_at)
             item.update(
                 {
                     "item_id": item_id or item.get("item_id") or item_key,
@@ -2615,7 +2985,7 @@ class OeeRuntimeStateManager:
             changed = True
 
         elif parsed["event_type"] == "queue_enq" and item_key:
-            item = items.get(item_key, {})
+            item = _prepare_item_for_new_cycle(state, items, item_key, received_at=received_at)
             item.update(
                 {
                     "item_id": item_id or item.get("item_id") or item_key,
@@ -2772,6 +3142,8 @@ class OeeRuntimeStateManager:
             )
 
         if changed:
+            if state["shift"]["active"] and parsed["event_type"] in {"pick_released", "pickplace_done"}:
+                _append_oee_trend_snapshot(state, now=now, reason=parsed["event_type"], force=True)
             state["itemsById"] = items
             self.write_state(state)
         return changed
@@ -2787,7 +3159,8 @@ class OeeRuntimeStateManager:
             raise ValueError("INVALID_ITEM_ID")
 
         items = state["itemsById"] if isinstance(state.get("itemsById"), dict) else {}
-        item = items.get(normalized_item_id)
+        item_key = _resolve_item_lookup_key(items, normalized_item_id, completed_only=True)
+        item = items.get(item_key)
         if not isinstance(item, dict):
             raise ValueError("ITEM_NOT_FOUND")
         if not item.get("completed_at"):
@@ -2875,6 +3248,8 @@ class OeeRuntimeStateManager:
             f"#{normalized_item_id} kalite karari {previous_classification} -> {next_classification} olarak guncellendi.{work_order_note}",
             now=stamp,
         )
+        if state["shift"]["active"]:
+            _append_oee_trend_snapshot(state, now=stamp, reason="quality_override", force=True)
         self.write_state(state)
         return {
             "state": state,
@@ -3035,6 +3410,7 @@ class OeeRuntimeStateManager:
             is_late = bool(vision.get("eventLatencyMs") not in (None, "") and _numeric(vision.get("eventLatencyMs")) > self.vision_decision_deadline_ms)
             if item.get("pick_started") or remaining_ms <= 0:
                 is_late = True
+            fault_active = isinstance(state.get("activeFault"), dict)
 
             item.update(
                 {
@@ -3047,7 +3423,10 @@ class OeeRuntimeStateManager:
                 }
             )
 
-            if confidence_tier == "low":
+            if fault_active:
+                item["correlation_status"] = "FAULT_ACTIVE"
+                item["finalization_reason"] = "SENSOR_FAULT_WINDOW"
+            elif confidence_tier == "low":
                 item["correlation_status"] = "IGNORED_LOW_CONF"
                 item["finalization_reason"] = "SENSOR_LOW_CONF_VISION_IGNORED"
             elif is_late:
@@ -3132,6 +3511,7 @@ class OeeRuntimeStateManager:
                 "durationMin": max(0.0, _numeric(parsed.get("duration_min"))),
             }
             _set_summary(state, f"Aktif fault: {state['activeFault']['reason']}", now=now)
+            _append_oee_trend_snapshot(state, now=now, reason="fault_started", force=True)
             self.write_state(state)
             return True
 
@@ -3140,6 +3520,7 @@ class OeeRuntimeStateManager:
             if isinstance(state.get("activeFault"), dict):
                 _close_active_fault(state, ended_at=ended_at)
             _set_summary(state, f"Fault kapandi: {parsed.get('reason') or 'Bilinmiyor'}", now=now)
+            _append_oee_trend_snapshot(state, now=now, reason="fault_cleared", force=True)
             self.write_state(state)
             return True
         return False
@@ -3164,27 +3545,9 @@ class OeeRuntimeStateManager:
                 self.write_state(state)
             return changed
 
-        last_logged = _parse_iso(str(state.get("lastSnapshotLoggedAt") or ""))
-        if last_logged is not None and (stamp - last_logged).total_seconds() < 5:
-            if changed:
+        snapshot_logged = _append_oee_trend_snapshot(state, now=stamp, reason="periodic_30s", force=False)
+        if changed or snapshot_logged:
+            if not snapshot_logged:
                 state["lastUpdatedAt"] = _pseudo_iso_text(stamp)
-                self.write_state(state)
-            return changed
-
-        snapshot = build_live_snapshot(state, now=stamp)
-        trend = state["trend"] if isinstance(state.get("trend"), list) else []
-        trend.append(
-            {
-                "time": _pseudo_iso_text(stamp),
-                "oee": round(snapshot["oee"] * 100.0, 1),
-                "availability": round(snapshot["availability"] * 100.0, 1),
-                "performance": round(snapshot["performance"] * 100.0, 1),
-                "quality": round(snapshot["quality"] * 100.0, 1),
-                "loss": round(snapshot["lossPct"], 1),
-            }
-        )
-        state["trend"] = trend[-20:]
-        state["lastSnapshotLoggedAt"] = _pseudo_iso_text(stamp)
-        state["lastUpdatedAt"] = _pseudo_iso_text(stamp)
-        self.write_state(state)
-        return True
+            self.write_state(state)
+        return changed or snapshot_logged

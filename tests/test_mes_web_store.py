@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -158,7 +159,7 @@ class DashboardStoreTests(unittest.TestCase):
                 handle.write(
                     '{"shiftSelected":"SHIFT-B","performanceMode":"IDEAL_CYCLE","targetQty":14,"idealCycleSec":2.5,"plannedStopMin":5.5,"shift":{"active":true,"code":"SHIFT-A","name":"A Vardiyasi"},'
                     '"counts":{"byColor":{"red":{"total":3,"good":2,"rework":1,"scrap":0},"yellow":{"total":2,"good":2,"rework":0,"scrap":0},"blue":{"total":1,"good":1,"rework":0,"scrap":0}}},'
-                    '"trend":[{"time":"2026-04-02T10:00:00Z","oee":61.7,"quality":90.0,"performance":100.0,"loss":10.0}],'
+                    '"trend":[{"time":"2026-04-02T10:00:00Z","reason":"periodic_30s","summary":"Periyodik snapshot","oee":61.7,"quality":90.0,"performance":100.0,"loss":10.0}],'
                     '"lastEventSummary":"Kaydedilen vardiya durumu geri yuklendi.","lastUpdatedAt":"2026-04-02T10:00:00Z"}'
                 )
 
@@ -171,6 +172,7 @@ class DashboardStoreTests(unittest.TestCase):
             self.assertEqual(snapshot["oee"]["targets"]["ideal_cycle_sec"], 2.5)
             self.assertEqual(snapshot["oee"]["colors"]["red"]["rework"], 1)
             self.assertEqual(snapshot["oee"]["trend"][-1]["oee"], 61.7)
+            self.assertEqual(snapshot["oee"]["trend"][-1]["reason"], "periodic_30s")
             self.assertEqual(snapshot["oee"]["shift"]["code"], "SHIFT-A")
             self.assertEqual(snapshot["oee"]["controls"]["selected_shift"], "SHIFT-B")
             self.assertEqual(snapshot["oee"]["controls"]["performance_mode"], "IDEAL_CYCLE")
@@ -239,6 +241,94 @@ class DashboardStoreTests(unittest.TestCase):
             self.assertEqual(snapshot["oee"]["recent_items"][0]["classification"], "REWORK")
             self.assertEqual(snapshot["oee"]["controls"]["quality_override_options"], ["GOOD", "REWORK", "SCRAP"])
 
+    def test_runtime_state_falls_back_to_latest_completed_items_for_quality_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "oee_runtime_state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "itemsById": {
+                            "41": {
+                                "item_id": "41",
+                                "measure_id": "4",
+                                "color": "red",
+                                "classification": "GOOD",
+                                "completed_at": "2026-04-02T08:01:05Z",
+                                "updated_at": "2026-04-02T08:01:30Z",
+                            },
+                            "42": {
+                                "item_id": "42",
+                                "measure_id": "7",
+                                "color": "blue",
+                                "classification": "REWORK",
+                                "completed_at": "2026-04-02T08:02:05Z",
+                                "updated_at": "2026-04-02T08:02:30Z",
+                            },
+                        },
+                        "recentItemIds": [],
+                    },
+                    handle,
+                )
+
+            with patch.dict(os.environ, {"MES_WEB_OEE_RUNTIME_STATE_PATH": state_path}, clear=False):
+                config = AppConfig.from_env()
+                store = DashboardStore(config)
+                snapshot = store.get_dashboard_snapshot(config.module_id)
+
+            self.assertEqual(len(snapshot["oee"]["recent_items"]), 2)
+            self.assertEqual(snapshot["oee"]["recent_items"][0]["item_id"], "42")
+            self.assertEqual(snapshot["oee"]["recent_items"][1]["item_id"], "41")
+
+    def test_runtime_state_hides_old_completed_items_after_quality_override_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "oee_runtime_state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "shiftSelected": "SHIFT-A",
+                        "shift": {
+                            "active": True,
+                            "code": "SHIFT-A",
+                            "startedAt": "2026-04-02T08:00:00+03:00",
+                            "planStart": "2026-04-02T08:00:00+03:00",
+                            "planEnd": "2026-04-02T16:00:00+03:00",
+                            "performanceMode": "TARGET",
+                            "targetQty": 6,
+                        },
+                        "qualityOverrideResetAt": "2026-04-02T08:03:00+03:00",
+                        "itemsById": {
+                            "41": {
+                                "item_id": "41",
+                                "measure_id": "4",
+                                "color": "red",
+                                "classification": "GOOD",
+                                "completed_at": "2026-04-02T08:01:05+03:00",
+                                "updated_at": "2026-04-02T08:01:30+03:00",
+                                "count_in_oee": True,
+                            },
+                            "42": {
+                                "item_id": "42",
+                                "measure_id": "7",
+                                "color": "blue",
+                                "classification": "REWORK",
+                                "completed_at": "2026-04-02T08:04:05+03:00",
+                                "updated_at": "2026-04-02T08:04:30+03:00",
+                                "count_in_oee": True,
+                            },
+                        },
+                        "recentItemIds": [],
+                    },
+                    handle,
+                )
+
+            with patch.dict(os.environ, {"MES_WEB_OEE_RUNTIME_STATE_PATH": state_path}, clear=False):
+                config = AppConfig.from_env()
+                store = DashboardStore(config)
+                snapshot = store.get_dashboard_snapshot(config.module_id)
+
+            self.assertEqual(len(snapshot["oee"]["recent_items"]), 1)
+            self.assertEqual(snapshot["oee"]["recent_items"][0]["item_id"], "42")
+
     def test_runtime_state_exposes_work_order_queue_inventory_and_active_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "oee_runtime_state.json")
@@ -275,8 +365,8 @@ class DashboardStoreTests(unittest.TestCase):
             self.assertEqual(snapshot["work_orders"]["active_order"]["order_id"], "WO-1")
             self.assertEqual(snapshot["work_orders"]["active_order"]["inventory_consumed_qty"], 1)
             self.assertEqual(snapshot["work_orders"]["active_order"]["ideal_cycle_sec"], 10.0)
-            self.assertIsNone(snapshot["work_orders"]["active_order"]["availability"])
-            self.assertIsNone(snapshot["work_orders"]["active_order"]["oee"])
+            self.assertEqual(snapshot["work_orders"]["active_order"]["availability"], 100.0)
+            self.assertEqual(snapshot["work_orders"]["active_order"]["oee"], 3.3)
             self.assertEqual(snapshot["work_orders"]["active_order"]["unplanned_stop_min"], 0.0)
             self.assertGreaterEqual(snapshot["work_orders"]["active_order"]["performance"], 0.0)
             self.assertGreaterEqual(snapshot["work_orders"]["active_order"]["quality"], 0.0)

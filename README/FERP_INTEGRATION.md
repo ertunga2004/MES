@@ -37,9 +37,11 @@ Yardimci legacy referanslar:
   - olcum ve siniflandirma metrikleri
 - `4_Uretim_Tamamlanan`
   - tamamlanan urun kayitlari
+- `5_OEE_Anliklari`
+  - OEE snapshot ve tablet ozetleri
 - `6_Vision`
   - pasif vision capraz kontrolu
-- `7_Raw_Logs`
+- `99_Raw_Logs`
   - ham satirlarin denetim izi
 
 ## FERP Icın Hazirlik Kurallari

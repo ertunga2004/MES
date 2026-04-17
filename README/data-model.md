@@ -81,8 +81,11 @@ Sheet'ler:
 - `1_Olay_Logu`
 - `2_Olcumler`
 - `4_Uretim_Tamamlanan`
+- `5_OEE_Anliklari`
 - `6_Vision`
-- `7_Raw_Logs`
+- `99_Raw_Logs`
+- `7_Is_Emirleri`
+- `8_Depo_Stok`
 
 Bu workbook, bugunku birincil kalici veri siniridir.
 
@@ -184,12 +187,13 @@ Amaç:
 
 - vision event akisini normalize etmek
 
-### `7_Raw_Logs`
+### `99_Raw_Logs`
 
 Amaç:
 
 - ham satiri kaybetmeden saklamak
 - replay veya analiz icin ham payload'i korumak
+- runtime workbook'ta gizli sheet olarak tutmak
 
 ## Eski CSV Durumu
 

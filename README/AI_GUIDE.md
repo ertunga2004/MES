@@ -15,10 +15,12 @@ Bu belge, repo uzerinde calisan ekip uyelerinin ChatGPT, Codex veya benzeri arac
 - MQTT root'u `sau/iot/mega/konveyor/` olarak kalir
 - `PICKPLACE_DONE` tamamlanan urun anlamina gelir
 - tamamlanan urun varsayilan olarak `good` kabul edilir
-- kalite override operator ekrani henuz tamamlanmamistir
+- kalite override dashboard ve kiosk uzerinde aktif olarak vardir
+- kiosk sadece son 5 tamamlanan urun icin quality override yapar
 - `__reset_counts__` artik Mega'ya gitmez, backend icinde yerel calisir
 - OEE aktif vardiya olmadan baslamaz
 - sistem acildiginda onceki vardiya otomatik acik gelmez
+- dahili sure alani birincil olarak ms tutulur
 - birincil kalici veri siniri CSV degil, workbook'tur
 
 ## AI'den Beklenen Varsayimlar
@@ -37,11 +39,11 @@ Bu belge, repo uzerinde calisan ekip uyelerinin ChatGPT, Codex veya benzeri arac
 - workbook'u gecici bir CSV turevi gibi yorumlamak
 - OEE hesabini aktif vardiya disinda baslatmak
 
-## Faydalı Prompt Ornekleri
+## Faydali Prompt Ornekleri
 
-- "`mes_web` icinde yeni operator paneli bileseni ekle, mevcut dashboard snapshot kontratini bozma."
+- "`mes_web` icinde yeni kiosk davranisi ekle, mevcut dashboard snapshot kontratini bozma."
 - "Workbook sheet yapisini koruyarak yeni alanlari projector tarafinda doldur."
-- "OEE hesabini `PICKPLACE_DONE` ve fault olaylarina gore backend tarafinda guncelle."
+- "OEE hesabini `PICKPLACE_DONE`, maintenance ve fault olaylarina gore backend tarafinda guncelle."
 - "Yerel Node-RED arsivini sadece parity referansi olarak kullan."
 
 ## Yanlis Prompt Ornekleri
@@ -55,8 +57,8 @@ Bu belge, repo uzerinde calisan ekip uyelerinin ChatGPT, Codex veya benzeri arac
 
 Bir AI aracina repo baglami verilirken su belgeler once okunmalidir:
 
-1. [README.md](/Users/acer/Documents/.CODE/codex/MES/README/README.md)
-2. [architecture.md](/Users/acer/Documents/.CODE/codex/MES/README/architecture.md)
-3. [data-model.md](/Users/acer/Documents/.CODE/codex/MES/README/data-model.md)
-4. [mes_web/README.md](/Users/acer/Documents/.CODE/codex/MES/mes_web/README.md)
-5. [mqtt-topics.md](/Users/acer/Documents/.CODE/codex/MES/README/mqtt-topics.md)
+1. [README.md](README.md)
+2. [architecture.md](architecture.md)
+3. [data-model.md](data-model.md)
+4. [mes_web/README.md](../mes_web/README.md)
+5. [mqtt-topics.md](mqtt-topics.md)

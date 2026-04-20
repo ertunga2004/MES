@@ -2,7 +2,7 @@
 
 ## Amac
 
-Bu dokuman, projede bugun gercekten uretilen veri yapilarini aciklar. Eski CSV odakli model yerine aktif veri katmanlari, runtime state ve workbook sheet'leri uzerinden dusunulmelidir.
+Bu dokuman, projede aktif olarak kullanilan veri yapilarini aciklar. Eski CSV odakli model yerine runtime state, dashboard snapshot, kiosk snapshot ve workbook sheet'leri uzerinden dusunulmelidir.
 
 ## Canli Veri Kaynaklari
 
@@ -23,11 +23,11 @@ Vision topicleri:
 - `vision/tracks`
 - `vision/events`
 
-Bu veri kalici model degil, operasyonel olay ve gorunurluk katmanidir.
+Bu veri kalici model degil, operasyonel olay katmanidir.
 
 ### 2. Dashboard Snapshot
 
-`mes_web` tarafinda browser'a giden ana modeldir.
+`mes_web` tarafinda browser dashboard'a giden ana modeldir.
 
 Ana bloklar:
 
@@ -41,10 +41,28 @@ Ana bloklar:
 - `timestamps`
 - `vision_ingest`
 - `oee`
+- `work_orders`
 
-Bu model UI kontratidir. Frontend ve backend ayni snapshot semasini kullanir.
+### 3. Kiosk Snapshot
 
-### 3. OEE Runtime State
+Kiosk route'u icin uretilen ayri UI kontratidir.
+
+Ana bloklar:
+
+- `device`
+- `operator`
+- `operators`
+- `line_status`
+- `work_orders`
+- `recent_items`
+- `operational_state`
+- `big_action`
+- `active_fault`
+- `help_request`
+- `maintenance`
+- `system_start`
+
+### 4. OEE Runtime State
 
 Dosya:
 
@@ -55,39 +73,49 @@ Ana alanlar:
 - `shiftSelected`
 - `performanceMode`
 - `targetQty`
+- `idealCycleMs`
 - `idealCycleSec`
+- `plannedStopMs`
 - `plannedStopMin`
+- `operationalState`
 - `shift`
 - `counts`
 - `itemsById`
 - `recentItemIds`
+- `workOrders`
+- `maintenance`
+- `helpRequest`
+- `deviceRegistry`
+- `deviceSessions`
 - `activeFault`
 - `faultHistory`
 - `unplannedDowntimeMs`
+- `manualFaultDurationMs`
 - `trend`
+- `qualityOverrideLog`
 - `lastEventSummary`
 - `lastUpdatedAt`
 
-Bu dosya, vardiya kontrolu ve backend OEE hesabinin calisan kaynagidir.
+Ic sure modeli ms-first'tur. `sec/min` alanlari geriye uyum icin turetilir.
 
-### 4. Gunluk Workbook
+### 5. Gunluk Workbook
 
 Dosya:
 
 - `logs\MES_Konveyor_Veritabani_GG-AA-YYYY.xlsx`
 
-Sheet'ler:
+Aktif sheet'ler:
 
 - `1_Olay_Logu`
 - `2_Olcumler`
+- `3_Arizalar`
 - `4_Uretim_Tamamlanan`
 - `5_OEE_Anliklari`
 - `6_Vision`
-- `99_Raw_Logs`
 - `7_Is_Emirleri`
 - `8_Depo_Stok`
-
-Bu workbook, bugunku birincil kalici veri siniridir.
+- `9_Bakim_Kayitlari`
+- `99_Raw_Logs`
 
 ## Kimlikler
 
@@ -101,106 +129,107 @@ Olcum veya siniflandirma anini temsil eden kimliktir.
 
 ### `vision_track_id`
 
-Sadece vision observer tarafindaki izleme kimligidir. `item_id` yerine gecmez.
+Sadece vision observer tarafindaki track kimligidir. `item_id` yerine gecmez.
 
-## Olay Mantigi
+### `device_id`
 
-### Olcum ve Queue
+Kiosk veya gelecekteki tablet istemcisinin cihaz kimligidir. Device registry bunun uzerinden tutulur.
 
-- `measurement_decision`
-  - renk kararinin verildigi an
-- `queue_enq`
-  - urun kuyruga alindigi an
+## Olay ve Urun Kurallari
 
-### Robot ve Tamamlanma
+### Tamamlanan Urun
 
-- `arm_position_reached`
-  - robot hazirlik / konum olayi
-- `pickplace_done`
-  - tamamlanmis urun olayi
-- `pickplace_return_done`
-  - robotun birakma sonrasi hazir bekleme pozisyonuna geri dondugu an
+- aktif vardiyada `RELEASED` veya `PICKPLACE_DONE` ile tamamlanan urun runtime state'e islenir
+- varsayilan kalite `GOOD` kabul edilir
+- kiosk veya dashboard uzerinden `GOOD / REWORK / SCRAP` override yapilabilir
 
-Aktif vardiyada `pickplace_done`, backend tarafinda:
+### Inventory Backfill
 
-- tamamlanan urun
-- varsayilan kalite = `GOOD`
+- aktif is emrine uymayan tamamlanmis urun `off_order_completion` ile depoya alinabilir
+- `SCRAP` sinifindaki urun inventory'ye alinmaz
+- inventory'deki bir urun sonradan `SCRAP` olursa listeden dusurulur
 
-olarak sayilir.
+### Work Order Modeli
 
-## OEE Veri Kurallari
+`workOrders` blogu su alanlari tutar:
 
-### Sayima Girme Kosulu
+- `toleranceMs`
+- `toleranceMinutes`
+- `ordersById`
+- `orderSequence`
+- `activeOrderId`
+- `lastCompletedOrderId`
+- `lastCompletedAt`
+- `inventoryByProduct`
+- `transitionLog`
+- `completionLog`
+- `source`
 
-- vardiya aktif olmadan urun OEE sayacina girmez
+Order satirlarinda ms taraflari da tutulur:
 
-### Varsayilan Kalite
+- `setupTimeMs`
+- `cycleTimeMs`
+- `plannedDurationMs`
+- `runtimeMs`
+- `unplannedMs`
 
-- robotun biraktigi tamamlanmis urun ilk anda `Saglam` kabul edilir
-- sonradan operator override edebilmelidir
-- bu override UI'si sonraki fazdadir
+## OEE Sure Kurallari
+
+### Siniflandirma
+
+- `openingChecklistDurationMs`
+  - OEE disi
+- `closingChecklistDurationMs`
+  - planned stop / planned maintenance
+- `manualFaultDurationMs`
+  - unplanned stop
 
 ### Formuller
 
-- `Availability = runtime / elapsed`
-- `runtime = elapsed - unplanned_downtime`
+- `Availability = runtime / planned_production_elapsed`
+- `planned_production_elapsed = elapsed - planned_stop_budget`
+- `runtime = planned_production_elapsed - unplanned_downtime`
 - `Performance = completed / target` veya `completed / expected_by_cycle`
 - `Quality = good / total`
 - `OEE = Availability * Performance * Quality`
-
-### Fault Veri Kaynagi
-
-- aktif fault bilgisi `tablet/log` satirlarindan gelir
 
 ## Workbook Sheet Modeli
 
 ### `1_Olay_Logu`
 
-Amaç:
-
 - normalize olay kaydi
-- kaynak, event type, item, measure, color, decision source, queue depth gibi alanlari tutmak
+- kiosk fault, help, maintenance ve audit eventleri burada da tutulur
 
-### `2_Olcumler`
+### `3_Arizalar`
 
-Amaç:
-
-- TCS3200 karar detaylarini
-- ham ve turetilmis olcum alanlarini
-- search hint ve vote alanlarini
-
-tutmak
+- kiosk kaynakli manuel fault satirlari
+- `duration_ms` ve `duration_sec` birlikte yazilir
 
 ### `4_Uretim_Tamamlanan`
 
-Amaç:
+- `detected_at`
+- `completed_at`
+- `flow_ms`
+- `cycle_ms`
+- `final_quality_code`
 
-- queue'dan tamamlanmis urune gecisi kaydetmek
-- `detected_at` alanini sensor olcum/giris ani olarak tutmak
-- `completed_at` alanini robot birakma/cikis ani olarak tutmak
-- `flow_ms` alanini ayni urunun giris-cikis suresi olarak tutmak
-- `cycle_ms` alanini ard arda iki cikis arasindaki fark olarak tutmak
+### `7_Is_Emirleri`
 
-### `6_Vision`
+- aktif ve tamamlanan is emirlerinin normalize workbook yansimasi
+- ms ve sec kolonlari birlikte bulunur
 
-Amaç:
+### `8_Depo_Stok`
 
-- vision event akisini normalize etmek
+- off-order completion veya rollback ile depoya dusen urunler
+- hurda urun burada yer almaz
 
-### `99_Raw_Logs`
+### `9_Bakim_Kayitlari`
 
-Amaç:
+- maintenance checklist step detay kaydi
+- `duration_ms` ve `duration_sec` birlikte yazilir
 
-- ham satiri kaybetmeden saklamak
-- replay veya analiz icin ham payload'i korumak
-- runtime workbook'ta gizli sheet olarak tutmak
+## Sonraki Adimlar
 
-## Eski CSV Durumu
-
-`production_events.csv` ve `production_completed.csv` yeni veri modelinin merkezi degildir. Yeni dokumanlarda bu dosyalar ancak tarihsel veya legacy referans olarak anilmalidir.
-
-## Sonraki Veri Modeli Adimlari
-
-- manuel kalite override sonucu workbook ve runtime state'e baglanacak
-- vardiya kapanis ozeti icin ayri rapor modeli netlesecek
-- FERP icin resmi JSON kontrati workbook'tan turetilecek
+- teknisyen el terminali veri modeli
+- direct JSON event/state topic kontrati
+- workbook replay / rebuild araci

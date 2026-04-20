@@ -2,7 +2,7 @@
 
 ## Mimari Amac
 
-Bu proje, saha cihazlarindan gelen text telemetry'yi canli operator ekranina ve kalici workbook kaydina donusturen katmanli bir MES prototipidir. Mimari, kontrol tarafini uygulama ve raporlama tarafindan ayirmak icin bilerek parcali tasarlanmistir.
+Bu proje, saha cihazlarindan gelen telemetry'yi canli dashboard'a, operator kiosk'una ve gunluk workbook kaydina donusturen katmanli bir MES prototipidir.
 
 ## Katmanlar
 
@@ -13,7 +13,7 @@ Bu proje, saha cihazlarindan gelen text telemetry'yi canli operator ekranina ve 
 - renk sensori
 - limit switch'ler
 
-Bu katman dogrudan fiziksel harekettir. Buradaki gercek karar ve emniyet mantigi uygulama katmanina degil, kontrol katmanina aittir.
+Fiziksel hareket ve emniyet davranisi burada gerceklesir.
 
 ### 2. Control Layer
 
@@ -26,7 +26,7 @@ Sorumluluklari:
 - robot kol tetikleme sirasini belirlemek
 - durum ve olay satirlarini uretmek
 
-Bu katman, sorting kararinin tek ana otoritesidir.
+Sorting kararinin ana otoritesi budur.
 
 ### 3. Edge / Bridge Layer
 
@@ -36,55 +36,43 @@ Sorumluluklari:
 
 - Mega seri cikisini okumak
 - MQTT'ye publish etmek
-- komutlari `cmd` topic'inden alip Mega'ya iletmek
+- `cmd` topic'inden komut alip Mega'ya iletmek
 - Wi-Fi, MQTT ve queue telemetry'sini raporlamak
 
 ### 4. Communication Layer
 
 - MQTT broker
+- varsayilan broker: `broker.emqx.io:1883`
 - root: `sau/iot/mega/konveyor/`
 
-Bu katman veri tasir. Karar vermez. Text topicler ana hat icin, JSON topicler vision ve yardimci moduller icin kullanilir.
+Bu katman veri tasir. Browser dashboard ve browser kiosk MQTT'ye dogrudan baglanmaz.
 
 ### 5. Application Layer
 
-#### Legacy Application
-
-- repo disi Node-RED arsivi
-
-Rol:
-
-- gecis doneminde eski ekran ve akislari referans almak
-- parity karsilastirmasi yapmak
-- gerekirse saha gecmisini incelemek
-
-#### Yeni Application
-
 - `mes_web/`
 
-Rol:
+Sorumluluklari:
 
 - MQTT ingest
-- normalize dashboard snapshot
-- REST bootstrap + WebSocket canli yayin
+- dashboard snapshot
+- kiosk bootstrap snapshot
+- REST + WebSocket canli yayin
 - komut publish
-- OEE runtime ve vardiya kontrolu
+- work order, quality, fault, maintenance ve OEE runtime state yonetimi
 - workbook tabanli kalici veri yazimi
-
-Bugunku ana gelistirme hedefi bu katmandir.
 
 ### 6. Observation Layer
 
 - `raspberry/`
 
-Rol:
+Sorumluluklari:
 
 - kutu tespiti
 - track atama
 - line crossing sayimi
-- sari / diger renk capraz kontrolu
+- capraz renk gozlemi
 
-Bu katman pasiftir. Mega kararini override etmez.
+Vision pasif gozlemci katmandir; ana sorting kararini vermez.
 
 ### 7. Data and Integration Layer
 
@@ -95,61 +83,66 @@ Aktif veri katmanlari:
 - `logs\log_YYYY-MM-DD.txt`
 - `logs\tablet_log_YYYY-MM-DD.txt`
 
-Planlanan sonraki katman:
-
-- workbook'tan turetilen FERP JSON cikisi
-
 ## Canli Veri Akislari
 
-### Operasyon Akisi
+### Dashboard Akisi
 
 1. Mega olay uretir.
-2. ESP32 bunu `status`, `logs`, `heartbeat`, `bridge/status` topiclerine tasir.
-3. `mes_web` bu topicleri dinler.
-4. Browser ilk olarak `GET /api/modules/{module_id}/dashboard` cagirir.
-5. Sonra `WS /ws/modules/{module_id}` ile canli snapshot alir.
-6. WebSocket koparsa son snapshot korunur ve istemci reconnect dener.
+2. ESP32 bunu MQTT topiclerine tasir.
+3. `mes_web` topicleri dinler.
+4. Browser once REST snapshot alir.
+5. Sonra WebSocket ile canli guncelleme alir.
+6. Baglanti koparsa istemci reconnect dener.
+
+### Kiosk Akisi
+
+1. Tablet veya telefon `GET /kiosk/{device_id}` ile kiosk ekranini acar.
+2. Kiosk `GET /api/modules/{module_id}/kiosk/bootstrap` ile ilk state'i alir.
+3. Kiosk `WS /ws/modules/{module_id}/kiosk/{device_id}` ile canli snapshot'a baglanir.
+4. Operatorden gelen aksiyonlar REST endpoint'leri ile backend'e gider.
+5. Backend gerekli ise MQTT `cmd` topic'ine komut publish eder.
 
 ### OEE Akisi
 
 1. OEE runtime state `logs/oee_runtime_state.json` icinde tutulur.
-2. Vardiya secimi ve baslatma/bitirme komutlari web UI'dan gelir.
-3. Aktif vardiyada `PICKPLACE_DONE` olayi tamamlanan urun sayilir.
-4. Tamamlanan urun varsayilan olarak `good` kabul edilir.
-5. Fault verisi `tablet/log` satirlarindan okunur.
-6. Availability, Performance, Quality ve OEE backend tarafinda hesaplanir.
-7. Sonuc hem UI snapshot'ina hem trend dizisine yansir.
+2. Vardiya ve kontrol aksiyonlari backend tarafinda islenir.
+3. Ic sure alanlari ms-first tutulur.
+4. Durus siniflandirmasi su sekildedir:
+   - `openingChecklistDurationMs` = OEE disi
+   - `closingChecklistDurationMs` = planned stop / planned maintenance
+   - `manualFaultDurationMs` = unplanned stop
+5. Availability, Performance, Quality ve OEE backend tarafinda hesaplanir.
 
 ### Persistence Akisi
 
 1. `mes_web` MQTT log ve eventlerini normalize eder.
-2. Excel sink bu olaylari workbook icindeki sheet'lere yazar.
+2. Excel sink olaylari workbook sheet'lerine yazar.
 3. Template workbook asla dogrudan ezilmez.
 4. Her gun icin `logs/` altinda yeni tarihli workbook olusur.
+5. Bakim detaylari `9_Bakim_Kayitlari`, fault detaylari `3_Arizalar`, audit ozeti `1_Olay_Logu` icine duser.
 
-## Kaynak Dogruluk Sirasi
+## Kaynak Otorite Sirasi
 
-Bir alan cakisiyorsa su oncelik sirasini kullan:
+Bir alan cakisirsa su oncelik kullanilir:
 
 1. fiziksel karar ve olaylar icin `mega.cpp`
-2. vardiya ve OEE runtime ayarlari icin `oee_runtime_state.json`
-3. kalici olay ve rapor kaydi icin gunluk workbook
-4. legacy parity icin yerel Node-RED arsivi
+2. vardiya ve OEE runtime state icin `oee_runtime_state.json`
+3. kalici audit ve rapor kaydi icin gunluk workbook
+4. parity veya gecmis referansi icin legacy arsivler
 
 ## Tasarim Kurallari
 
-- MQTT tasima katmanidir; kontrol otoritesi degildir.
-- Vision yardimci gozlem katmanidir; sorting karari vermez.
-- Node-RED repo icinde tutulmaz; yeni ana ekran ve veri katmani `mes_web` olarak kabul edilmelidir.
-- Excel workbook su anda birincil kalici veri siniridir.
-- OEE sayimi aktif vardiya olmadan baslamaz.
-- Sistem acilisinda daha once acik kalan vardiya otomatik devam ettirilmez.
+- MQTT tasima katmanidir; UI otoritesi degildir
+- browser kiosk MQTT bilgisi bilmez
+- cihaz bazli audit backend device registry ile tutulur
+- Excel workbook bugunku birincil kalici sinirdir
+- OEE sayimi aktif vardiya olmadan baslamaz
+- sistem acilisinda acik kalan vardiya otomatik devam ettirilmez
+- hurda olarak isaretli tamamlanmis urun depoya dusmez
 
-## Mimaride Bilincli Olarak Geciktilen Parcalar
+## Bilincli Olarak Sonraya Birakilanlar
 
-- manuel kalite override operator ekrani
+- teknisyen el terminali UI
+- direct JSON state topic ailesi
 - workbook replay / rebuild araci
-- resmi FERP JSON kontrati
-- yerel Node-RED arsivine bagimliligin sifirlanmasi
-
-Bu basliklar roadmap'te ayri is kalemleri olarak ele alinmalidir.
+- FastAPI `lifespan` gecisi

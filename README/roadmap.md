@@ -2,27 +2,31 @@
 
 ## Mevcut Faz
 
-Proje, Node-RED'den kademeli ayrisma fazindadir. Yeni calisan katman `mes_web/` altinda bulunur. Fiziksel hat, MQTT bridge ve legacy akislar yerel arsivde korunurken yeni web ekran, OEE runtime ve workbook kaydi paralel olarak olgunlastirilmaktadir.
+Proje, Node-RED'den kademeli ayrisma fazindadir. Yeni calisan katman `mes_web/` altinda bulunur. Fiziksel hat, MQTT bridge ve legacy akislar yerel arsivde korunurken yeni web ekran, kiosk, OEE runtime ve workbook kaydi paralel olarak olgunlastirilmaktadir.
 
 ## Tamamlanan Ana Isler
 
-- FastAPI + WebSocket tabanli canli operator paneli kuruldu.
+- FastAPI + WebSocket tabanli canli dashboard kuruldu.
 - REST bootstrap ve reconnect eden WebSocket modeli devreye alindi.
 - MQTT ingest ve normalize dashboard snapshot yapisi olusturuldu.
-- Vision verisi pasif ingest olarak backend'e alindi.
-- Komut paneli `cmd` topic'ine baglandi.
+- operator kiosk route'u ve cihaz bazli registry eklendi.
+- kalite override dashboard ve kiosk tarafinda devreye alindi.
+- `good -> rework / scrap` duzeltmesi OEE ve workbook'a baglandi.
+- hurda urunlerin depoya dusmemesi kural olarak uygulandi.
+- komut paneli `cmd` topic'ine baglandi.
 - `__reset_counts__` komutu backend icinde yerel hale getirildi.
-- Gunluk workbook yazimi template uzerinden `logs/` altina tasindi.
+- gunluk workbook yazimi template uzerinden `logs/` altina tasindi.
 - OEE vardiya kontrolu, hedef/cycle/planned stop ayarlari ve runtime state backend'e alindi.
-- `PICKPLACE_DONE` olayi tamamlanan urun ve varsayilan `good` kalite mantigina baglandi.
+- OEE sure alanlari ms-first olacak sekilde toplandi.
+- maintenance ve fault sure siniflandirmasi availability hesabina uygun hale getirildi.
 
 ## Kisa Vade
 
-- operator icin manuel kalite duzeltme ekrani eklemek
-- `good -> rework / scrap` duzeltmesini OEE ve workbook'a yansitmak
-- OEE ekraninda fault, hedef gap ve vardiya ozetini saha testi ile parity etmek
+- teknisyen el terminali UI eklemek
+- help request ack/resolve akislarini sahada tamamlamak
 - workbook replay / rebuild araci eklemek
-- yerel Node-RED arsivi ile alan bazli son parity kontrollerini tamamlamak
+- OEE ekraninda fault, hedef gap ve vardiya ozetini saha testi ile parity etmek
+- launcher tarafinda interpreter / dependency tanisini daha otomatik hale getirmek
 
 ## Orta Vade
 
@@ -30,6 +34,7 @@ Proje, Node-RED'den kademeli ayrisma fazindadir. Yeni calisan katman `mes_web/` 
 - workbook -> FERP JSON donusum katmani eklemek
 - operasyon ve OEE ekranlarina rapor/export ihtiyaclarini eklemek
 - modul bazli genisleme ile `picktolight` benzeri ikinci istasyonlari ayni omurgaya almak
+- gerekirse yerel broker veya kampus-agi uyumlu MQTT seceneklerini eklemek
 
 ## Uzun Vade
 
@@ -40,10 +45,10 @@ Proje, Node-RED'den kademeli ayrisma fazindadir. Yeni calisan katman `mes_web/` 
 
 ## Acik Kararlar
 
-- manuel kalite override ekraninin tam UI akisi nasil olacak
 - FERP tarafinda ana import nesnesi workbook mu olacak yoksa workbook'tan turetilen JSON mu
 - aktif/arsiv workbook yonetimi gunluk dosya bazli mi yoksa aylik paket bazli mi ilerleyecek
 - pick-to-light modulu mevcut `mes_web` omurgasina ne zaman alinacak
+- kiosk auth / PIN katmani ne zaman zorunlu hale getirilecek
 
 ## Ekip Bazli Odaklar
 
@@ -57,7 +62,7 @@ Proje, Node-RED'den kademeli ayrisma fazindadir. Yeni calisan katman `mes_web/` 
 
 - `mes_web/`
 - OEE runtime
-- operator ekranlari
+- dashboard ve kiosk ekranlari
 - workbook yazimi
 
 ### Vision

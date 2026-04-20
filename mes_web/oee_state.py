@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -31,6 +32,13 @@ WORK_ORDER_STATUSES = {"queued", "active", "pending_approval", "completed"}
 WORK_ORDER_BLOCKING_STATUSES = {"active", "pending_approval"}
 OEE_TREND_INTERVAL_SEC = 30
 OEE_TREND_HISTORY_LIMIT = 120
+OPERATIONAL_STATES = {
+    "idle_ready",
+    "opening_checklist",
+    "shift_active_running",
+    "manual_fault_active",
+    "closing_checklist",
+}
 
 
 def empty_color_counts() -> dict[str, int]:
@@ -50,6 +58,7 @@ def shift_options() -> list[dict[str, str]]:
 
 def default_work_order_state() -> dict[str, Any]:
     return {
+        "toleranceMs": 15 * 60 * 1000,
         "toleranceMinutes": 15.0,
         "ordersById": {},
         "orderSequence": [],
@@ -67,30 +76,54 @@ def default_work_order_state() -> dict[str, Any]:
     }
 
 
+def default_maintenance_state() -> dict[str, Any]:
+    return {
+        "openingSession": None,
+        "closingSession": None,
+        "history": [],
+        "openingChecklistDurationMs": 0,
+        "closingChecklistDurationMs": 0,
+        "lastOpeningCompletedAt": "",
+        "lastClosingCompletedAt": "",
+    }
+
+
+def default_help_request_state() -> dict[str, Any]:
+    return {
+        "requestsByKey": {},
+        "history": [],
+    }
+
+
 class WorkOrderTransitionReasonRequired(ValueError):
     def __init__(
         self,
         *,
         order_id: str,
         previous_order_id: str,
-        elapsed_minutes: float,
-        tolerance_minutes: float,
+        elapsed_ms: int,
+        tolerance_ms: int,
     ) -> None:
         super().__init__("WORK_ORDER_REASON_REQUIRED")
         self.order_id = order_id
         self.previous_order_id = previous_order_id
-        self.elapsed_minutes = elapsed_minutes
-        self.tolerance_minutes = tolerance_minutes
+        self.elapsed_ms = max(0, int(elapsed_ms))
+        self.tolerance_ms = max(0, int(tolerance_ms))
+        self.elapsed_minutes = self.elapsed_ms / 60000.0
+        self.tolerance_minutes = self.tolerance_ms / 60000.0
 
 
 def default_runtime_state() -> dict[str, Any]:
     return {
-        "version": 4,
+        "version": 5,
         "shiftSelected": "SHIFT-A",
         "performanceMode": "TARGET",
         "targetQty": 14,
+        "idealCycleMs": 10_000,
         "idealCycleSec": 10.0,
+        "plannedStopMs": 0,
         "plannedStopMin": 0.0,
+        "operationalState": "idle_ready",
         "shift": {
             "active": False,
             "code": "",
@@ -101,7 +134,9 @@ def default_runtime_state() -> dict[str, Any]:
             "planEnd": "",
             "performanceMode": "TARGET",
             "targetQty": 14,
+            "idealCycleMs": 10_000,
             "idealCycleSec": 10.0,
+            "plannedStopMs": 0,
             "plannedStopMin": 0.0,
         },
         "counts": {
@@ -119,10 +154,15 @@ def default_runtime_state() -> dict[str, Any]:
         "queueOrder": [],
         "recentItemIds": [],
         "workOrders": default_work_order_state(),
+        "maintenance": default_maintenance_state(),
+        "helpRequest": default_help_request_state(),
+        "deviceRegistry": {},
+        "deviceSessions": {},
         "processedVisionEventKeys": [],
         "activeFault": None,
         "faultHistory": [],
         "unplannedDowntimeMs": 0,
+        "manualFaultDurationMs": 0,
         "trend": [],
         "qualityOverrideLog": [],
         "qualityOverrideResetAt": "",
@@ -163,6 +203,28 @@ def _numeric(value: Any) -> float:
         return float(text)
     except ValueError:
         return 0.0
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _duration_ms(value: Any, *, multiplier: float = 1.0, default: int = 0) -> int:
+    normalized = _first_present(value)
+    if normalized in (None, ""):
+        return max(0, default)
+    return max(0, round(_numeric(normalized) * multiplier))
+
+
+def _seconds_from_ms(value: Any, *, precision: int = 3) -> float:
+    return round(max(0.0, _numeric(value)) / 1000.0, precision)
+
+
+def _minutes_from_ms(value: Any, *, precision: int = 3) -> float:
+    return round(max(0.0, _numeric(value)) / 60000.0, precision)
 
 
 def _parse_clock(value: str) -> tuple[int, int, int]:
@@ -250,8 +312,331 @@ def _touch_shift_config(state: dict[str, Any]) -> None:
         return
     shift["performanceMode"] = state["performanceMode"]
     shift["targetQty"] = state["targetQty"]
+    shift["idealCycleMs"] = state["idealCycleMs"]
     shift["idealCycleSec"] = state["idealCycleSec"]
+    shift["plannedStopMs"] = state["plannedStopMs"]
     shift["plannedStopMin"] = state["plannedStopMin"]
+
+
+def _device_request_key(device_id: Any, bound_station_id: Any) -> str:
+    normalized_device_id = str(device_id or "").strip()
+    normalized_station_id = str(bound_station_id or "").strip()
+    return f"{normalized_device_id}:{normalized_station_id}"
+
+
+def _normalize_checklist_step(raw: Any, *, fallback_code: str, fallback_label: str = "") -> dict[str, Any]:
+    row = raw if isinstance(raw, dict) else {}
+    step_code = str(
+        row.get("stepCode")
+        or row.get("step_code")
+        or row.get("maintenance_step_code")
+        or fallback_code
+    ).strip() or fallback_code
+    step_label = str(
+        row.get("stepLabel")
+        or row.get("step_label")
+        or row.get("step_name_tr")
+        or fallback_label
+        or step_code
+    ).strip() or step_code
+    return {
+        "stepCode": step_code,
+        "stepLabel": step_label,
+        "required": bool(row.get("required", row.get("is_required", True))),
+        "completed": bool(row.get("completed")),
+        "completedAt": str(row.get("completedAt") or row.get("completed_at") or ""),
+    }
+
+
+def _normalize_maintenance_session(raw: Any, *, phase: str) -> dict[str, Any]:
+    session = raw if isinstance(raw, dict) else {}
+    raw_steps = session.get("steps") if isinstance(session.get("steps"), list) else []
+    normalized_steps: list[dict[str, Any]] = []
+    for index, step in enumerate(raw_steps, start=1):
+        normalized_steps.append(
+            _normalize_checklist_step(
+                step,
+                fallback_code=f"{phase}_step_{index}",
+                fallback_label=f"{phase.title()} Step {index}",
+            )
+        )
+    return {
+        "sessionId": str(session.get("sessionId") or session.get("session_id") or ""),
+        "phase": phase,
+        "status": str(session.get("status") or "active"),
+        "deviceId": str(session.get("deviceId") or session.get("device_id") or ""),
+        "deviceName": str(session.get("deviceName") or session.get("device_name") or ""),
+        "deviceRole": str(session.get("deviceRole") or session.get("device_role") or "operator_kiosk"),
+        "boundStationId": str(session.get("boundStationId") or session.get("bound_station_id") or ""),
+        "operatorId": str(session.get("operatorId") or session.get("operator_id") or ""),
+        "operatorCode": str(session.get("operatorCode") or session.get("operator_code") or ""),
+        "operatorName": str(session.get("operatorName") or session.get("operator_name") or ""),
+        "shiftCode": str(session.get("shiftCode") or session.get("shift_code") or ""),
+        "startedAt": str(session.get("startedAt") or session.get("started_at") or ""),
+        "endedAt": str(session.get("endedAt") or session.get("ended_at") or ""),
+        "durationMs": max(0, round(_numeric(session.get("durationMs") or session.get("duration_ms")))),
+        "note": str(session.get("note") or ""),
+        "steps": normalized_steps,
+    }
+
+
+def _normalize_help_request_row(raw: Any) -> dict[str, Any]:
+    row = raw if isinstance(raw, dict) else {}
+    return {
+        "requestId": str(row.get("requestId") or row.get("request_id") or ""),
+        "requestKey": str(row.get("requestKey") or row.get("request_key") or ""),
+        "deviceId": str(row.get("deviceId") or row.get("device_id") or ""),
+        "deviceName": str(row.get("deviceName") or row.get("device_name") or ""),
+        "boundStationId": str(row.get("boundStationId") or row.get("bound_station_id") or ""),
+        "operatorId": str(row.get("operatorId") or row.get("operator_id") or ""),
+        "operatorCode": str(row.get("operatorCode") or row.get("operator_code") or ""),
+        "operatorName": str(row.get("operatorName") or row.get("operator_name") or ""),
+        "status": str(row.get("status") or "open"),
+        "repeatCount": max(1, round(_numeric(row.get("repeatCount") or row.get("repeat_count") or 1))),
+        "createdAt": str(row.get("createdAt") or row.get("created_at") or ""),
+        "lastRequestedAt": str(row.get("lastRequestedAt") or row.get("last_requested_at") or ""),
+        "acknowledgedAt": str(row.get("acknowledgedAt") or row.get("acknowledged_at") or ""),
+        "resolvedAt": str(row.get("resolvedAt") or row.get("resolved_at") or ""),
+    }
+
+
+def _normalize_device_registry_entry(raw: Any, *, device_id: str) -> dict[str, Any]:
+    row = raw if isinstance(raw, dict) else {}
+    return {
+        "deviceId": device_id,
+        "deviceName": str(row.get("deviceName") or row.get("device_name") or device_id),
+        "deviceRole": str(row.get("deviceRole") or row.get("device_role") or "operator_kiosk"),
+        "boundStationId": str(row.get("boundStationId") or row.get("bound_station_id") or ""),
+        "lastOperatorId": str(row.get("lastOperatorId") or row.get("last_operator_id") or ""),
+        "lastSeenAt": str(row.get("lastSeenAt") or row.get("last_seen_at") or ""),
+    }
+
+
+def _normalize_device_session_entry(raw: Any, *, device_id: str) -> dict[str, Any]:
+    row = raw if isinstance(raw, dict) else {}
+    return {
+        "deviceId": device_id,
+        "operatorId": str(row.get("operatorId") or row.get("operator_id") or ""),
+        "operatorCode": str(row.get("operatorCode") or row.get("operator_code") or ""),
+        "operatorName": str(row.get("operatorName") or row.get("operator_name") or ""),
+        "boundStationId": str(row.get("boundStationId") or row.get("bound_station_id") or ""),
+        "lastSeenAt": str(row.get("lastSeenAt") or row.get("last_seen_at") or ""),
+    }
+
+
+def _normalize_fault_row(raw: Any) -> dict[str, Any]:
+    row = raw if isinstance(raw, dict) else {}
+    duration_ms = _duration_ms(
+        _first_present(
+            row.get("durationMs"),
+            row.get("duration_ms"),
+        ),
+        default=_duration_ms(
+            _first_present(
+                row.get("durationMin"),
+                row.get("duration_min"),
+            ),
+            multiplier=60_000.0,
+        ),
+    )
+    return {
+        "faultId": str(row.get("faultId") or row.get("fault_id") or ""),
+        "category": str(row.get("category") or row.get("fault_category") or "BILINMIYOR"),
+        "reasonCode": str(row.get("reasonCode") or row.get("faultTypeCode") or row.get("fault_type_code") or ""),
+        "reason": str(row.get("reason") or row.get("fault_reason_tr") or "Bilinmiyor"),
+        "status": str(row.get("status") or row.get("status_code") or ""),
+        "startedAt": str(row.get("startedAt") or row.get("started_at") or ""),
+        "endedAt": str(row.get("endedAt") or row.get("ended_at") or ""),
+        "durationMs": duration_ms,
+        "durationMin": _minutes_from_ms(duration_ms, precision=3),
+        "source": str(row.get("source") or row.get("source_code") or ""),
+        "deviceId": str(row.get("deviceId") or row.get("device_id") or ""),
+        "deviceName": str(row.get("deviceName") or row.get("device_name") or ""),
+        "operatorId": str(row.get("operatorId") or row.get("operator_id") or ""),
+        "operatorCode": str(row.get("operatorCode") or row.get("operator_code") or ""),
+        "operatorName": str(row.get("operatorName") or row.get("operator_name") or ""),
+        "boundStationId": str(row.get("boundStationId") or row.get("bound_station_id") or ""),
+        "countsTowardUnplanned": bool(row.get("countsTowardUnplanned", True)),
+    }
+
+
+def _maintenance_state(state: dict[str, Any]) -> dict[str, Any]:
+    maintenance = state.get("maintenance")
+    if not isinstance(maintenance, dict):
+        maintenance = default_maintenance_state()
+        state["maintenance"] = maintenance
+    maintenance["openingSession"] = (
+        _normalize_maintenance_session(maintenance.get("openingSession"), phase="opening")
+        if isinstance(maintenance.get("openingSession"), dict)
+        else None
+    )
+    maintenance["closingSession"] = (
+        _normalize_maintenance_session(maintenance.get("closingSession"), phase="closing")
+        if isinstance(maintenance.get("closingSession"), dict)
+        else None
+    )
+    history = maintenance.get("history") if isinstance(maintenance.get("history"), list) else []
+    normalized_history: list[dict[str, Any]] = []
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        phase = str(row.get("phase") or "opening").strip().lower()
+        normalized_history.append(_normalize_maintenance_session(row, phase="closing" if phase == "closing" else "opening"))
+    maintenance["history"] = normalized_history[:50]
+    maintenance["openingChecklistDurationMs"] = max(0, round(_numeric(maintenance.get("openingChecklistDurationMs"))))
+    maintenance["closingChecklistDurationMs"] = max(0, round(_numeric(maintenance.get("closingChecklistDurationMs"))))
+    maintenance["lastOpeningCompletedAt"] = str(maintenance.get("lastOpeningCompletedAt") or "")
+    maintenance["lastClosingCompletedAt"] = str(maintenance.get("lastClosingCompletedAt") or "")
+    return maintenance
+
+
+def _help_request_state(state: dict[str, Any]) -> dict[str, Any]:
+    help_request = state.get("helpRequest")
+    if not isinstance(help_request, dict):
+        help_request = default_help_request_state()
+        state["helpRequest"] = help_request
+    requests = help_request.get("requestsByKey") if isinstance(help_request.get("requestsByKey"), dict) else {}
+    help_request["requestsByKey"] = {
+        key: _normalize_help_request_row(value)
+        for key, value in requests.items()
+        if str(key or "").strip()
+    }
+    history = help_request.get("history") if isinstance(help_request.get("history"), list) else []
+    help_request["history"] = [
+        _normalize_help_request_row(row)
+        for row in history
+        if isinstance(row, dict)
+    ][:50]
+    return help_request
+
+
+def _device_registry_state(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    registry = state.get("deviceRegistry")
+    if not isinstance(registry, dict):
+        registry = {}
+        state["deviceRegistry"] = registry
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_value in registry.items():
+        device_id = str(raw_key or "").strip()
+        if not device_id:
+            continue
+        normalized[device_id] = _normalize_device_registry_entry(raw_value, device_id=device_id)
+    state["deviceRegistry"] = normalized
+    return normalized
+
+
+def _device_sessions_state(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    sessions = state.get("deviceSessions")
+    if not isinstance(sessions, dict):
+        sessions = {}
+        state["deviceSessions"] = sessions
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_value in sessions.items():
+        device_id = str(raw_key or "").strip()
+        if not device_id:
+            continue
+        normalized[device_id] = _normalize_device_session_entry(raw_value, device_id=device_id)
+    state["deviceSessions"] = normalized
+    return normalized
+
+
+def _active_maintenance_session(state: dict[str, Any], phase: str | None = None) -> dict[str, Any] | None:
+    maintenance = _maintenance_state(state)
+    if phase == "opening":
+        return maintenance.get("openingSession") if isinstance(maintenance.get("openingSession"), dict) else None
+    if phase == "closing":
+        return maintenance.get("closingSession") if isinstance(maintenance.get("closingSession"), dict) else None
+    for candidate in (maintenance.get("openingSession"), maintenance.get("closingSession")):
+        if isinstance(candidate, dict):
+            return candidate
+    return None
+
+
+def _maintenance_session_duration_ms(session: dict[str, Any], *, now: datetime | None = None) -> int:
+    if not isinstance(session, dict):
+        return 0
+    ended_at = _parse_iso(str(session.get("endedAt") or ""))
+    started_at = _parse_iso(str(session.get("startedAt") or ""))
+    if started_at is None:
+        return max(0, round(_numeric(session.get("durationMs"))))
+    end_dt = ended_at or now or datetime.now().astimezone()
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.astimezone()
+    if end_dt < started_at:
+        return max(0, round(_numeric(session.get("durationMs"))))
+    return max(0, int((end_dt - started_at).total_seconds() * 1000))
+
+
+def _active_planned_maintenance_ms(state: dict[str, Any], *, now: datetime) -> int:
+    session = _active_maintenance_session(state, phase="closing")
+    if not isinstance(session, dict):
+        return 0
+    return _maintenance_session_duration_ms(session, now=now)
+
+
+def _active_fault_duration_ms(state: dict[str, Any], *, now: datetime) -> int:
+    active_fault = state.get("activeFault") if isinstance(state.get("activeFault"), dict) else None
+    if not isinstance(active_fault, dict):
+        return 0
+    if not bool(active_fault.get("countsTowardUnplanned", True)):
+        return 0
+    started_at = _parse_iso(str(active_fault.get("startedAt") or ""))
+    if started_at is None:
+        return 0
+    if now < started_at:
+        return 0
+    return max(0, int((now - started_at).total_seconds() * 1000))
+
+
+def _refresh_operational_state(state: dict[str, Any]) -> str:
+    next_state = "idle_ready"
+    if isinstance(_active_maintenance_session(state, phase="opening"), dict):
+        next_state = "opening_checklist"
+    elif isinstance(_active_maintenance_session(state, phase="closing"), dict):
+        next_state = "closing_checklist"
+    elif isinstance(state.get("activeFault"), dict) and str((state.get("activeFault") or {}).get("source") or "").strip().lower() == "kiosk":
+        next_state = "manual_fault_active"
+    elif bool(((state.get("shift") or {}) if isinstance(state.get("shift"), dict) else {}).get("active")):
+        next_state = "shift_active_running"
+    state["operationalState"] = next_state if next_state in OPERATIONAL_STATES else "idle_ready"
+    return state["operationalState"]
+
+
+def _update_device_presence(
+    state: dict[str, Any],
+    *,
+    device_id: str,
+    device_name: str = "",
+    device_role: str = "",
+    bound_station_id: str = "",
+    operator_id: str = "",
+    operator_code: str = "",
+    operator_name: str = "",
+    seen_at: str,
+) -> None:
+    normalized_device_id = str(device_id or "").strip()
+    if not normalized_device_id:
+        return
+    registry = _device_registry_state(state)
+    sessions = _device_sessions_state(state)
+    entry = registry.get(normalized_device_id, _normalize_device_registry_entry({}, device_id=normalized_device_id))
+    if str(device_name or "").strip():
+        entry["deviceName"] = str(device_name).strip()
+    if str(device_role or "").strip():
+        entry["deviceRole"] = str(device_role).strip()
+    if str(bound_station_id or "").strip():
+        entry["boundStationId"] = str(bound_station_id).strip()
+    if str(operator_id or "").strip():
+        entry["lastOperatorId"] = str(operator_id).strip()
+    entry["lastSeenAt"] = seen_at
+    registry[normalized_device_id] = entry
+    session = sessions.get(normalized_device_id, _normalize_device_session_entry({}, device_id=normalized_device_id))
+    session["boundStationId"] = entry["boundStationId"]
+    session["operatorId"] = str(operator_id or session.get("operatorId") or "").strip()
+    session["operatorCode"] = str(operator_code or session.get("operatorCode") or "").strip()
+    session["operatorName"] = str(operator_name or session.get("operatorName") or "").strip()
+    session["lastSeenAt"] = seen_at
+    sessions[normalized_device_id] = session
 
 
 def _text_or_default(value: Any, default: str = "") -> str:
@@ -645,6 +1030,40 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
     if status not in WORK_ORDER_STATUSES:
         status = "queued"
     requirements = _normalize_work_order_requirements(entry, current)
+    setup_time_ms = _duration_ms(
+        _first_present(
+            entry.get("setup_time_ms"),
+            entry.get("setupTimeMs"),
+            current.get("setupTimeMs"),
+        ),
+        default=_duration_ms(
+            _first_present(
+                entry.get("setup_time_sec"),
+                entry.get("setupTimeSec"),
+                entry.get("hazirlik_suresi_sec"),
+                entry.get("hazÄ±rlÄ±k_sÃ¼resi_sn"),
+                current.get("setupTimeSec"),
+            ),
+            multiplier=1000.0,
+        ),
+    )
+    cycle_time_ms = _duration_ms(
+        _first_present(
+            entry.get("cycle_time_ms"),
+            entry.get("cycleTimeMs"),
+            current.get("cycleTimeMs"),
+        ),
+        default=_duration_ms(
+            _first_present(
+                entry.get("cycle_time_sec"),
+                entry.get("cycleTimeSec"),
+                entry.get("sure_sec"),
+                entry.get("sÃ¼re_saniye"),
+                current.get("cycleTimeSec"),
+            ),
+            multiplier=1000.0,
+        ),
+    )
     order = {
         "orderId": order_id,
         "erpType": _text_or_default(entry.get("erp_type") or entry.get("erpType") or entry.get("tip") or current.get("erpType"), "Is Emirleri"),
@@ -665,6 +1084,10 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         "setupTimeSec": max(0.0, _numeric(entry.get("setup_time_sec") or entry.get("setupTimeSec") or entry.get("hazirlik_suresi_sec") or entry.get("hazırlık_süresi_sn") or current.get("setupTimeSec"))),
         "workerCount": max(0, round(_numeric(entry.get("worker_count") or entry.get("workerCount") or entry.get("isci_sayisi") or entry.get("işçi_sayısı") or current.get("workerCount")))),
         "cycleTimeSec": max(0.0, _numeric(entry.get("cycle_time_sec") or entry.get("cycleTimeSec") or entry.get("sure_sec") or entry.get("süre_saniye") or current.get("cycleTimeSec"))),
+        "setupTimeMs": setup_time_ms,
+        "setupTimeSec": _seconds_from_ms(setup_time_ms),
+        "cycleTimeMs": cycle_time_ms,
+        "cycleTimeSec": _seconds_from_ms(cycle_time_ms),
         "shiftCode": _text_or_default(entry.get("shift_code") or entry.get("shiftCode") or entry.get("vardiya") or current.get("shiftCode")),
         "productCode": product_code or stock_code or order_id,
         "productColor": color,
@@ -714,6 +1137,8 @@ def _backfill_completed_item_inventory(state: dict[str, Any]) -> None:
         if not isinstance(item, dict) or not item.get("completed_at"):
             continue
         if str(item.get("work_order_id") or "").strip():
+            continue
+        if _normalize_classification(item.get("classification")) == "SCRAP":
             continue
         if _inventory_backfill_disabled(item):
             continue
@@ -821,9 +1246,19 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     performance_mode = str(candidate.get("performanceMode") or base["performanceMode"]).upper()
     base["performanceMode"] = "IDEAL_CYCLE" if performance_mode == "IDEAL_CYCLE" else "TARGET"
     base["version"] = int(candidate.get("version") or base["version"])
-    base["targetQty"] = max(0, round(_numeric(candidate.get("targetQty"))))
-    base["idealCycleSec"] = max(0.0, _numeric(candidate.get("idealCycleSec")))
-    base["plannedStopMin"] = max(0.0, _numeric(candidate.get("plannedStopMin")))
+    base["targetQty"] = max(0, round(_numeric(_first_present(candidate.get("targetQty"), base["targetQty"]))))
+    base["idealCycleMs"] = _duration_ms(
+        _first_present(candidate.get("idealCycleMs"), candidate.get("idealCycleSec")),
+        multiplier=1000.0 if candidate.get("idealCycleMs") in (None, "") else 1.0,
+        default=base["idealCycleMs"],
+    )
+    base["idealCycleSec"] = _seconds_from_ms(base["idealCycleMs"])
+    base["plannedStopMs"] = _duration_ms(
+        _first_present(candidate.get("plannedStopMs"), candidate.get("plannedStopMin")),
+        multiplier=60_000.0 if candidate.get("plannedStopMs") in (None, "") else 1.0,
+        default=base["plannedStopMs"],
+    )
+    base["plannedStopMin"] = _minutes_from_ms(base["plannedStopMs"])
 
     shift = candidate.get("shift") if isinstance(candidate.get("shift"), dict) else {}
     base["shift"].update(shift)
@@ -836,9 +1271,19 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     base["shift"]["planEnd"] = str(base["shift"].get("planEnd") or "")
     shift_mode = str(base["shift"].get("performanceMode") or base["performanceMode"]).upper()
     base["shift"]["performanceMode"] = "IDEAL_CYCLE" if shift_mode == "IDEAL_CYCLE" else "TARGET"
-    base["shift"]["targetQty"] = max(0, round(_numeric(base["shift"].get("targetQty"))))
-    base["shift"]["idealCycleSec"] = max(0.0, _numeric(base["shift"].get("idealCycleSec")))
-    base["shift"]["plannedStopMin"] = max(0.0, _numeric(base["shift"].get("plannedStopMin")))
+    base["shift"]["targetQty"] = max(0, round(_numeric(_first_present(base["shift"].get("targetQty"), base["targetQty"]))))
+    base["shift"]["idealCycleMs"] = _duration_ms(
+        _first_present(base["shift"].get("idealCycleMs"), base["shift"].get("idealCycleSec")),
+        multiplier=1000.0 if base["shift"].get("idealCycleMs") in (None, "") else 1.0,
+        default=base["idealCycleMs"],
+    )
+    base["shift"]["idealCycleSec"] = _seconds_from_ms(base["shift"]["idealCycleMs"])
+    base["shift"]["plannedStopMs"] = _duration_ms(
+        _first_present(base["shift"].get("plannedStopMs"), base["shift"].get("plannedStopMin")),
+        multiplier=60_000.0 if base["shift"].get("plannedStopMs") in (None, "") else 1.0,
+        default=base["plannedStopMs"],
+    )
+    base["shift"]["plannedStopMin"] = _minutes_from_ms(base["shift"]["plannedStopMs"])
 
     counts = candidate.get("counts") if isinstance(candidate.get("counts"), dict) else {}
     base["counts"].update(counts)
@@ -861,7 +1306,12 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     base["queueOrder"] = candidate.get("queueOrder") if isinstance(candidate.get("queueOrder"), list) else []
     base["recentItemIds"] = candidate.get("recentItemIds") if isinstance(candidate.get("recentItemIds"), list) else []
     work_orders = candidate.get("workOrders") if isinstance(candidate.get("workOrders"), dict) else {}
-    base["workOrders"]["toleranceMinutes"] = max(0.0, _numeric(work_orders.get("toleranceMinutes") or base["workOrders"]["toleranceMinutes"]))
+    base["workOrders"]["toleranceMs"] = _duration_ms(
+        _first_present(work_orders.get("toleranceMs"), work_orders.get("toleranceMinutes")),
+        multiplier=60_000.0 if work_orders.get("toleranceMs") in (None, "") else 1.0,
+        default=base["workOrders"]["toleranceMs"],
+    )
+    base["workOrders"]["toleranceMinutes"] = _minutes_from_ms(base["workOrders"]["toleranceMs"])
     raw_orders = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
     normalized_orders: dict[str, dict[str, Any]] = {}
     for raw_key, raw_order in raw_orders.items():
@@ -927,13 +1377,22 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
         "loadedAt": str(source.get("loadedAt") or ""),
     }
     base["processedVisionEventKeys"] = candidate.get("processedVisionEventKeys") if isinstance(candidate.get("processedVisionEventKeys"), list) else []
-    base["activeFault"] = candidate.get("activeFault") if isinstance(candidate.get("activeFault"), dict) else None
-    base["faultHistory"] = candidate.get("faultHistory") if isinstance(candidate.get("faultHistory"), list) else []
+    base["activeFault"] = _normalize_fault_row(candidate.get("activeFault")) if isinstance(candidate.get("activeFault"), dict) else None
+    base["faultHistory"] = [
+        _normalize_fault_row(row)
+        for row in (candidate.get("faultHistory") if isinstance(candidate.get("faultHistory"), list) else [])
+        if isinstance(row, dict)
+    ]
     base["unplannedDowntimeMs"] = max(0, round(_numeric(candidate.get("unplannedDowntimeMs"))))
+    base["manualFaultDurationMs"] = max(0, round(_numeric(candidate.get("manualFaultDurationMs"))))
     base["trend"] = candidate.get("trend") if isinstance(candidate.get("trend"), list) else []
     base["qualityOverrideLog"] = candidate.get("qualityOverrideLog") if isinstance(candidate.get("qualityOverrideLog"), list) else []
     base["qualityOverrideResetAt"] = str(candidate.get("qualityOverrideResetAt") or "")
     base["earlyPickRejectLog"] = candidate.get("earlyPickRejectLog") if isinstance(candidate.get("earlyPickRejectLog"), list) else []
+    base["maintenance"] = candidate.get("maintenance") if isinstance(candidate.get("maintenance"), dict) else default_maintenance_state()
+    base["helpRequest"] = candidate.get("helpRequest") if isinstance(candidate.get("helpRequest"), dict) else default_help_request_state()
+    base["deviceRegistry"] = candidate.get("deviceRegistry") if isinstance(candidate.get("deviceRegistry"), dict) else {}
+    base["deviceSessions"] = candidate.get("deviceSessions") if isinstance(candidate.get("deviceSessions"), dict) else {}
     vision = candidate.get("vision") if isinstance(candidate.get("vision"), dict) else {}
     base["vision"]["healthState"] = str(vision.get("healthState") or "offline")
     base["vision"]["badWindows"] = max(0, round(_numeric(vision.get("badWindows"))))
@@ -959,6 +1418,11 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     base["lastEventSummary"] = str(candidate.get("lastEventSummary") or base["lastEventSummary"])
     base["lastTabletLine"] = str(candidate.get("lastTabletLine") or "")
     base["lastUpdatedAt"] = str(candidate.get("lastUpdatedAt") or "")
+    _maintenance_state(base)
+    _help_request_state(base)
+    _device_registry_state(base)
+    _device_sessions_state(base)
+    _refresh_operational_state(base)
     return base
 
 
@@ -980,21 +1444,33 @@ def _close_active_fault(state: dict[str, Any], *, ended_at: str) -> None:
             duration_ms = int((end_dt - start_dt).total_seconds() * 1000)
     except ValueError:
         duration_ms = max(0, round(_numeric(active_fault.get("durationMin")) * 60000))
-    state["unplannedDowntimeMs"] = max(0, round(_numeric(state.get("unplannedDowntimeMs")))) + duration_ms
+    if bool(active_fault.get("countsTowardUnplanned", True)):
+        state["unplannedDowntimeMs"] = max(0, round(_numeric(state.get("unplannedDowntimeMs")))) + duration_ms
+    if str(active_fault.get("source") or "").strip().lower() == "kiosk":
+        state["manualFaultDurationMs"] = max(0, round(_numeric(state.get("manualFaultDurationMs")))) + duration_ms
     history = state["faultHistory"] if isinstance(state.get("faultHistory"), list) else []
     history.insert(
         0,
         {
             "faultId": str(active_fault.get("faultId") or ""),
             "category": str(active_fault.get("category") or "BILINMIYOR"),
+            "reasonCode": str(active_fault.get("reasonCode") or ""),
             "reason": str(active_fault.get("reason") or "Bilinmiyor"),
             "startedAt": started_at,
             "endedAt": ended_at,
             "durationMs": duration_ms,
+            "durationMin": _minutes_from_ms(duration_ms, precision=3),
+            "source": str(active_fault.get("source") or ""),
+            "deviceId": str(active_fault.get("deviceId") or ""),
+            "operatorId": str(active_fault.get("operatorId") or ""),
+            "operatorCode": str(active_fault.get("operatorCode") or ""),
+            "operatorName": str(active_fault.get("operatorName") or ""),
+            "boundStationId": str(active_fault.get("boundStationId") or ""),
         },
     )
     state["faultHistory"] = history[:20]
     state["activeFault"] = None
+    _refresh_operational_state(state)
 
 
 def _summary_counts(state: dict[str, Any]) -> dict[str, int]:
@@ -1040,7 +1516,11 @@ def _work_orders_state(state: dict[str, Any]) -> dict[str, Any]:
         work_orders["completionLog"] = []
     if not isinstance(work_orders.get("source"), dict):
         work_orders["source"] = default_work_order_state()["source"]
-    work_orders["toleranceMinutes"] = max(0.0, _numeric(work_orders.get("toleranceMinutes") or 0.0))
+    work_orders["toleranceMs"] = _duration_ms(
+        _first_present(work_orders.get("toleranceMs"), work_orders.get("toleranceMinutes")),
+        multiplier=60_000.0 if work_orders.get("toleranceMs") in (None, "") else 1.0,
+    )
+    work_orders["toleranceMinutes"] = _minutes_from_ms(work_orders["toleranceMs"])
     work_orders["activeOrderId"] = str(work_orders.get("activeOrderId") or "").strip()
     work_orders["lastCompletedOrderId"] = str(work_orders.get("lastCompletedOrderId") or "").strip()
     work_orders["lastCompletedAt"] = str(work_orders.get("lastCompletedAt") or "")
@@ -1248,6 +1728,85 @@ def _move_completed_item_to_inventory(
     item["inventory_backfill_disabled"] = False
 
 
+def _remove_completed_item_from_inventory(
+    state: dict[str, Any],
+    item: dict[str, Any],
+    *,
+    received_at: str,
+    source: str,
+) -> bool:
+    match_key = str(item.get("inventory_match_key") or "").strip()
+    if not match_key:
+        item["inventory_match_key"] = ""
+        item["inventoryAction"] = source
+        return False
+    inventory = _work_order_inventory(state)
+    entry = inventory.get(match_key)
+    if isinstance(entry, dict):
+        item_id = str(item.get("item_id") or "").strip()
+        item_ids = _inventory_item_ids(entry)
+        if item_id:
+            entry["itemIds"] = [value for value in item_ids if value != item_id]
+        entry["quantity"] = max(0, round(_numeric(entry.get("quantity"))) - 1)
+        entry["quantity"] = max(entry["quantity"], len(entry.get("itemIds") or []))
+        entry["lastUpdatedAt"] = received_at
+        entry["lastSource"] = source
+        if entry["quantity"] <= 0 and not _inventory_item_ids(entry):
+            inventory.pop(match_key, None)
+    item["inventory_match_key"] = ""
+    item["inventoryAction"] = source
+    return True
+
+
+def _sync_completed_item_inventory_eligibility(
+    state: dict[str, Any],
+    item: dict[str, Any],
+    *,
+    received_at: str,
+    source: str,
+) -> str:
+    if str(item.get("work_order_id") or "").strip():
+        return "work_order_linked"
+    if not item.get("completed_at") or _inventory_backfill_disabled(item):
+        return "not_eligible"
+    classification = _normalize_classification(item.get("classification"))
+    if classification == "SCRAP":
+        removed = _remove_completed_item_from_inventory(
+            state,
+            item,
+            received_at=received_at,
+            source="scrap_excluded",
+        )
+        if not removed:
+            item["inventory_match_key"] = ""
+            item["inventoryAction"] = "scrap_excluded"
+        return "removed_for_scrap"
+
+    current_action = str(item.get("inventoryAction") or "").strip()
+    if current_action in {"off_order_completion", "legacy_inventory_backfill", "quality_override_inventory"} and str(item.get("inventory_match_key") or "").strip():
+        return "already_in_inventory"
+
+    match_key = str(item.get("inventory_match_key") or "").strip() or _completed_item_match_key(item)
+    if not match_key:
+        return "missing_match_key"
+    color = _normalize_order_color(item.get("final_color"), item.get("color"), item.get("sensor_color"), match_key)
+    product_code = str(item.get("product_code") or item.get("stock_code") or "").strip() or match_key.upper()
+    stock_code = str(item.get("stock_code") or item.get("product_code") or "").strip() or product_code or match_key.upper()
+    stock_name = str(item.get("stock_name") or "").strip() or (color or match_key).upper()
+    _move_completed_item_to_inventory(
+        state,
+        item,
+        match_key=match_key,
+        received_at=received_at,
+        source=source,
+        product_code=product_code,
+        stock_code=stock_code,
+        stock_name=stock_name,
+        color=color,
+    )
+    return "added_to_inventory"
+
+
 def _clear_item_work_order_context(item: dict[str, Any], *, updated_at: str = "", inventory_action: str = "") -> None:
     item["work_order_id"] = ""
     item["work_order_match_key"] = ""
@@ -1412,6 +1971,15 @@ def _route_completed_item_to_work_orders(
         return
 
     match_key = item_color or str(item.get("final_color") or item.get("color") or resolved_key)
+    if _normalize_classification(item.get("classification")) == "SCRAP":
+        item["inventory_match_key"] = ""
+        item["inventoryAction"] = "scrap_excluded"
+        _set_summary(
+            state,
+            f"#{item_id} hurda olarak isaretli oldugu icin depoya alinmadi.",
+            now=now,
+        )
+        return
     _move_completed_item_to_inventory(
         state,
         item,
@@ -1728,15 +2296,24 @@ def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -
         elif elapsed_ms > 0:
             shift_window_total_ms = elapsed_ms
 
-    active_fault = state.get("activeFault") if isinstance(state.get("activeFault"), dict) else None
-    active_fault_started = _local_datetime(_parse_iso(str(active_fault.get("startedAt") or ""))) if active_fault else None
-    active_fault_ms = 0
-    if shift_active and active_fault_started is not None:
-        active_fault_ms = max(0, int((stamp - active_fault_started).total_seconds() * 1000))
+    active_fault_ms = _active_fault_duration_ms(state, now=stamp) if shift_active else 0
+    active_closing_maintenance_ms = _active_planned_maintenance_ms(state, now=stamp) if shift_active else 0
 
-    planned_stop_total_ms = min(
-        max(0, round(_numeric(shift.get("plannedStopMin") or state.get("plannedStopMin")) * 60_000.0)),
+    configured_planned_stop_total_ms = min(
+        _duration_ms(
+            _first_present(
+                shift.get("plannedStopMs"),
+                state.get("plannedStopMs"),
+                shift.get("plannedStopMin"),
+                state.get("plannedStopMin"),
+            ),
+            multiplier=60_000.0 if _first_present(shift.get("plannedStopMs"), state.get("plannedStopMs")) in (None, "") else 1.0,
+        ),
         shift_window_total_ms if shift_window_total_ms > 0 else max(0, elapsed_ms),
+    )
+    planned_stop_total_ms = min(
+        shift_window_total_ms if shift_window_total_ms > 0 else max(0, elapsed_ms),
+        configured_planned_stop_total_ms + active_closing_maintenance_ms + max(0, round(_numeric((_maintenance_state(state)).get("closingChecklistDurationMs")))),
     )
     if planned_stop_total_ms > 0 and shift_window_total_ms > 0:
         planned_stop_budget_ms = min(
@@ -1756,11 +2333,21 @@ def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -
     performance = 0.0
     target_text = "-"
     performance_mode = str(shift.get("performanceMode") or state.get("performanceMode") or "TARGET").upper()
-    target_qty = max(0, round(_numeric(shift.get("targetQty") or state.get("targetQty"))))
-    ideal_cycle_sec = max(0.0, _numeric(shift.get("idealCycleSec") or state.get("idealCycleSec")))
+    target_qty = max(0, round(_numeric(_first_present(shift.get("targetQty"), state.get("targetQty")))))
+    ideal_cycle_ms = _duration_ms(
+        _first_present(
+            shift.get("idealCycleMs"),
+            state.get("idealCycleMs"),
+            shift.get("idealCycleSec"),
+            state.get("idealCycleSec"),
+        ),
+        multiplier=1000.0 if _first_present(shift.get("idealCycleMs"), state.get("idealCycleMs")) in (None, "") else 1.0,
+        default=10_000,
+    )
+    ideal_cycle_sec = _seconds_from_ms(ideal_cycle_ms)
 
     if performance_mode == "IDEAL_CYCLE" and ideal_cycle_sec > 0:
-        expected = (runtime_ms / (ideal_cycle_sec * 1000.0)) if runtime_ms > 0 else 0.0
+        expected = (runtime_ms / ideal_cycle_ms) if runtime_ms > 0 else 0.0
         performance = (total / expected) if expected > 0 else 0.0
         target_text = f"{ideal_cycle_sec:.1f} sn cycle / beklenen {expected:.1f}"
     elif target_qty > 0:
@@ -1963,10 +2550,20 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
     if remaining_qty is not None:
         fulfilled_candidates.append(target_qty - remaining_qty)
     fulfilled_qty = min(target_qty, max(fulfilled_candidates) if fulfilled_candidates else 0)
-    ideal_cycle_sec = max(0.0, _numeric(order.get("cycleTimeSec") or state.get("idealCycleSec") or 10.0))
-    if ideal_cycle_sec <= 0:
-        ideal_cycle_sec = 10.0
-    planned_duration_ms = int(target_qty * ideal_cycle_sec * 1000.0)
+    ideal_cycle_ms = _duration_ms(
+        _first_present(
+            order.get("cycleTimeMs"),
+            state.get("idealCycleMs"),
+            order.get("cycleTimeSec"),
+            state.get("idealCycleSec"),
+        ),
+        multiplier=1000.0 if _first_present(order.get("cycleTimeMs"), state.get("idealCycleMs")) in (None, "") else 1.0,
+        default=10_000,
+    )
+    if ideal_cycle_ms <= 0:
+        ideal_cycle_ms = 10_000
+    ideal_cycle_sec = _seconds_from_ms(ideal_cycle_ms)
+    planned_duration_ms = int(target_qty * ideal_cycle_ms)
     started_at = _parse_iso(str(order.get("startedAt") or ""))
     auto_completed_at = _parse_iso(str(order.get("autoCompletedAt") or ""))
     completed_at = _parse_iso(str(order.get("completedAt") or ""))
@@ -1981,7 +2578,7 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
     availability = (runtime_ms / elapsed_ms) if elapsed_ms > 0 else None
     if availability is not None:
         availability = max(0.0, min(1.0, availability))
-    performance = ((production_qty * ideal_cycle_sec * 1000.0) / runtime_ms) if runtime_ms > 0 else 0.0
+    performance = ((production_qty * ideal_cycle_ms) / runtime_ms) if runtime_ms > 0 else 0.0
     performance = max(0.0, min(1.0, performance))
     quality = (good / total) if total > 0 else 1.0
     quality = max(0.0, min(1.0, quality))
@@ -1996,6 +2593,7 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
         "goodQty": good,
         "reworkQty": rework,
         "scrapQty": scrap,
+        "idealCycleMs": ideal_cycle_ms,
         "idealCycleSec": ideal_cycle_sec,
         "plannedDurationMs": planned_duration_ms,
         "elapsedMs": elapsed_ms,
@@ -2019,7 +2617,9 @@ def _system_log_line(kind: str, state: dict[str, Any], *, now: datetime) -> str:
             f"|PERF_MOD:{shift['performanceMode']}"
             f"|HEDEF:{int(shift['targetQty'])}"
             f"|IDEAL_CYCLE_SN:{float(shift['idealCycleSec']):.1f}"
+            f"|IDEAL_CYCLE_MS:{int(_numeric(shift.get('idealCycleMs')))}"
             f"|PLANLI_DURUS_DK:{float(shift['plannedStopMin']):.1f}"
+            f"|PLANLI_DURUS_MS:{int(_numeric(shift.get('plannedStopMs')))}"
         )
     totals = _summary_counts(state)
     return (
@@ -2031,6 +2631,80 @@ def _system_log_line(kind: str, state: dict[str, Any], *, now: datetime) -> str:
         f"|REWORK:{totals['rework']}"
         f"|HURDA:{totals['scrap']}"
     )
+
+
+def _start_shift_runtime(state: dict[str, Any], *, stamp: datetime) -> tuple[str, str]:
+    start, end, preset = _shift_window(state["shiftSelected"], stamp)
+    state["shift"] = {
+        "active": True,
+        "code": state["shiftSelected"],
+        "name": preset["name"],
+        "startedAt": _pseudo_iso_text(stamp),
+        "endedAt": "",
+        "planStart": _pseudo_iso_text(start),
+        "planEnd": _pseudo_iso_text(end),
+        "performanceMode": state["performanceMode"],
+        "targetQty": state["targetQty"],
+        "idealCycleMs": state["idealCycleMs"],
+        "idealCycleSec": state["idealCycleSec"],
+        "plannedStopMs": state["plannedStopMs"],
+        "plannedStopMin": state["plannedStopMin"],
+    }
+    state["counts"] = {
+        "total": 0,
+        "good": 0,
+        "rework": 0,
+        "scrap": 0,
+        "byColor": {
+            "red": empty_color_counts(),
+            "yellow": empty_color_counts(),
+            "blue": empty_color_counts(),
+        },
+    }
+    items = state["itemsById"] if isinstance(state.get("itemsById"), dict) else {}
+    for item in items.values():
+        if isinstance(item, dict):
+            item["count_in_oee"] = False
+    state["recentItemIds"] = []
+    state["activeFault"] = None
+    state["faultHistory"] = []
+    state["unplannedDowntimeMs"] = 0
+    state["manualFaultDurationMs"] = 0
+    state["trend"] = []
+    state["qualityOverrideLog"] = []
+    state["earlyPickRejectLog"] = []
+    maintenance = _maintenance_state(state)
+    maintenance["openingSession"] = None
+    maintenance["closingChecklistDurationMs"] = 0
+    maintenance["closingSession"] = None
+    vision = _vision_state(state)
+    vision["metrics"] = {
+        "mismatchCount": 0,
+        "earlyAcceptedCount": 0,
+        "earlyRejectedCount": 0,
+        "lateAuditCount": 0,
+    }
+    vision["lastRejectReason"] = ""
+    state["lastSnapshotLoggedAt"] = ""
+    state["lastTabletLine"] = ""
+    _set_summary(state, f"{state['shift']['code']} basladi. OEE sayaclari sifirlandi.", now=stamp)
+    _append_oee_trend_snapshot(state, now=stamp, reason="shift_start", force=True)
+    _refresh_operational_state(state)
+    system_line = _system_log_line("START", state, now=stamp)
+    return state["lastEventSummary"], system_line
+
+
+def _stop_shift_runtime(state: dict[str, Any], *, stamp: datetime) -> tuple[str, str]:
+    if isinstance(state.get("activeFault"), dict):
+        _close_active_fault(state, ended_at=_pseudo_iso_text(stamp))
+    _set_summary(state, f"{state['shift']['code']} kapatildi. Vardiya ozeti kilitlendi.", now=stamp)
+    final_snapshot = build_live_snapshot(state, now=stamp)
+    _append_oee_trend_snapshot(state, now=stamp, reason="shift_stop", force=True, snapshot=final_snapshot)
+    system_line = _system_log_line("STOP", state, now=stamp)
+    state["shift"]["active"] = False
+    state["shift"]["endedAt"] = _pseudo_iso_text(stamp)
+    _refresh_operational_state(state)
+    return state["lastEventSummary"], system_line
 
 
 def _complete_runtime_item(
@@ -2230,7 +2904,9 @@ class OeeRuntimeStateManager:
             "set_performance_mode",
             "set_target_qty",
             "set_ideal_cycle_sec",
+            "set_ideal_cycle_ms",
             "set_planned_stop_min",
+            "set_planned_stop_ms",
             "shift_start",
             "shift_stop",
         }:
@@ -2263,75 +2939,47 @@ class OeeRuntimeStateManager:
             recent_log = f"SYSTEM|OEE|SET_TARGET_QTY|{state['targetQty']}"
 
         elif normalized_action == "set_ideal_cycle_sec":
-            state["idealCycleSec"] = max(0.0, _numeric(value))
+            state["idealCycleMs"] = _duration_ms(value, multiplier=1000.0)
+            state["idealCycleSec"] = _seconds_from_ms(state["idealCycleMs"])
             _touch_shift_config(state)
             _set_summary(state, f"Ideal cycle {state['idealCycleSec']:.1f} sn olarak guncellendi.", now=stamp)
             if state["shift"]["active"]:
                 _append_oee_trend_snapshot(state, now=stamp, reason="control:set_ideal_cycle_sec", force=True)
             recent_log = f"SYSTEM|OEE|SET_IDEAL_CYCLE_SEC|{state['idealCycleSec']:.1f}"
 
+        elif normalized_action == "set_ideal_cycle_ms":
+            state["idealCycleMs"] = _duration_ms(value)
+            state["idealCycleSec"] = _seconds_from_ms(state["idealCycleMs"])
+            _touch_shift_config(state)
+            _set_summary(state, f"Ideal cycle {int(state['idealCycleMs'])} ms olarak guncellendi.", now=stamp)
+            if state["shift"]["active"]:
+                _append_oee_trend_snapshot(state, now=stamp, reason="control:set_ideal_cycle_ms", force=True)
+            recent_log = f"SYSTEM|OEE|SET_IDEAL_CYCLE_MS|{int(state['idealCycleMs'])}"
+
         elif normalized_action == "set_planned_stop_min":
-            state["plannedStopMin"] = max(0.0, _numeric(value))
+            state["plannedStopMs"] = _duration_ms(value, multiplier=60_000.0)
+            state["plannedStopMin"] = _minutes_from_ms(state["plannedStopMs"])
             _touch_shift_config(state)
             _set_summary(state, f"Planli durus rezervi {state['plannedStopMin']:.1f} dk olarak guncellendi.", now=stamp)
             if state["shift"]["active"]:
                 _append_oee_trend_snapshot(state, now=stamp, reason="control:set_planned_stop_min", force=True)
             recent_log = f"SYSTEM|OEE|SET_PLANNED_STOP_MIN|{state['plannedStopMin']:.1f}"
 
+        elif normalized_action == "set_planned_stop_ms":
+            state["plannedStopMs"] = _duration_ms(value)
+            state["plannedStopMin"] = _minutes_from_ms(state["plannedStopMs"])
+            _touch_shift_config(state)
+            _set_summary(state, f"Planli durus rezervi {int(state['plannedStopMs'])} ms olarak guncellendi.", now=stamp)
+            if state["shift"]["active"]:
+                _append_oee_trend_snapshot(state, now=stamp, reason="control:set_planned_stop_ms", force=True)
+            recent_log = f"SYSTEM|OEE|SET_PLANNED_STOP_MS|{int(state['plannedStopMs'])}"
+
         elif normalized_action == "shift_start":
             if state["shift"]["active"]:
                 _set_summary(state, "Aktif vardiya bitmeden yeni vardiya baslatilamadi.", now=stamp)
                 recent_log = "SYSTEM|OEE|SHIFT_START|REJECTED"
             else:
-                start, end, preset = _shift_window(state["shiftSelected"], stamp)
-                state["shift"] = {
-                    "active": True,
-                    "code": state["shiftSelected"],
-                    "name": preset["name"],
-                    "startedAt": _pseudo_iso_text(stamp),
-                    "endedAt": "",
-                    "planStart": _pseudo_iso_text(start),
-                    "planEnd": _pseudo_iso_text(end),
-                    "performanceMode": state["performanceMode"],
-                    "targetQty": state["targetQty"],
-                    "idealCycleSec": state["idealCycleSec"],
-                    "plannedStopMin": state["plannedStopMin"],
-                }
-                state["counts"] = {
-                    "total": 0,
-                    "good": 0,
-                    "rework": 0,
-                    "scrap": 0,
-                    "byColor": {
-                        "red": empty_color_counts(),
-                        "yellow": empty_color_counts(),
-                        "blue": empty_color_counts(),
-                    },
-                }
-                items = state["itemsById"] if isinstance(state.get("itemsById"), dict) else {}
-                for item in items.values():
-                    if isinstance(item, dict):
-                        item["count_in_oee"] = False
-                state["recentItemIds"] = []
-                state["activeFault"] = None
-                state["faultHistory"] = []
-                state["unplannedDowntimeMs"] = 0
-                state["trend"] = []
-                state["qualityOverrideLog"] = []
-                state["earlyPickRejectLog"] = []
-                vision = _vision_state(state)
-                vision["metrics"] = {
-                    "mismatchCount": 0,
-                    "earlyAcceptedCount": 0,
-                    "earlyRejectedCount": 0,
-                    "lateAuditCount": 0,
-                }
-                vision["lastRejectReason"] = ""
-                state["lastSnapshotLoggedAt"] = ""
-                state["lastTabletLine"] = ""
-                _set_summary(state, f"{state['shift']['code']} basladi. OEE sayaclari sifirlandi.", now=stamp)
-                _append_oee_trend_snapshot(state, now=stamp, reason="shift_start", force=True)
-                system_line = _system_log_line("START", state, now=stamp)
+                _summary, system_line = _start_shift_runtime(state, stamp=stamp)
                 recent_log = system_line
 
         elif normalized_action == "shift_stop":
@@ -2339,16 +2987,10 @@ class OeeRuntimeStateManager:
                 _set_summary(state, "Bitirilecek aktif vardiya yok.", now=stamp)
                 recent_log = "SYSTEM|OEE|SHIFT_STOP|REJECTED"
             else:
-                if isinstance(state.get("activeFault"), dict):
-                    _close_active_fault(state, ended_at=_pseudo_iso_text(stamp))
-                _set_summary(state, f"{state['shift']['code']} kapatildi. Vardiya ozeti kilitlendi.", now=stamp)
-                final_snapshot = build_live_snapshot(state, now=stamp)
-                _append_oee_trend_snapshot(state, now=stamp, reason="shift_stop", force=True, snapshot=final_snapshot)
-                system_line = _system_log_line("STOP", state, now=stamp)
-                state["shift"]["active"] = False
-                state["shift"]["endedAt"] = _pseudo_iso_text(stamp)
+                _summary, system_line = _stop_shift_runtime(state, stamp=stamp)
                 recent_log = system_line
 
+        _refresh_operational_state(state)
         self.write_state(state)
         return {
             "state": state,
@@ -2356,6 +2998,420 @@ class OeeRuntimeStateManager:
             "recent_log": recent_log,
             "system_line": system_line,
         }
+
+    @_state_locked
+    def register_kiosk_device(
+        self,
+        *,
+        device_id: str,
+        device_name: str = "",
+        device_role: str = "operator_kiosk",
+        bound_station_id: str = "",
+        operator_id: str = "",
+        operator_code: str = "",
+        operator_name: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        state = self.read_state()
+        seen_at = _pseudo_iso_text(stamp)
+        _update_device_presence(
+            state,
+            device_id=device_id,
+            device_name=device_name,
+            device_role=device_role,
+            bound_station_id=bound_station_id,
+            operator_id=operator_id,
+            operator_code=operator_code,
+            operator_name=operator_name,
+            seen_at=seen_at,
+        )
+        _refresh_operational_state(state)
+        self.write_state(state)
+        return {
+            "state": state,
+            "device": _device_registry_state(state).get(str(device_id or "").strip(), {}),
+            "session": _device_sessions_state(state).get(str(device_id or "").strip(), {}),
+        }
+
+    @_state_locked
+    def begin_maintenance_session(
+        self,
+        phase: str,
+        *,
+        steps: list[dict[str, Any]],
+        device_id: str,
+        device_name: str = "",
+        device_role: str = "operator_kiosk",
+        bound_station_id: str = "",
+        operator_id: str = "",
+        operator_code: str = "",
+        operator_name: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        state = self.read_state()
+        normalized_phase = "closing" if str(phase or "").strip().lower() == "closing" else "opening"
+        maintenance = _maintenance_state(state)
+        if _active_maintenance_session(state) is not None:
+            active_session = _active_maintenance_session(state)
+            if isinstance(active_session, dict) and str(active_session.get("phase") or "") == normalized_phase:
+                _update_device_presence(
+                    state,
+                    device_id=device_id,
+                    device_name=device_name,
+                    device_role=device_role,
+                    bound_station_id=bound_station_id,
+                    operator_id=operator_id,
+                    operator_code=operator_code,
+                    operator_name=operator_name,
+                    seen_at=_pseudo_iso_text(stamp),
+                )
+                self.write_state(state)
+                return {"state": state, "session": active_session, "summary": state["lastEventSummary"]}
+            raise ValueError("ANOTHER_MAINTENANCE_SESSION_ACTIVE")
+        if normalized_phase == "opening" and bool(state["shift"]["active"]):
+            raise ValueError("SHIFT_ALREADY_ACTIVE")
+        if normalized_phase == "closing" and not bool(state["shift"]["active"]):
+            raise ValueError("SHIFT_NOT_ACTIVE")
+        if normalized_phase == "closing" and isinstance(state.get("activeFault"), dict):
+            raise ValueError("ACTIVE_FAULT_EXISTS")
+
+        seen_at = _pseudo_iso_text(stamp)
+        _update_device_presence(
+            state,
+            device_id=device_id,
+            device_name=device_name,
+            device_role=device_role,
+            bound_station_id=bound_station_id,
+            operator_id=operator_id,
+            operator_code=operator_code,
+            operator_name=operator_name,
+            seen_at=seen_at,
+        )
+        normalized_steps = [
+            _normalize_checklist_step(
+                step,
+                fallback_code=f"{normalized_phase}_step_{index}",
+                fallback_label=f"{normalized_phase.title()} Step {index}",
+            )
+            for index, step in enumerate(steps, start=1)
+        ]
+        session = {
+            "sessionId": uuid.uuid4().hex,
+            "phase": normalized_phase,
+            "status": "active",
+            "deviceId": str(device_id or "").strip(),
+            "deviceName": str(device_name or device_id or "").strip(),
+            "deviceRole": str(device_role or "operator_kiosk").strip() or "operator_kiosk",
+            "boundStationId": str(bound_station_id or "").strip(),
+            "operatorId": str(operator_id or "").strip(),
+            "operatorCode": str(operator_code or "").strip(),
+            "operatorName": str(operator_name or "").strip(),
+            "shiftCode": str(state["shift"]["code"] or state["shiftSelected"] or ""),
+            "startedAt": seen_at,
+            "endedAt": "",
+            "durationMs": 0,
+            "note": "",
+            "steps": normalized_steps,
+        }
+        if normalized_phase == "opening":
+            maintenance["openingSession"] = session
+            _set_summary(state, "Acilis bakimi baslatildi.", now=stamp)
+        else:
+            maintenance["closingSession"] = session
+            _set_summary(state, "Kapanis bakimi baslatildi.", now=stamp)
+        _refresh_operational_state(state)
+        self.write_state(state)
+        return {"state": state, "session": session, "summary": state["lastEventSummary"]}
+
+    @_state_locked
+    def complete_maintenance_session(
+        self,
+        phase: str,
+        *,
+        completed_steps: Any,
+        note: str = "",
+        device_id: str = "",
+        device_name: str = "",
+        device_role: str = "operator_kiosk",
+        bound_station_id: str = "",
+        operator_id: str = "",
+        operator_code: str = "",
+        operator_name: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        state = self.read_state()
+        normalized_phase = "closing" if str(phase or "").strip().lower() == "closing" else "opening"
+        maintenance = _maintenance_state(state)
+        session = _active_maintenance_session(state, phase=normalized_phase)
+        if not isinstance(session, dict):
+            raise ValueError("MAINTENANCE_SESSION_NOT_FOUND")
+        provided_steps: dict[str, dict[str, Any]] = {}
+        raw_completed_steps = completed_steps if isinstance(completed_steps, list) else []
+        for row in raw_completed_steps:
+            if isinstance(row, dict):
+                step_code = str(row.get("step_code") or row.get("stepCode") or "").strip()
+                if step_code:
+                    provided_steps[step_code] = row
+            else:
+                step_code = str(row or "").strip()
+                if step_code:
+                    provided_steps[step_code] = {"step_code": step_code}
+        if str(device_id or "").strip():
+            session["deviceId"] = str(device_id).strip()
+        if str(device_name or "").strip():
+            session["deviceName"] = str(device_name).strip()
+        if str(device_role or "").strip():
+            session["deviceRole"] = str(device_role).strip()
+        if str(bound_station_id or "").strip():
+            session["boundStationId"] = str(bound_station_id).strip()
+        if str(operator_id or "").strip():
+            session["operatorId"] = str(operator_id).strip()
+        if str(operator_code or "").strip():
+            session["operatorCode"] = str(operator_code).strip()
+        if str(operator_name or "").strip():
+            session["operatorName"] = str(operator_name).strip()
+        session["note"] = str(note or "").strip()
+        for step in session["steps"]:
+            step_code = str(step.get("stepCode") or "").strip()
+            provided = provided_steps.get(step_code)
+            completed = step_code in provided_steps or bool(step.get("completed"))
+            if isinstance(provided, dict) and "completed" in provided:
+                completed = bool(provided.get("completed"))
+            step["completed"] = bool(completed)
+            if step["completed"] and not step.get("completedAt"):
+                step["completedAt"] = _pseudo_iso_text(stamp)
+            if bool(step.get("required")) and not bool(step.get("completed")):
+                raise ValueError("MAINTENANCE_STEP_REQUIRED")
+        session["endedAt"] = _pseudo_iso_text(stamp)
+        session["durationMs"] = _maintenance_session_duration_ms(session, now=stamp)
+        session["status"] = "completed"
+        seen_at = _pseudo_iso_text(stamp)
+        _update_device_presence(
+            state,
+            device_id=session["deviceId"],
+            device_name=session["deviceName"],
+            device_role=session["deviceRole"],
+            bound_station_id=session["boundStationId"],
+            operator_id=session["operatorId"],
+            operator_code=session["operatorCode"],
+            operator_name=session["operatorName"],
+            seen_at=seen_at,
+        )
+        maintenance["history"] = _prepend_capped(maintenance["history"], dict(session), limit=50)
+        system_line = ""
+        if normalized_phase == "opening":
+            maintenance["openingChecklistDurationMs"] = session["durationMs"]
+            maintenance["lastOpeningCompletedAt"] = session["endedAt"]
+            maintenance["openingSession"] = None
+            _summary, system_line = _start_shift_runtime(state, stamp=stamp)
+        else:
+            maintenance["closingChecklistDurationMs"] = max(
+                0,
+                round(_numeric(maintenance.get("closingChecklistDurationMs"))) + session["durationMs"],
+            )
+            maintenance["lastClosingCompletedAt"] = session["endedAt"]
+            maintenance["closingSession"] = None
+            _summary, system_line = _stop_shift_runtime(state, stamp=stamp)
+        _refresh_operational_state(state)
+        self.write_state(state)
+        return {
+            "state": state,
+            "session": session,
+            "summary": state["lastEventSummary"],
+            "system_line": system_line,
+        }
+
+    @_state_locked
+    def start_manual_fault(
+        self,
+        *,
+        device_id: str,
+        reason_code: str = "",
+        reason_text: str = "",
+        device_name: str = "",
+        device_role: str = "operator_kiosk",
+        bound_station_id: str = "",
+        operator_id: str = "",
+        operator_code: str = "",
+        operator_name: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        state = self.read_state()
+        if not bool(state["shift"]["active"]):
+            raise ValueError("SHIFT_NOT_ACTIVE")
+        if _active_maintenance_session(state) is not None:
+            raise ValueError("MAINTENANCE_SESSION_ACTIVE")
+        seen_at = _pseudo_iso_text(stamp)
+        _update_device_presence(
+            state,
+            device_id=device_id,
+            device_name=device_name,
+            device_role=device_role,
+            bound_station_id=bound_station_id,
+            operator_id=operator_id,
+            operator_code=operator_code,
+            operator_name=operator_name,
+            seen_at=seen_at,
+        )
+        if isinstance(state.get("activeFault"), dict):
+            raise ValueError("ACTIVE_FAULT_EXISTS")
+        active_fault = {
+            "faultId": str(int(stamp.timestamp() * 1000)),
+            "category": "PLANSIZ_DURUS",
+            "reasonCode": str(reason_code or "").strip(),
+            "reason": str(reason_text or reason_code or "Bilinmiyor").strip() or "Bilinmiyor",
+            "status": "BASLADI",
+            "startedAt": seen_at,
+            "endedAt": "",
+            "durationMs": 0,
+            "durationMin": 0.0,
+            "source": "kiosk",
+            "deviceId": str(device_id or "").strip(),
+            "operatorId": str(operator_id or "").strip(),
+            "operatorCode": str(operator_code or "").strip(),
+            "operatorName": str(operator_name or "").strip(),
+            "boundStationId": str(bound_station_id or "").strip(),
+            "countsTowardUnplanned": True,
+        }
+        state["activeFault"] = active_fault
+        _set_summary(state, f"Aktif ariza: {active_fault['reason']}", now=stamp)
+        _append_oee_trend_snapshot(state, now=stamp, reason="fault_started", force=True)
+        _refresh_operational_state(state)
+        self.write_state(state)
+        return {"state": state, "fault": active_fault, "summary": state["lastEventSummary"]}
+
+    @_state_locked
+    def clear_manual_fault(self, *, now: datetime | None = None) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        state = self.read_state()
+        active_fault = state.get("activeFault") if isinstance(state.get("activeFault"), dict) else None
+        if not isinstance(active_fault, dict) or str(active_fault.get("source") or "").strip().lower() != "kiosk":
+            raise ValueError("MANUAL_FAULT_NOT_FOUND")
+        ended_at = _pseudo_iso_text(stamp)
+        _close_active_fault(state, ended_at=ended_at)
+        _set_summary(state, "Manuel ariza kapatildi.", now=stamp)
+        _append_oee_trend_snapshot(state, now=stamp, reason="fault_cleared", force=True)
+        _refresh_operational_state(state)
+        self.write_state(state)
+        return {"state": state, "summary": state["lastEventSummary"]}
+
+    @_state_locked
+    def request_help(
+        self,
+        *,
+        device_id: str,
+        device_name: str = "",
+        bound_station_id: str = "",
+        operator_id: str = "",
+        operator_code: str = "",
+        operator_name: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        state = self.read_state()
+        seen_at = _pseudo_iso_text(stamp)
+        _update_device_presence(
+            state,
+            device_id=device_id,
+            device_name=device_name,
+            device_role="operator_kiosk",
+            bound_station_id=bound_station_id,
+            operator_id=operator_id,
+            operator_code=operator_code,
+            operator_name=operator_name,
+            seen_at=seen_at,
+        )
+        help_request = _help_request_state(state)
+        request_key = _device_request_key(device_id, bound_station_id)
+        request = help_request["requestsByKey"].get(request_key)
+        if isinstance(request, dict) and str(request.get("status") or "") in {"open", "acknowledged"}:
+            request["repeatCount"] = max(1, round(_numeric(request.get("repeatCount")))) + 1
+            request["lastRequestedAt"] = seen_at
+        else:
+            request = {
+                "requestId": uuid.uuid4().hex,
+                "requestKey": request_key,
+                "deviceId": str(device_id or "").strip(),
+                "deviceName": str(device_name or device_id or "").strip(),
+                "boundStationId": str(bound_station_id or "").strip(),
+                "operatorId": str(operator_id or "").strip(),
+                "operatorCode": str(operator_code or "").strip(),
+                "operatorName": str(operator_name or "").strip(),
+                "status": "open",
+                "repeatCount": 1,
+                "createdAt": seen_at,
+                "lastRequestedAt": seen_at,
+                "acknowledgedAt": "",
+                "resolvedAt": "",
+            }
+            help_request["requestsByKey"][request_key] = request
+        help_request["history"] = _prepend_capped(help_request["history"], dict(request), limit=50)
+        _set_summary(state, "Teknisyen yardim cagri istegi gonderildi.", now=stamp)
+        _refresh_operational_state(state)
+        self.write_state(state)
+        return {"state": state, "request": request, "summary": state["lastEventSummary"]}
+
+    @_state_locked
+    def apply_kiosk_quality_override(
+        self,
+        item_id: str,
+        classification: Any,
+        *,
+        reason_text: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        state = self.read_state()
+        items = state["itemsById"] if isinstance(state.get("itemsById"), dict) else {}
+        normalized_item_id = str(item_id or "").strip()
+        shift_started_at = _parse_iso(str(((state.get("shift") or {}) if isinstance(state.get("shift"), dict) else {}).get("startedAt") or ""))
+        require_counted = bool(((state.get("shift") or {}) if isinstance(state.get("shift"), dict) else {}).get("active"))
+        visible_item_ids: list[str] = []
+        recent_item_keys = state.get("recentItemIds") if isinstance(state.get("recentItemIds"), list) else []
+        for raw_key in recent_item_keys:
+            item = items.get(str(raw_key or "").strip())
+            if not isinstance(item, dict):
+                continue
+            completed_at = _parse_iso(str(item.get("completed_at") or ""))
+            if completed_at is None:
+                continue
+            if shift_started_at is not None and completed_at < shift_started_at:
+                continue
+            if require_counted and not bool(item.get("count_in_oee")):
+                continue
+            candidate_id = str(item.get("item_id") or raw_key or "").strip()
+            if not candidate_id or candidate_id in visible_item_ids:
+                continue
+            visible_item_ids.append(candidate_id)
+            if len(visible_item_ids) >= 5:
+                break
+        if normalized_item_id not in set(visible_item_ids):
+            raise ValueError("ITEM_NOT_IN_KIOSK_WINDOW")
+        item_key = _resolve_item_lookup_key(items, normalized_item_id, completed_only=True)
+        item = items.get(item_key)
+        if not isinstance(item, dict):
+            raise ValueError("ITEM_NOT_FOUND")
+        if not item.get("completed_at"):
+            raise ValueError("ITEM_NOT_COMPLETED")
+        work_order_id = str(item.get("work_order_id") or "").strip()
+        if work_order_id:
+            order = _work_order_orders(state).get(work_order_id)
+            if not isinstance(order, dict):
+                raise ValueError("WORK_ORDER_NOT_FOUND")
+            if str(order.get("status") or "").strip() not in {"active", "pending_approval"}:
+                raise ValueError("WORK_ORDER_LOCKED_FOR_KIOSK_OVERRIDE")
+        result = self.apply_quality_override(normalized_item_id, classification, now=stamp)
+        item = result.get("item") if isinstance(result.get("item"), dict) else {}
+        override = result.get("override") if isinstance(result.get("override"), dict) else None
+        if override is not None:
+            override["reason_text"] = str(reason_text or "").strip()
+            item["override_reason_text"] = str(reason_text or "").strip()
+            self.write_state(result["state"])
+        return result
 
     @_state_locked
     def import_work_orders(
@@ -2516,12 +3572,14 @@ class OeeRuntimeStateManager:
         stamp = now or datetime.now().astimezone()
         state = self.read_state()
         work_orders = _work_orders_state(state)
-        work_orders["toleranceMinutes"] = max(0.0, _numeric(minutes))
+        work_orders["toleranceMs"] = _duration_ms(minutes, multiplier=60_000.0)
+        work_orders["toleranceMinutes"] = _minutes_from_ms(work_orders["toleranceMs"])
         _set_summary(state, f"Is emirleri arasi tolerans {work_orders['toleranceMinutes']:.1f} dk olarak ayarlandi.", now=stamp)
         self.write_state(state)
         return {
             "state": state,
             "summary": state["lastEventSummary"],
+            "tolerance_ms": work_orders["toleranceMs"],
             "tolerance_minutes": work_orders["toleranceMinutes"],
         }
 
@@ -2555,18 +3613,21 @@ class OeeRuntimeStateManager:
         if start_dt.tzinfo is None:
             start_dt = start_dt.astimezone()
         start_text = _pseudo_iso_text(start_dt)
-        tolerance_minutes = max(0.0, _numeric(work_orders.get("toleranceMinutes")))
+        tolerance_ms = _duration_ms(
+            _first_present(work_orders.get("toleranceMs"), work_orders.get("toleranceMinutes")),
+            multiplier=60_000.0 if work_orders.get("toleranceMs") in (None, "") else 1.0,
+        )
         last_completed_order_id = str(work_orders.get("lastCompletedOrderId") or "").strip()
         last_completed_at = _parse_iso(str(work_orders.get("lastCompletedAt") or ""))
         cleaned_reason = str(transition_reason or "").strip()
-        if last_completed_order_id and last_completed_at is not None and tolerance_minutes > 0:
-            elapsed_minutes = max(0.0, (start_dt - last_completed_at).total_seconds() / 60.0)
-            if elapsed_minutes > tolerance_minutes and not cleaned_reason:
+        if last_completed_order_id and last_completed_at is not None and tolerance_ms > 0:
+            elapsed_ms = max(0, int((start_dt - last_completed_at).total_seconds() * 1000))
+            if elapsed_ms > tolerance_ms and not cleaned_reason:
                 raise WorkOrderTransitionReasonRequired(
                     order_id=normalized_order_id,
                     previous_order_id=last_completed_order_id,
-                    elapsed_minutes=elapsed_minutes,
-                    tolerance_minutes=tolerance_minutes,
+                    elapsed_ms=elapsed_ms,
+                    tolerance_ms=tolerance_ms,
                 )
 
         order["status"] = "active"
@@ -2805,7 +3866,11 @@ class OeeRuntimeStateManager:
         work_orders = _work_orders_state(state)
         previous_source = work_orders.get("source") if isinstance(work_orders.get("source"), dict) else {}
         reset_state = default_work_order_state()
-        reset_state["toleranceMinutes"] = max(0.0, _numeric(work_orders.get("toleranceMinutes") or 0.0))
+        reset_state["toleranceMs"] = _duration_ms(
+            _first_present(work_orders.get("toleranceMs"), work_orders.get("toleranceMinutes")),
+            multiplier=60_000.0 if work_orders.get("toleranceMs") in (None, "") else 1.0,
+        )
+        reset_state["toleranceMinutes"] = _minutes_from_ms(reset_state["toleranceMs"])
         reset_state["source"]["folder"] = str(previous_source.get("folder") or "")
         work_orders.clear()
         work_orders.update(reset_state)
@@ -3182,6 +4247,12 @@ class OeeRuntimeStateManager:
         item["updated_at"] = _pseudo_iso_text(stamp)
         item["override_applied_at"] = item["updated_at"]
         item["override_source"] = "MANUAL"
+        inventory_sync_result = _sync_completed_item_inventory_eligibility(
+            state,
+            item,
+            received_at=item["updated_at"],
+            source="quality_override_inventory",
+        )
         _recompute_item_counts(state)
         work_order_note = ""
         work_order_id = str(item.get("work_order_id") or "").strip()
@@ -3245,7 +4316,17 @@ class OeeRuntimeStateManager:
         state["qualityOverrideLog"] = history[:20]
         _set_summary(
             state,
-            f"#{normalized_item_id} kalite karari {previous_classification} -> {next_classification} olarak guncellendi.{work_order_note}",
+            (
+                f"#{normalized_item_id} kalite karari {previous_classification} -> {next_classification} olarak guncellendi."
+                + (
+                    " Hurda urun inventory listesinden cikarildi."
+                    if inventory_sync_result == "removed_for_scrap"
+                    else " Uygun oldugu icin inventory listesine alindi."
+                    if inventory_sync_result == "added_to_inventory"
+                    else ""
+                )
+                + work_order_note
+            ),
             now=stamp,
         )
         if state["shift"]["active"]:
@@ -3508,7 +4589,17 @@ class OeeRuntimeStateManager:
                 "category": "BILINMIYOR",
                 "reason": str(parsed.get("reason") or "Bilinmiyor"),
                 "startedAt": _merge_clock_with_stamp(parsed.get("started_at_text"), received_at),
-                "durationMin": max(0.0, _numeric(parsed.get("duration_min"))),
+                "durationMs": _duration_ms(
+                    _first_present(parsed.get("duration_ms"), parsed.get("duration_min")),
+                    multiplier=60_000.0 if parsed.get("duration_ms") in (None, "") else 1.0,
+                ),
+                "durationMin": _minutes_from_ms(
+                    _duration_ms(
+                        _first_present(parsed.get("duration_ms"), parsed.get("duration_min")),
+                        multiplier=60_000.0 if parsed.get("duration_ms") in (None, "") else 1.0,
+                    ),
+                    precision=3,
+                ),
             }
             _set_summary(state, f"Aktif fault: {state['activeFault']['reason']}", now=now)
             _append_oee_trend_snapshot(state, now=now, reason="fault_started", force=True)

@@ -152,6 +152,32 @@ class DashboardStoreTests(unittest.TestCase):
         self.assertEqual(snapshot["oee"]["fault"]["reason"], "Robot Kol Sikis masi")
         self.assertEqual(snapshot["oee"]["header"]["line_state"], "stopped")
 
+    def test_runtime_fault_projection_clears_stale_fault_fields_when_fault_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "oee_runtime_state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"activeFault":{"reason":"Test Fault","status":"BASLADI","startedAt":"2026-04-02T08:00:00+03:00","durationMs":120000},'
+                    '"shift":{"active":true,"code":"SHIFT-A","startedAt":"2026-04-02T08:00:00+03:00","planStart":"2026-04-02T08:00:00+03:00","planEnd":"2026-04-02T16:00:00+03:00"}}'
+                )
+
+            with patch.dict(os.environ, {"MES_WEB_OEE_RUNTIME_STATE_PATH": state_path}, clear=False):
+                config = AppConfig.from_env()
+                store = DashboardStore(config)
+                first_snapshot = store.get_dashboard_snapshot(config.module_id)
+                self.assertTrue(first_snapshot["oee"]["fault"]["active"])
+
+                with open(state_path, "w", encoding="utf-8") as handle:
+                    handle.write('{"shift":{"active":true,"code":"SHIFT-A","startedAt":"2026-04-02T08:00:00+03:00","planStart":"2026-04-02T08:00:00+03:00","planEnd":"2026-04-02T16:00:00+03:00"}}')
+
+                store.refresh_oee_runtime_state(config.module_id, force=True)
+                snapshot = store.get_dashboard_snapshot(config.module_id)
+
+            self.assertFalse(snapshot["oee"]["fault"]["active"])
+            self.assertIsNone(snapshot["oee"]["fault"]["duration_ms"])
+            self.assertIsNone(snapshot["oee"]["fault"]["duration_min"])
+            self.assertIsNone(snapshot["oee"]["fault"]["started_at"])
+
     def test_runtime_state_file_seeds_oee_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "oee_runtime_state.json")
@@ -169,6 +195,7 @@ class DashboardStoreTests(unittest.TestCase):
                 snapshot = store.get_dashboard_snapshot(config.module_id)
 
             self.assertEqual(snapshot["oee"]["targets"]["target_qty"], 14)
+            self.assertEqual(snapshot["oee"]["targets"]["ideal_cycle_ms"], 2500)
             self.assertEqual(snapshot["oee"]["targets"]["ideal_cycle_sec"], 2.5)
             self.assertEqual(snapshot["oee"]["colors"]["red"]["rework"], 1)
             self.assertEqual(snapshot["oee"]["trend"][-1]["oee"], 61.7)
@@ -176,6 +203,7 @@ class DashboardStoreTests(unittest.TestCase):
             self.assertEqual(snapshot["oee"]["shift"]["code"], "SHIFT-A")
             self.assertEqual(snapshot["oee"]["controls"]["selected_shift"], "SHIFT-B")
             self.assertEqual(snapshot["oee"]["controls"]["performance_mode"], "IDEAL_CYCLE")
+            self.assertEqual(snapshot["oee"]["controls"]["planned_stop_ms"], 330000)
             self.assertEqual(snapshot["oee"]["controls"]["planned_stop_min"], 5.5)
 
     def test_runtime_state_clamps_trend_outliers_to_percent_range(self) -> None:
@@ -358,15 +386,18 @@ class DashboardStoreTests(unittest.TestCase):
                 snapshot = store.get_dashboard_snapshot(config.module_id)
 
             self.assertEqual(snapshot["work_orders"]["controls"]["tolerance_minutes"], 10.0)
+            self.assertEqual(snapshot["work_orders"]["controls"]["tolerance_ms"], 600000)
             self.assertTrue(snapshot["work_orders"]["controls"]["can_rollback"])
             self.assertEqual(snapshot["work_orders"]["summary"]["queued_count"], 1)
             self.assertEqual(snapshot["work_orders"]["summary"]["active_count"], 1)
             self.assertEqual(snapshot["work_orders"]["summary"]["inventory_total"], 2)
             self.assertEqual(snapshot["work_orders"]["active_order"]["order_id"], "WO-1")
             self.assertEqual(snapshot["work_orders"]["active_order"]["inventory_consumed_qty"], 1)
+            self.assertEqual(snapshot["work_orders"]["active_order"]["ideal_cycle_ms"], 10000)
             self.assertEqual(snapshot["work_orders"]["active_order"]["ideal_cycle_sec"], 10.0)
             self.assertEqual(snapshot["work_orders"]["active_order"]["availability"], 100.0)
             self.assertEqual(snapshot["work_orders"]["active_order"]["oee"], 3.3)
+            self.assertEqual(snapshot["work_orders"]["active_order"]["unplanned_stop_ms"], 0)
             self.assertEqual(snapshot["work_orders"]["active_order"]["unplanned_stop_min"], 0.0)
             self.assertGreaterEqual(snapshot["work_orders"]["active_order"]["performance"], 0.0)
             self.assertGreaterEqual(snapshot["work_orders"]["active_order"]["quality"], 0.0)

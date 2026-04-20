@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mes_web.excel_runtime import INVENTORY_SHEET_NAME, RAW_LOG_SHEET_NAME, WORK_ORDER_SHEET_NAME, WorkbookProjector
+from mes_web.excel_runtime import INVENTORY_SHEET_NAME, MAINTENANCE_SHEET_NAME, RAW_LOG_SHEET_NAME, WORK_ORDER_SHEET_NAME, WorkbookProjector
 
 
 class WorkbookProjectorTests(unittest.TestCase):
@@ -106,6 +106,7 @@ class WorkbookProjectorTests(unittest.TestCase):
         self.assertEqual(rows[RAW_LOG_SHEET_NAME][0]["event_type_code"], "tablet_fault")
         self.assertEqual(rows["1_Olay_Logu"][0]["event_type_code"], "tablet_fault")
         self.assertIn("neden=Motor Koruma", rows["1_Olay_Logu"][0]["notes"])
+        self.assertIn("sure_ms=270000", rows["1_Olay_Logu"][0]["notes"])
 
     def test_system_oee_control_logs_create_workbook_rows(self) -> None:
         rows = self.projector.consume_system_oee_log(
@@ -125,6 +126,7 @@ class WorkbookProjectorTests(unittest.TestCase):
 
         self.assertEqual(rows[RAW_LOG_SHEET_NAME][0]["event_type_code"], "shift_start")
         self.assertEqual(rows["1_Olay_Logu"][0]["event_type_code"], "shift_start")
+        self.assertIn("planned_stop_ms=900000", rows["1_Olay_Logu"][0]["notes"])
         self.assertIn("planned_stop_dk=15.0", rows["1_Olay_Logu"][0]["notes"])
 
     def test_pickplace_return_done_creates_parsed_event_row(self) -> None:
@@ -469,6 +471,10 @@ class WorkbookProjectorTests(unittest.TestCase):
 
         headers = [work_order_sheet.cell(1, idx).value for idx in range(1, work_order_sheet.max_column + 1)]
         self.assertEqual(work_order_sheet.cell(2, headers.index("order_id") + 1).value, "WO-1")
+        self.assertEqual(work_order_sheet.cell(2, headers.index("ideal_cycle_ms") + 1).value, 10000)
+        self.assertEqual(work_order_sheet.cell(2, headers.index("planned_duration_ms") + 1).value, 20000)
+        self.assertEqual(work_order_sheet.cell(2, headers.index("runtime_ms") + 1).value, 50000)
+        self.assertEqual(work_order_sheet.cell(2, headers.index("unplanned_downtime_ms") + 1).value, 10000)
         self.assertEqual(work_order_sheet.cell(2, headers.index("unplanned_downtime_sec") + 1).value, 10.0)
         self.assertEqual(work_order_sheet.cell(2, headers.index("performance_pct") + 1).value, 40.0)
         self.assertEqual(work_order_sheet.cell(2, headers.index("quality_pct") + 1).value, 100.0)
@@ -576,6 +582,117 @@ class WorkbookProjectorTests(unittest.TestCase):
             self.assertFalse(workbook_path.exists())
             archived = list(Path(temp_dir).glob("broken.xlsx.corrupt-*"))
             self.assertTrue(archived)
+
+    def test_kiosk_event_creates_audit_log_rows(self) -> None:
+        rows = self.projector.consume_kiosk_event(
+            {
+                "event_type": "help_requested",
+                "device_id": "kiosk-1",
+                "bound_station_id": "4",
+                "operator_id": "1",
+                "repeat_count": 2,
+            },
+            "2026-04-02T10:20:00Z",
+        )
+
+        self.assertEqual(rows["1_Olay_Logu"][0]["event_type_code"], "help_requested")
+        self.assertEqual(rows["1_Olay_Logu"][0]["source_code"], "tablet")
+        self.assertIn("repeat_count=2", rows["1_Olay_Logu"][0]["notes"])
+        self.assertEqual(rows[RAW_LOG_SHEET_NAME][0]["event_type_code"], "help_requested")
+
+    def test_fault_sheet_sync_upserts_kiosk_fault_rows(self) -> None:
+        try:
+            from openpyxl import Workbook
+        except ModuleNotFoundError:
+            self.skipTest("openpyxl is not installed")
+        from mes_web.excel_runtime import ExcelRuntimeSink, FAULT_COLUMNS
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "3_Arizalar"
+        sink = ExcelRuntimeSink.__new__(ExcelRuntimeSink)
+        sink._ensure_sheet_layout(sheet, FAULT_COLUMNS, workbook=workbook)
+
+        sink._sync_fault_sheet(
+            workbook,
+            {
+                "shift": {"code": "SHIFT-A"},
+                "activeFault": {
+                    "faultId": "F-1",
+                    "reasonCode": "robot_arm_jam",
+                    "category": "MEKANIK",
+                    "reason": "Robot Kol Sikisti",
+                    "startedAt": "2026-04-02T10:00:00+03:00",
+                    "source": "kiosk",
+                    "deviceId": "kiosk-1",
+                    "operatorId": "1",
+                    "operatorCode": "OP-001",
+                    "operatorName": "Test",
+                    "boundStationId": "4",
+                },
+                "faultHistory": [],
+            },
+        )
+
+        headers = [sheet.cell(1, idx).value for idx in range(1, sheet.max_column + 1)]
+        self.assertEqual(sheet.cell(2, headers.index("fault_id") + 1).value, "F-1")
+        self.assertEqual(sheet.cell(2, headers.index("status_code") + 1).value, "AKTIF")
+        self.assertEqual(sheet.cell(2, headers.index("duration_ms") + 1).value, 0)
+        self.assertEqual(sheet.cell(2, headers.index("operator_code") + 1).value, "OP-001")
+
+    def test_maintenance_sheet_sync_writes_checklist_rows(self) -> None:
+        try:
+            from openpyxl import Workbook
+        except ModuleNotFoundError:
+            self.skipTest("openpyxl is not installed")
+        from mes_web.excel_runtime import ExcelRuntimeSink, MAINTENANCE_COLUMNS
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = MAINTENANCE_SHEET_NAME
+        sink = ExcelRuntimeSink.__new__(ExcelRuntimeSink)
+        sink._ensure_sheet_layout(sheet, MAINTENANCE_COLUMNS, workbook=workbook)
+
+        sink._sync_maintenance_sheet(
+            workbook,
+            {
+                "maintenance": {
+                    "history": [
+                        {
+                            "sessionId": "M-1",
+                            "phase": "opening",
+                            "shiftCode": "SHIFT-A",
+                            "startedAt": "2026-04-02T09:00:00+03:00",
+                            "endedAt": "2026-04-02T09:05:00+03:00",
+                            "deviceId": "kiosk-1",
+                            "deviceName": "Tablet 1",
+                            "deviceRole": "operator_kiosk",
+                            "boundStationId": "4",
+                            "operatorId": "1",
+                            "operatorCode": "OP-001",
+                            "operatorName": "Test",
+                            "note": "tamam",
+                            "steps": [
+                                {
+                                    "stepCode": "opening_1",
+                                    "stepLabel": "Guvenlik",
+                                    "required": True,
+                                    "completed": True,
+                                    "completedAt": "2026-04-02T09:02:00+03:00",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
+
+        headers = [sheet.cell(1, idx).value for idx in range(1, sheet.max_column + 1)]
+        self.assertEqual(sheet.cell(2, headers.index("maintenance_row_key") + 1).value, "M-1:opening_1")
+        self.assertEqual(sheet.cell(2, headers.index("phase_code") + 1).value, "opening")
+        self.assertEqual(sheet.cell(2, headers.index("completed_flag") + 1).value, 1)
+        self.assertEqual(sheet.cell(2, headers.index("duration_ms") + 1).value, 300000)
+        self.assertEqual(sheet.cell(2, headers.index("note") + 1).value, "tamam")
 
 
 if __name__ == "__main__":

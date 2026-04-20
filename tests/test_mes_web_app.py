@@ -29,6 +29,10 @@ class _FakeConnectionResetError(ConnectionResetError):
     pass
 
 
+class _FakeSocketTimeoutError(OSError):
+    pass
+
+
 class AppLoopFilterTests(unittest.TestCase):
     def test_windows_connection_reset_filter_swallows_proactor_close_noise(self) -> None:
         loop = _FakeLoop()
@@ -46,6 +50,29 @@ class AppLoopFilterTests(unittest.TestCase):
             {
                 "exception": error,
                 "message": "Exception in callback _ProactorBasePipeTransport._call_connection_lost()",
+                "handle": object(),
+            },
+        )
+
+        self.assertIsNone(loop.previous_context)
+        self.assertIsNone(loop.default_context)
+
+    def test_windows_connection_reset_filter_swallows_proactor_read_timeout_noise(self) -> None:
+        loop = _FakeLoop()
+        with (
+            patch("mes_web.windows_asyncio.sys.platform", "win32"),
+            patch("mes_web.windows_asyncio.asyncio.get_running_loop", return_value=loop),
+        ):
+            install_windows_connection_reset_filter()
+
+        self.assertIsNotNone(loop.handler)
+        error = _FakeSocketTimeoutError("socket timeout")
+        error.winerror = 121
+        loop.handler(
+            loop,
+            {
+                "exception": error,
+                "message": "Exception in callback _ProactorReadPipeTransport._loop_reading() websocket data transfer failed",
                 "handle": object(),
             },
         )

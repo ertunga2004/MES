@@ -357,12 +357,15 @@ def parse_tablet_fault_line(line: str) -> dict[str, Any] | None:
         return None
 
     status = str(fields.get("DURUM") or "").strip()
+    duration_min = parse_float(fields.get("SURE_DK"))
+    duration_ms = None if duration_min is None else max(0, round(duration_min * 60_000.0))
     return {
         "reason": str(fields.get("NEDEN") or "").strip() or "Bilinmiyor",
         "status": status or "Yok",
         "started_at_text": str(fields.get("BASLANGIC") or "").strip() or None,
         "ended_at_text": str(fields.get("BITIS") or "").strip() or None,
-        "duration_min": parse_float(fields.get("SURE_DK")),
+        "duration_min": duration_min,
+        "duration_ms": duration_ms,
         "raw": fields,
         "raw_line": body,
     }

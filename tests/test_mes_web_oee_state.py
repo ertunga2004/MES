@@ -18,8 +18,10 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             state = manager.read_state()
 
             self.assertEqual(state["targetQty"], 14)
+            self.assertEqual(state["idealCycleMs"], 10000)
             self.assertEqual(state["idealCycleSec"], 10.0)
             self.assertEqual(state["shift"]["targetQty"], 14)
+            self.assertEqual(state["shift"]["idealCycleMs"], 10000)
             self.assertEqual(state["shift"]["idealCycleSec"], 10.0)
 
     def test_startup_deactivation_closes_open_shift(self) -> None:
@@ -51,7 +53,9 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(state["shift"]["code"], "SHIFT-B")
             self.assertEqual(state["shift"]["performanceMode"], "IDEAL_CYCLE")
             self.assertEqual(state["shift"]["targetQty"], 18)
+            self.assertEqual(state["shift"]["idealCycleMs"], 2500)
             self.assertEqual(state["shift"]["idealCycleSec"], 2.5)
+            self.assertEqual(state["shift"]["plannedStopMs"], 450000)
             self.assertEqual(state["shift"]["plannedStopMin"], 7.5)
             self.assertIn("VARDIYA_BASLADI", result["system_line"])
 
@@ -79,8 +83,47 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
 
             state = manager.read_state()
             self.assertEqual(state["targetQty"], 12)
+            self.assertEqual(state["idealCycleMs"], 1700)
             self.assertEqual(state["idealCycleSec"], 1.7)
+            self.assertEqual(state["plannedStopMs"], 270000)
             self.assertEqual(state["plannedStopMin"], 4.5)
+
+    def test_live_snapshot_prefers_explicit_zero_ms_over_legacy_minute_fallback(self) -> None:
+        state = {
+            "performanceMode": "TARGET",
+            "targetQty": 8,
+            "plannedStopMs": 0,
+            "plannedStopMin": 12.0,
+            "counts": {
+                "total": 2,
+                "good": 2,
+                "rework": 0,
+                "scrap": 0,
+                "byColor": {
+                    "red": {"total": 1, "good": 1, "rework": 0, "scrap": 0},
+                    "yellow": {"total": 1, "good": 1, "rework": 0, "scrap": 0},
+                    "blue": {"total": 0, "good": 0, "rework": 0, "scrap": 0},
+                },
+            },
+            "shift": {
+                "active": True,
+                "startedAt": "2026-04-02T08:00:00+03:00",
+                "planStart": "2026-04-02T08:00:00+03:00",
+                "planEnd": "2026-04-02T16:00:00+03:00",
+                "performanceMode": "TARGET",
+                "targetQty": 8,
+                "plannedStopMs": 0,
+                "plannedStopMin": 12.0,
+                "idealCycleMs": 0,
+                "idealCycleSec": 2.0,
+            },
+            "unplannedDowntimeMs": 0,
+        }
+
+        snapshot = build_live_snapshot(state, now=datetime(2026, 4, 2, 9, 0, 0, tzinfo=timezone(timedelta(hours=3))))
+
+        self.assertEqual(snapshot["plannedStopMs"], 0)
+        self.assertEqual(snapshot["plannedStopBudgetMs"], 0)
 
     def test_pickplace_done_counts_completed_item_as_good(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -844,6 +887,73 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(work_order["completedQty"], 2)
             self.assertEqual(state["workOrders"]["activeOrderId"], "WO-RED-002")
 
+    def test_quality_override_scrap_removes_off_order_item_from_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            state = manager.read_state()
+            state["workOrders"]["inventoryByProduct"] = {
+                "red": {
+                    "matchKey": "red",
+                    "productCode": "BOX-RED",
+                    "stockCode": "BOX-RED",
+                    "stockName": "Kirmizi Kutu",
+                    "color": "red",
+                    "quantity": 1,
+                    "itemIds": ["250"],
+                    "lastUpdatedAt": "2026-04-02T08:01:00+03:00",
+                    "lastSource": "off_order_completion",
+                }
+            }
+            state["itemsById"]["250"] = {
+                "item_id": "250",
+                "measure_id": "25",
+                "completed_at": "2026-04-02T08:01:00+03:00",
+                "updated_at": "2026-04-02T08:01:00+03:00",
+                "color": "red",
+                "final_color": "red",
+                "classification": "GOOD",
+                "inventory_match_key": "red",
+                "inventoryAction": "off_order_completion",
+            }
+            manager.write_state(state)
+
+            manager.apply_quality_override("250", "SCRAP", now=datetime(2026, 4, 2, 8, 5, 0, tzinfo=timezone(timedelta(hours=3))))
+
+            reloaded = manager.read_state()
+            self.assertEqual(reloaded["itemsById"]["250"]["classification"], "SCRAP")
+            self.assertEqual(reloaded["itemsById"]["250"]["inventory_match_key"], "")
+            self.assertEqual(reloaded["itemsById"]["250"]["inventoryAction"], "scrap_excluded")
+            self.assertEqual(reloaded["workOrders"]["inventoryByProduct"], {})
+
+    def test_scrap_completed_item_is_not_backfilled_into_inventory_on_load(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "oee_runtime_state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "itemsById": {
+                            "251": {
+                                "item_id": "251",
+                                "measure_id": "26",
+                                "completed_at": "2026-04-02T08:01:00+03:00",
+                                "updated_at": "2026-04-02T08:01:00+03:00",
+                                "color": "red",
+                                "final_color": "red",
+                                "classification": "SCRAP",
+                            }
+                        },
+                        "workOrders": {"inventoryByProduct": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            manager = OeeRuntimeStateManager(state_path)
+            reloaded = manager.read_state()
+
+            self.assertEqual(reloaded["workOrders"]["inventoryByProduct"], {})
+            self.assertEqual(str(reloaded["itemsById"]["251"].get("inventory_match_key") or ""), "")
+
     def test_rollback_active_work_order_returns_completed_boxes_to_inventory_and_reassigns_them(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
@@ -1279,6 +1389,256 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(snapshot["goodQty"], 1)
             self.assertEqual(snapshot["scrapQty"], 1)
             self.assertEqual(snapshot["fulfilledQty"], 1)
+
+    def test_opening_checklist_duration_stays_outside_oee(self) -> None:
+        state = {
+            "performanceMode": "TARGET",
+            "targetQty": 12,
+            "plannedStopMin": 0.0,
+            "counts": {
+                "total": 2,
+                "good": 2,
+                "rework": 0,
+                "scrap": 0,
+                "byColor": {
+                    "red": {"total": 1, "good": 1, "rework": 0, "scrap": 0},
+                    "yellow": {"total": 1, "good": 1, "rework": 0, "scrap": 0},
+                    "blue": {"total": 0, "good": 0, "rework": 0, "scrap": 0},
+                },
+            },
+            "shift": {
+                "active": True,
+                "startedAt": "2026-04-02T08:00:00+03:00",
+                "planStart": "2026-04-02T08:00:00+03:00",
+                "planEnd": "2026-04-02T16:00:00+03:00",
+                "performanceMode": "TARGET",
+                "targetQty": 12,
+                "plannedStopMin": 0.0,
+                "idealCycleSec": 0.0,
+            },
+            "maintenance": {
+                "openingChecklistDurationMs": 15 * 60 * 1000,
+                "closingChecklistDurationMs": 0,
+            },
+            "unplannedDowntimeMs": 0,
+        }
+
+        snapshot = build_live_snapshot(state, now=datetime(2026, 4, 2, 9, 0, 0, tzinfo=timezone(timedelta(hours=3))))
+
+        self.assertEqual(snapshot["plannedStopMs"], 0)
+        self.assertEqual(snapshot["unplannedMs"], 0)
+        self.assertEqual(snapshot["plannedProductionElapsedMs"], 60 * 60 * 1000)
+
+    def test_closing_checklist_duration_counts_as_planned_stop(self) -> None:
+        state = {
+            "performanceMode": "TARGET",
+            "targetQty": 12,
+            "plannedStopMin": 0.0,
+            "counts": {
+                "total": 2,
+                "good": 2,
+                "rework": 0,
+                "scrap": 0,
+                "byColor": {
+                    "red": {"total": 1, "good": 1, "rework": 0, "scrap": 0},
+                    "yellow": {"total": 1, "good": 1, "rework": 0, "scrap": 0},
+                    "blue": {"total": 0, "good": 0, "rework": 0, "scrap": 0},
+                },
+            },
+            "shift": {
+                "active": True,
+                "startedAt": "2026-04-02T08:00:00+03:00",
+                "planStart": "2026-04-02T08:00:00+03:00",
+                "planEnd": "2026-04-02T16:00:00+03:00",
+                "performanceMode": "TARGET",
+                "targetQty": 12,
+                "plannedStopMin": 0.0,
+                "idealCycleSec": 0.0,
+            },
+            "maintenance": {
+                "openingChecklistDurationMs": 0,
+                "closingChecklistDurationMs": 20 * 60 * 1000,
+            },
+            "unplannedDowntimeMs": 0,
+        }
+
+        snapshot = build_live_snapshot(state, now=datetime(2026, 4, 2, 16, 0, 0, tzinfo=timezone(timedelta(hours=3))))
+
+        self.assertEqual(snapshot["plannedStopMs"], 20 * 60 * 1000)
+        self.assertEqual(snapshot["plannedProductionElapsedMs"], (8 * 60 - 20) * 60 * 1000)
+
+    def test_opening_checklist_completion_starts_shift_and_closing_completion_stops_shift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            local_tz = timezone(timedelta(hours=3))
+            start_time = datetime(2026, 4, 2, 8, 0, 0, tzinfo=local_tz)
+            stop_time = datetime(2026, 4, 2, 16, 0, 0, tzinfo=local_tz)
+            opening_steps = [
+                {"step_code": "opening_1", "step_label": "Guvenlik", "required": True},
+                {"step_code": "opening_2", "step_label": "Temizlik", "required": True},
+            ]
+            closing_steps = [
+                {"step_code": "closing_1", "step_label": "Kapanis", "required": True},
+            ]
+
+            open_result = manager.begin_maintenance_session(
+                "opening",
+                steps=opening_steps,
+                device_id="kiosk-1",
+                operator_id="1",
+                operator_code="OP-001",
+                operator_name="Test",
+                now=start_time,
+            )
+            self.assertEqual(open_result["state"]["operationalState"], "opening_checklist")
+
+            complete_open_result = manager.complete_maintenance_session(
+                "opening",
+                completed_steps=[{"step_code": "opening_1"}, {"step_code": "opening_2"}],
+                note="tamam",
+                device_id="kiosk-1",
+                operator_id="1",
+                operator_code="OP-001",
+                operator_name="Test",
+                now=start_time + timedelta(minutes=5),
+            )
+            self.assertTrue(complete_open_result["state"]["shift"]["active"])
+            self.assertEqual(complete_open_result["state"]["operationalState"], "shift_active_running")
+
+            manager.begin_maintenance_session(
+                "closing",
+                steps=closing_steps,
+                device_id="kiosk-1",
+                operator_id="1",
+                operator_code="OP-001",
+                operator_name="Test",
+                now=stop_time,
+            )
+            complete_close_result = manager.complete_maintenance_session(
+                "closing",
+                completed_steps=[{"step_code": "closing_1"}],
+                note="bitti",
+                device_id="kiosk-1",
+                operator_id="1",
+                operator_code="OP-001",
+                operator_name="Test",
+                now=stop_time + timedelta(minutes=10),
+            )
+            self.assertFalse(complete_close_result["state"]["shift"]["active"])
+            self.assertEqual(complete_close_result["state"]["operationalState"], "idle_ready")
+            self.assertEqual(
+                complete_close_result["state"]["maintenance"]["closingChecklistDurationMs"],
+                10 * 60 * 1000,
+            )
+
+    def test_manual_fault_duration_accumulates_into_unplanned_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            local_tz = timezone(timedelta(hours=3))
+            manager.apply_control("shift_start", now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=local_tz))
+
+            manager.start_manual_fault(
+                device_id="kiosk-1",
+                reason_code="jam",
+                reason_text="Sikisma",
+                operator_id="1",
+                operator_code="OP-001",
+                operator_name="Test",
+                now=datetime(2026, 4, 2, 8, 30, 0, tzinfo=local_tz),
+            )
+            manager.clear_manual_fault(now=datetime(2026, 4, 2, 8, 45, 0, tzinfo=local_tz))
+
+            state = manager.read_state()
+            self.assertEqual(state["manualFaultDurationMs"], 15 * 60 * 1000)
+            self.assertEqual(state["unplannedDowntimeMs"], 15 * 60 * 1000)
+            self.assertEqual(state["operationalState"], "shift_active_running")
+
+    def test_help_request_reuses_open_request_and_increments_repeat_count(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+
+            first = manager.request_help(
+                device_id="kiosk-1",
+                bound_station_id="4",
+                operator_id="1",
+                operator_code="OP-001",
+                operator_name="Test",
+                now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=timezone.utc),
+            )
+            second = manager.request_help(
+                device_id="kiosk-1",
+                bound_station_id="4",
+                operator_id="1",
+                operator_code="OP-001",
+                operator_name="Test",
+                now=datetime(2026, 4, 2, 8, 1, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(first["request"]["requestId"], second["request"]["requestId"])
+            self.assertEqual(second["request"]["repeatCount"], 2)
+
+    def test_kiosk_quality_override_rejects_completed_work_order_items(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            state = manager.read_state()
+            state["recentItemIds"] = ["42"]
+            state["itemsById"]["42"] = {
+                "item_id": "42",
+                "measure_id": "7",
+                "color": "blue",
+                "classification": "GOOD",
+                "completed_at": "2026-04-02T08:01:05+03:00",
+                "updated_at": "2026-04-02T08:01:05+03:00",
+                "count_in_oee": True,
+                "work_order_id": "WO-LOCKED",
+            }
+            state["workOrders"]["ordersById"]["WO-LOCKED"] = {
+                "orderId": "WO-LOCKED",
+                "status": "completed",
+                "quantity": 1,
+                "completedQty": 1,
+            }
+            state["workOrders"]["orderSequence"] = ["WO-LOCKED"]
+            state["shift"]["active"] = True
+            state["shift"]["startedAt"] = "2026-04-02T08:00:00+03:00"
+            manager.write_state(state)
+
+            with self.assertRaisesRegex(ValueError, "WORK_ORDER_LOCKED_FOR_KIOSK_OVERRIDE"):
+                manager.apply_kiosk_quality_override("42", "SCRAP", now=datetime(2026, 4, 2, 8, 5, 0, tzinfo=timezone(timedelta(hours=3))))
+
+    def test_kiosk_quality_override_accepts_last_five_visible_item(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            state = manager.read_state()
+            state["recentItemIds"] = ["42", "41", "40", "39", "38"]
+            state["shift"]["active"] = True
+            state["shift"]["startedAt"] = "2026-04-02T08:00:00+03:00"
+            state["workOrders"]["ordersById"]["WO-ACTIVE"] = {
+                "orderId": "WO-ACTIVE",
+                "status": "active",
+                "quantity": 5,
+                "completedQty": 1,
+                "startedAt": "2026-04-02T08:00:30+03:00",
+            }
+            state["workOrders"]["orderSequence"] = ["WO-ACTIVE"]
+            state["workOrders"]["activeOrderId"] = "WO-ACTIVE"
+            for index, item_id in enumerate(state["recentItemIds"], start=1):
+                state["itemsById"][item_id] = {
+                    "item_id": item_id,
+                    "measure_id": str(index),
+                    "color": "blue",
+                    "classification": "GOOD",
+                    "completed_at": f"2026-04-02T08:0{index}:00+03:00",
+                    "updated_at": f"2026-04-02T08:0{index}:00+03:00",
+                    "count_in_oee": True,
+                    "work_order_id": "WO-ACTIVE",
+                }
+            manager.write_state(state)
+
+            result = manager.apply_kiosk_quality_override("42", "SCRAP", reason_text="ezik", now=datetime(2026, 4, 2, 8, 9, 0, tzinfo=timezone(timedelta(hours=3))))
+
+            self.assertEqual(result["item"]["classification"], "SCRAP")
+            self.assertEqual(result["override"]["reason_text"], "ezik")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MES Operator Kiosk</title>
+  <link rel="stylesheet" href="/static/kiosk.css">
+</head>
+<body>
+  <div class="kiosk-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">MES Operator Kiosk</p>
+        <h1 id="screenTitle">Hat Ekrani</h1>
+      </div>
+      <div class="topbar-actions">
+        <label class="operator-picker" for="operatorSelect">
+          <span>Operator</span>
+          <select id="operatorSelect"></select>
+        </label>
+        <div class="connection-pill" id="connectionState">Baglaniyor</div>
+      </div>
+    </header>
+
+    <main class="content-grid">
+      <section class="status-strip card">
+        <div class="status-main">
+          <div>
+            <p class="section-label">Hat Durumu</p>
+            <h2 id="lineStateText">Veri bekleniyor</h2>
+            <p id="deviceMetaText" class="muted">-</p>
+          </div>
+          <div class="metric-grid">
+            <div class="metric-box">
+              <span>OEE</span>
+              <strong id="metricOee">-</strong>
+            </div>
+            <div class="metric-box">
+              <span>Availability</span>
+              <strong id="metricAvailability">-</strong>
+            </div>
+            <div class="metric-box">
+              <span>Performance</span>
+              <strong id="metricPerformance">-</strong>
+            </div>
+            <div class="metric-box">
+              <span>Quality</span>
+              <strong id="metricQuality">-</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="primary-panel card">
+        <div class="panel-head">
+          <div>
+            <p class="section-label">Aktif Is Emri</p>
+            <h2 id="activeOrderTitle">Is emri bekleniyor</h2>
+            <p id="activeOrderMeta" class="muted">-</p>
+          </div>
+          <button id="secondaryShiftStopButton" class="secondary-button" type="button">Vardiya Bitir</button>
+        </div>
+
+        <div id="activeOrderContents" class="content-badges"></div>
+
+        <div id="maintenancePanel" class="maintenance-panel hidden">
+          <div class="maintenance-head">
+            <div>
+              <p class="section-label">Planli Bakim</p>
+              <h3 id="maintenanceTitle">Checklist</h3>
+            </div>
+            <div id="maintenanceProgress" class="progress-pill">0 / 0</div>
+          </div>
+          <div id="maintenanceChecklist" class="checklist-list"></div>
+          <label class="note-field" for="maintenanceNote">
+            <span>Not</span>
+            <textarea id="maintenanceNote" rows="3" placeholder="Opsiyonel not"></textarea>
+          </label>
+        </div>
+
+        <div class="primary-actions">
+          <button id="bigActionButton" class="big-action" type="button">Hazirlaniyor</button>
+          <button id="systemStartButton" class="secondary-button" type="button">Sistem Start</button>
+        </div>
+      </section>
+
+      <section class="critical-panel card">
+        <div class="fault-block">
+          <div class="fault-head">
+            <div>
+              <p class="section-label">Acil Durdur / Ariza</p>
+              <h2 id="faultStateText">Aktif ariza yok</h2>
+            </div>
+          </div>
+          <div class="fault-actions">
+            <button id="helpButton" class="help-button" type="button">Yardim Cagir</button>
+            <button id="faultClearButton" class="secondary-button" type="button">Ariza Bitir</button>
+          </div>
+          <label class="field" for="faultSelect">
+            <span>Hazir sebep</span>
+            <select id="faultSelect"></select>
+          </label>
+          <div class="field">
+            <span>Harici sebep</span>
+            <div class="reason-tools">
+              <button id="faultReasonButton" class="secondary-button note-button" type="button">Sebep Yaz</button>
+              <p id="faultReasonPreview" class="reason-preview">Harici sebep yok</p>
+            </div>
+          </div>
+          <button id="faultStartButton" class="danger-button" type="button">Ariza Bildir</button>
+          <p id="helpStateText" class="muted">Teknisyen cagrisi yok</p>
+        </div>
+      </section>
+
+      <section class="queue-panel card">
+        <div class="panel-head compact">
+          <div>
+            <p class="section-label">Is Emri Sirasi</p>
+            <h2>Salt Gorunum</h2>
+          </div>
+        </div>
+        <div id="workOrderList" class="work-order-list"></div>
+      </section>
+
+      <section class="quality-panel card">
+        <div class="panel-head compact">
+          <div>
+            <p class="section-label">Son 5 Urun</p>
+            <h2>Kalite Duzeltme</h2>
+          </div>
+        </div>
+        <div id="recentItemsList" class="recent-items-list"></div>
+      </section>
+    </main>
+  </div>
+  <script src="/static/kiosk.js" defer></script>
+</body>
+</html>

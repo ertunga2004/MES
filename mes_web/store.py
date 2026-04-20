@@ -53,6 +53,20 @@ def _safe_float(value: Any) -> float:
         return 0.0
 
 
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _duration_ms(value: Any, *, multiplier: float = 1.0) -> int:
+    normalized = _first_present(value)
+    if normalized in (None, ""):
+        return 0
+    return max(0, round(_safe_float(normalized) * multiplier))
+
+
 def _clamp_pct(value: Any) -> float | None:
     try:
         numeric = float(value)
@@ -293,6 +307,7 @@ class DashboardStore:
                 "status": "Yok",
                 "started_at": None,
                 "ended_at": None,
+                "duration_ms": None,
                 "duration_min": None,
             },
         }
@@ -302,6 +317,7 @@ class DashboardStore:
             "enabled": True,
             "updated_at": None,
             "controls": {
+                "tolerance_ms": 15 * 60 * 1000,
                 "tolerance_minutes": 15.0,
                 "can_start": True,
                 "can_accept": False,
@@ -331,9 +347,13 @@ class DashboardStore:
                 "availability": None,
                 "performance": None,
                 "quality": None,
+                "planned_stop_ms": 0,
                 "planned_stop_min": 0.0,
+                "unplanned_stop_ms": 0,
                 "unplanned_stop_min": 0.0,
+                "runtime_ms": 0,
                 "runtime_min": 0.0,
+                "remaining_ms": 0,
                 "remaining_min": 0.0,
                 "active_fault": False,
                 "fault_reason": "",
@@ -517,6 +537,7 @@ class DashboardStore:
                 "status": parsed["status"],
                 "started_at": parsed["started_at_text"] or (received_at if active else oee["fault"]["started_at"]),
                 "ended_at": None if active else (parsed["ended_at_text"] or received_at),
+                "duration_ms": parsed.get("duration_ms"),
                 "duration_min": parsed["duration_min"],
             }
         )
@@ -545,9 +566,17 @@ class DashboardStore:
             oee = module["oee"]
             shift = payload.get("shift") or {}
             summary_text = str(payload.get("lastEventSummary") or oee["last_event_summary"])
-            target_qty = _safe_int(payload.get("targetQty") or shift.get("targetQty") or 0)
-            ideal_cycle_sec = _safe_float(payload.get("idealCycleSec") or shift.get("idealCycleSec") or 0.0)
-            planned_stop_min = _safe_float(payload.get("plannedStopMin") or shift.get("plannedStopMin") or 0.0)
+            target_qty = _safe_int(_first_present(payload.get("targetQty"), shift.get("targetQty"), 0))
+            ideal_cycle_ms = _duration_ms(
+                _first_present(payload.get("idealCycleMs"), shift.get("idealCycleMs"), payload.get("idealCycleSec"), shift.get("idealCycleSec")),
+                multiplier=1000.0 if _first_present(payload.get("idealCycleMs"), shift.get("idealCycleMs")) in (None, "") else 1.0,
+            )
+            ideal_cycle_sec = round(ideal_cycle_ms / 1000.0, 3)
+            planned_stop_ms = _duration_ms(
+                _first_present(payload.get("plannedStopMs"), shift.get("plannedStopMs"), payload.get("plannedStopMin"), shift.get("plannedStopMin")),
+                multiplier=60_000.0 if _first_present(payload.get("plannedStopMs"), shift.get("plannedStopMs")) in (None, "") else 1.0,
+            )
+            planned_stop_min = round(planned_stop_ms / 60000.0, 3)
             oee["enabled"] = self.config.oee_ui_visible
             oee["state_source"] = "runtime_state"
             oee["updated_at"] = payload.get("lastUpdatedAt") or payload.get("lastSnapshotLoggedAt") or oee["updated_at"]
@@ -565,7 +594,9 @@ class DashboardStore:
             oee["targets"] = {
                 "performance_mode": str(payload.get("performanceMode") or shift.get("performanceMode") or ""),
                 "target_qty": target_qty,
+                "ideal_cycle_ms": ideal_cycle_ms,
                 "ideal_cycle_sec": ideal_cycle_sec,
+                "planned_stop_ms": planned_stop_ms,
                 "planned_stop_min": planned_stop_min,
             }
             oee["controls"] = {
@@ -573,7 +604,9 @@ class DashboardStore:
                 "active_shift_code": oee["shift"]["code"],
                 "performance_mode": oee["targets"]["performance_mode"] or "TARGET",
                 "target_qty": target_qty,
+                "ideal_cycle_ms": ideal_cycle_ms,
                 "ideal_cycle_sec": ideal_cycle_sec,
+                "planned_stop_ms": planned_stop_ms,
                 "planned_stop_min": planned_stop_min,
                 "quality_override_options": ["GOOD", "REWORK", "SCRAP"],
                 "shift_options": shift_options(),
@@ -690,8 +723,10 @@ class DashboardStore:
                     "description": str(order.get("description") or ""),
                     "work_center_code": str(order.get("workCenterCode") or ""),
                     "operation_code": str(order.get("operationCode") or ""),
+                    "setup_time_ms": _duration_ms(_first_present(order.get("setupTimeMs"), order.get("setupTimeSec")), multiplier=1000.0 if order.get("setupTimeMs") in (None, "") else 1.0),
                     "setup_time_sec": _safe_float(order.get("setupTimeSec")),
                     "worker_count": max(0, _safe_int(order.get("workerCount"))),
+                    "cycle_time_ms": _duration_ms(_first_present(order.get("cycleTimeMs"), order.get("cycleTimeSec")), multiplier=1000.0 if order.get("cycleTimeMs") in (None, "") else 1.0),
                     "cycle_time_sec": _safe_float(order.get("cycleTimeSec")),
                     "shift_code": str(order.get("shiftCode") or ""),
                     "product_code": str(order.get("productCode") or ""),
@@ -715,9 +750,13 @@ class DashboardStore:
                     "good_qty": int(metrics["goodQty"]),
                     "rework_qty": int(metrics["reworkQty"]),
                     "scrap_qty": int(metrics["scrapQty"]),
+                    "ideal_cycle_ms": int(metrics["idealCycleMs"]),
                     "ideal_cycle_sec": round(float(metrics["idealCycleSec"]), 1),
+                    "planned_duration_ms": int(metrics["plannedDurationMs"]),
                     "planned_duration_min": round(float(metrics["plannedDurationMs"]) / 60000.0, 1),
+                    "runtime_ms": int(metrics["runtimeMs"]),
                     "runtime_min": round(float(metrics["runtimeMs"]) / 60000.0, 1),
+                    "unplanned_stop_ms": int(metrics["unplannedMs"]),
                     "unplanned_stop_min": round(float(metrics["unplannedMs"]) / 60000.0, 1),
                     "availability": _ratio_to_pct(metrics["availability"]),
                     "performance": _ratio_to_pct(metrics["performance"]),
@@ -774,7 +813,17 @@ class DashboardStore:
                 "enabled": True,
                 "updated_at": payload.get("lastUpdatedAt") or payload.get("lastSnapshotLoggedAt") or module["work_orders"].get("updated_at"),
                 "controls": {
-                    "tolerance_minutes": _safe_float(work_orders_payload.get("toleranceMinutes") or 0.0),
+                    "tolerance_ms": _duration_ms(
+                        _first_present(work_orders_payload.get("toleranceMs"), work_orders_payload.get("toleranceMinutes")),
+                        multiplier=60_000.0 if work_orders_payload.get("toleranceMs") in (None, "") else 1.0,
+                    ),
+                    "tolerance_minutes": round(
+                        _duration_ms(
+                            _first_present(work_orders_payload.get("toleranceMs"), work_orders_payload.get("toleranceMinutes")),
+                            multiplier=60_000.0 if work_orders_payload.get("toleranceMs") in (None, "") else 1.0,
+                        ) / 60000.0,
+                        3,
+                    ),
                     "can_start": active_order is None,
                     "can_accept": bool(active_order and active_order.get("status") == "pending_approval"),
                     "can_rollback": active_order is not None,
@@ -803,9 +852,13 @@ class DashboardStore:
                     "availability": _ratio_to_pct(live["availability"]),
                     "performance": _ratio_to_pct(live["performance"]),
                     "quality": _ratio_to_pct(live["quality"]),
+                    "planned_stop_ms": int(live["plannedStopMs"]),
                     "planned_stop_min": round(float(live["plannedStopMs"]) / 60000.0, 1),
+                    "unplanned_stop_ms": int(live["unplannedMs"]),
                     "unplanned_stop_min": round(float(live["unplannedMs"]) / 60000.0, 1),
+                    "runtime_ms": int(live["runtimeMs"]),
                     "runtime_min": round(float(live["runtimeMs"]) / 60000.0, 1),
+                    "remaining_ms": int(live["remainingMs"]),
                     "remaining_min": round(float(live["remainingMs"]) / 60000.0, 1),
                     "active_fault": bool(oee["fault"]["active"]),
                     "fault_reason": str(oee["fault"]["reason"] or ""),
@@ -866,11 +919,22 @@ class DashboardStore:
                         "status": str(active_fault.get("status") or "BASLADI"),
                         "started_at": active_fault.get("startedAt"),
                         "ended_at": active_fault.get("endedAt"),
+                        "duration_ms": _duration_ms(_first_present(active_fault.get("durationMs"), active_fault.get("durationMin")), multiplier=60_000.0 if active_fault.get("durationMs") in (None, "") else 1.0),
                         "duration_min": active_fault.get("durationMin"),
                     }
                 )
             elif active_fault is None:
-                oee["fault"].update({"active": False, "status": "BITTI"})
+                oee["fault"].update(
+                    {
+                        "active": False,
+                        "reason": "Bilinmiyor",
+                        "status": "BITTI",
+                        "started_at": None,
+                        "ended_at": None,
+                        "duration_ms": None,
+                        "duration_min": None,
+                    }
+                )
 
             last_tablet_line = oee["last_tablet_line"]
             parsed_oee = parse_tablet_oee_line(last_tablet_line) if last_tablet_line else None

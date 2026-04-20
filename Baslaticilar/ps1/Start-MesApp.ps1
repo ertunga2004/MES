@@ -99,6 +99,15 @@ function Get-AppCatalog {
             Args = @()
             Requirements = Join-Path $repoRoot "mes_web\requirements.txt"
             Url = "http://127.0.0.1:8080"
+            UrlHints = @(
+                "Lokal panel: http://127.0.0.1:8080",
+                "Kiosk ornegi: http://127.0.0.1:8080/kiosk/kiosk-test-1",
+                "Ag erisimi: http://<BU_BILGISAYAR_IP>:8080/kiosk/kiosk-test-1"
+            )
+            Env = @{
+                "MES_WEB_HOST" = "0.0.0.0"
+                "MES_WEB_PORT" = "8080"
+            }
         }
         "picktolight" = @{
             DisplayName = "Pick To Light"
@@ -206,6 +215,11 @@ $entry = [string]$config.Entry
 $requirements = [string]$config.Requirements
 $url = [string]$config.Url
 $syncClock = if ($config.Contains("SyncClock")) { [bool]$config["SyncClock"] } else { $false }
+$urlHints = if ($config.Contains("UrlHints")) { [string[]]$config["UrlHints"] } else { @() }
+$envMap = if ($config.Contains("Env")) { [hashtable]$config["Env"] } else { @{} }
+$bindHost = if ($envMap.Contains("MES_WEB_HOST")) { [string]$envMap["MES_WEB_HOST"] } else { "" }
+$bindPort = if ($envMap.Contains("MES_WEB_PORT")) { [string]$envMap["MES_WEB_PORT"] } else { "" }
+$bindAddress = if ($bindHost -and $bindPort) { "{0}:{1}" -f $bindHost, $bindPort } else { "" }
 
 if (-not (Test-Path -LiteralPath $workingDir)) {
     throw "Calisma klasoru bulunamadi: $workingDir"
@@ -262,6 +276,15 @@ if ($PrintCommand) {
     if ($url) {
         Write-Host ("URL           : {0}" -f $url)
     }
+    if ($bindAddress) {
+        Write-Host ("Dinleme       : {0}" -f $bindAddress)
+    }
+    foreach ($hint in $urlHints) {
+        Write-Host ("URL           : {0}" -f $hint)
+    }
+    foreach ($key in $envMap.Keys) {
+        Write-Host ("ENV           : {0}={1}" -f $key, $envMap[$key])
+    }
     exit 0
 }
 
@@ -269,6 +292,12 @@ Write-Host ("Baslatiliyor: {0}" -f $config.DisplayName)
 Write-Host ("Calisma klasoru: {0}" -f $workingDir)
 if ($url) {
     Write-Host ("Hazir olunca tarayicidan ac: {0}" -f $url)
+}
+if ($bindAddress) {
+    Write-Host ("Ag dinleme adresi: {0}" -f $bindAddress)
+}
+foreach ($hint in $urlHints) {
+    Write-Host ("Kiosk         : {0}" -f $hint)
 }
 if ($requirements -and (Test-Path -LiteralPath $requirements)) {
     Write-Host ("Bagimlilik gerekirse: python -m pip install -r {0}" -f $requirements)
@@ -285,6 +314,9 @@ if ($entryKind -eq "sync_only") {
 
 Push-Location $workingDir
 try {
+    foreach ($key in $envMap.Keys) {
+        [System.Environment]::SetEnvironmentVariable($key, [string]$envMap[$key], "Process")
+    }
     & $python.Exe @commandArgs
     $exitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
 } finally {

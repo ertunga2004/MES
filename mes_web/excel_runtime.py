@@ -66,13 +66,25 @@ RAW_LOG_COLUMNS = [
 WORK_ORDER_COLUMNS = [
     "work_order_record_id", "order_id", "erp_type", "source_file", "queued_at", "started_at", "completed_at",
     "status_code", "status_tr", "stock_code", "stock_name", "product_color", "target_qty", "fulfilled_qty",
-    "production_qty", "inventory_consumed_qty", "good_qty", "rework_qty", "scrap_qty", "ideal_cycle_sec",
-    "planned_duration_sec", "runtime_sec", "unplanned_downtime_sec", "availability_pct", "performance_pct",
-    "quality_pct", "oee_pct", "started_by", "started_by_name", "transition_reason", "notes",
+    "production_qty", "inventory_consumed_qty", "good_qty", "rework_qty", "scrap_qty", "ideal_cycle_ms",
+    "ideal_cycle_sec", "planned_duration_ms", "planned_duration_sec", "runtime_ms", "runtime_sec",
+    "unplanned_downtime_ms", "unplanned_downtime_sec", "availability_pct", "performance_pct", "quality_pct",
+    "oee_pct", "started_by", "started_by_name", "transition_reason", "notes",
 ]
 INVENTORY_COLUMNS = [
     "inventory_record_id", "match_key", "product_code", "stock_code", "stock_name", "color_code", "quantity",
     "last_updated_at", "last_source", "source_file", "notes",
+]
+FAULT_COLUMNS = [
+    "fault_record_id", "fault_id", "status_code", "status_tr", "fault_type_code", "fault_category", "fault_reason_tr",
+    "started_at", "ended_at", "duration_ms", "duration_sec", "source_code", "device_id", "device_name",
+    "bound_station_id", "operator_id", "operator_code", "operator_name", "shift_code", "notes",
+]
+MAINTENANCE_COLUMNS = [
+    "maintenance_record_id", "maintenance_row_key", "session_id", "phase_code", "phase_tr", "step_code", "step_label_tr",
+    "required_flag", "completed_flag", "completed_at", "session_started_at", "session_ended_at", "duration_ms",
+    "duration_sec", "shift_code", "device_id", "device_name", "device_role", "bound_station_id", "operator_id",
+    "operator_code", "operator_name", "note",
 ]
 
 RAW_LOG_SHEET_NAME = "99_Raw_Logs"
@@ -81,16 +93,19 @@ WORK_ORDER_SHEET_NAME = "7_Is_Emirleri"
 LEGACY_WORK_ORDER_SHEET_NAME = "8_Is_Emirleri"
 INVENTORY_SHEET_NAME = "8_Depo_Stok"
 LEGACY_INVENTORY_SHEET_NAME = "9_Depo_Stok"
+MAINTENANCE_SHEET_NAME = "9_Bakim_Kayitlari"
 
 SHEET_COLUMNS = {
     "1_Olay_Logu": EVENT_LOG_COLUMNS,
     "2_Olcumler": MEASUREMENT_COLUMNS,
+    "3_Arizalar": FAULT_COLUMNS,
     "4_Uretim_Tamamlanan": COMPLETED_COLUMNS,
     "5_OEE_Anliklari": OEE_SNAPSHOT_COLUMNS,
     "6_Vision": VISION_COLUMNS,
     RAW_LOG_SHEET_NAME: RAW_LOG_COLUMNS,
     WORK_ORDER_SHEET_NAME: WORK_ORDER_COLUMNS,
     INVENTORY_SHEET_NAME: INVENTORY_COLUMNS,
+    MAINTENANCE_SHEET_NAME: MAINTENANCE_COLUMNS,
 }
 
 SOURCE_IDS = {"mega": 1, "tablet": 2, "vision": 3, "system": 4}
@@ -115,6 +130,15 @@ EVENT_TYPE_IDS = {
     "counts_reset": 18,
     "pickplace_started": 19,
     "pick_drop_reached": 20,
+    "maintenance_opening_started": 21,
+    "maintenance_step_completed": 22,
+    "maintenance_completed": 23,
+    "maintenance_closing_started": 24,
+    "kiosk_fault_started": 25,
+    "kiosk_fault_cleared": 26,
+    "help_requested": 27,
+    "help_acknowledged": 28,
+    "help_resolved": 29,
 }
 DECISION_SOURCE_IDS = {"CORE_STABLE": 1, "MEDIAN_STABLE": 2, "CORE_VOTE_MATCH": 3, "VISION": 4, "TABLET": 5, "SYSTEM": 6}
 MEGA_STATE_IDS = {"SEARCH": 1, "SEARCHING": 2, "MEASURING": 3, "WAIT_ARM": 4, "PAUSED": 5, "STOPPED": 6, "QUEUE": 7}
@@ -128,6 +152,18 @@ def _station_for_event(event_type_code: str) -> int:
         return 2
     if event_type_code in {"arm_position_reached", "pickplace_started", "pick_drop_reached", "pickplace_done", "pick_command_rejected", "pick_released", "pick_return_started", "pick_return_reached", "pickplace_return_done", "early_pick_request"}:
         return 3
+    if event_type_code in {
+        "maintenance_opening_started",
+        "maintenance_step_completed",
+        "maintenance_completed",
+        "maintenance_closing_started",
+        "kiosk_fault_started",
+        "kiosk_fault_cleared",
+        "help_requested",
+        "help_acknowledged",
+        "help_resolved",
+    }:
+        return 4
     return 6 if event_type_code == "vision_event" else 5
 
 
@@ -173,6 +209,31 @@ def _optional_pct(value: Any) -> float | None:
         return round(float(value) * 100.0, 1)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_iso_text(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _duration_seconds(start_at: Any, end_at: Any) -> float | None:
+    duration_ms = _duration_milliseconds(start_at, end_at)
+    if duration_ms is None:
+        return None
+    return round(duration_ms / 1000.0, 1)
+
+
+def _duration_milliseconds(start_at: Any, end_at: Any) -> int | None:
+    start_dt = _parse_iso_text(start_at)
+    end_dt = _parse_iso_text(end_at)
+    if start_dt is None or end_dt is None or end_dt < start_dt:
+        return None
+    return int((end_dt - start_dt).total_seconds() * 1000)
 
 
 def _measurement_error_info(final_color: str, confidence: Any) -> tuple[int, str]:
@@ -531,6 +592,8 @@ class WorkbookProjector:
         if parsed_fault is not None:
             rows[RAW_LOG_SHEET_NAME][0].update({"parsed_flag": 1, "event_type_code": "tablet_fault", "notes": parsed_fault["status"]})
             note_parts = [f"durum={parsed_fault['status']}", f"neden={parsed_fault['reason']}"]
+            if parsed_fault.get("duration_ms") is not None:
+                note_parts.append(f"sure_ms={parsed_fault['duration_ms']}")
             if parsed_fault.get("duration_min") is not None:
                 note_parts.append(f"sure_dk={parsed_fault['duration_min']}")
             rows["1_Olay_Logu"] = [
@@ -590,7 +653,17 @@ class WorkbookProjector:
                         f"shift={shift_code}" if shift_code else "",
                         f"perf_mod={fields.get('PERF_MOD')}" if fields.get("PERF_MOD") else "",
                         f"hedef={fields.get('HEDEF')}" if fields.get("HEDEF") else "",
+                        (
+                            f"ideal_cycle_ms={int(round(float(fields.get('IDEAL_CYCLE_SN')) * 1000.0))}"
+                            if fields.get("IDEAL_CYCLE_SN")
+                            else ""
+                        ),
                         f"ideal_cycle_sn={fields.get('IDEAL_CYCLE_SN')}" if fields.get("IDEAL_CYCLE_SN") else "",
+                        (
+                            f"planned_stop_ms={int(round(float(fields.get('PLANLI_DURUS_DK')) * 60_000.0))}"
+                            if fields.get("PLANLI_DURUS_DK")
+                            else ""
+                        ),
                         f"planned_stop_dk={fields.get('PLANLI_DURUS_DK')}" if fields.get("PLANLI_DURUS_DK") else "",
                     ]
                 ).strip(";")
@@ -622,6 +695,76 @@ class WorkbookProjector:
             )
         ]
         return rows
+
+    def consume_kiosk_event(self, payload: Any, received_at: str) -> dict[str, list[dict[str, Any]]]:
+        row = payload if isinstance(payload, dict) else {}
+        event_type = str(row.get("event_type") or row.get("eventType") or "").strip()
+        if not event_type:
+            return {}
+        item_id = str(row.get("item_id") or row.get("itemId") or "").strip()
+        measure_id = str(row.get("measure_id") or row.get("measureId") or "").strip()
+        note_parts = [
+            f"device_id={row.get('device_id')}" if row.get("device_id") else "",
+            f"station_id={row.get('bound_station_id')}" if row.get("bound_station_id") else "",
+            f"operator_id={row.get('operator_id')}" if row.get("operator_id") else "",
+            f"session_id={row.get('session_id')}" if row.get("session_id") else "",
+            f"step_code={row.get('step_code')}" if row.get("step_code") else "",
+            f"phase={row.get('phase')}" if row.get("phase") else "",
+            f"fault_code={row.get('fault_code')}" if row.get("fault_code") else "",
+            f"repeat_count={row.get('repeat_count')}" if row.get("repeat_count") not in (None, "") else "",
+            f"status={row.get('status')}" if row.get("status") else "",
+            f"note={row.get('note')}" if row.get("note") else "",
+            f"reason={row.get('reason')}" if row.get("reason") else "",
+        ]
+        summary_map = {
+            "maintenance_opening_started": "Acilis bakimi baslatildi",
+            "maintenance_step_completed": f"Bakim adimi tamamlandi: {row.get('step_label') or row.get('step_code') or '-'}",
+            "maintenance_completed": f"Bakim tamamlandi: {row.get('phase') or '-'}",
+            "maintenance_closing_started": "Kapanis bakimi baslatildi",
+            "kiosk_fault_started": f"Kiosk arizasi baslatildi: {row.get('reason') or row.get('fault_code') or '-'}",
+            "kiosk_fault_cleared": "Kiosk arizasi kapatildi",
+            "help_requested": "Teknisyen yardim istegi acildi",
+            "help_acknowledged": "Yardim istegi onaylandi",
+            "help_resolved": "Yardim istegi cozuldu",
+        }
+        raw_payload = {
+            "event_type": event_type,
+            "device_id": row.get("device_id") or "",
+            "bound_station_id": row.get("bound_station_id") or "",
+            "operator_id": row.get("operator_id") or "",
+            "session_id": row.get("session_id") or "",
+            "step_code": row.get("step_code") or "",
+            "phase": row.get("phase") or "",
+            "fault_code": row.get("fault_code") or "",
+            "reason": row.get("reason") or "",
+        }
+        return {
+            "1_Olay_Logu": [
+                self._event_row(
+                    log_event_id=self._next("log_event_id"),
+                    received_at=received_at,
+                    source_code="tablet",
+                    event_type_code=event_type,
+                    item_id=item_id,
+                    measure_id=measure_id,
+                    notes=";".join(part for part in note_parts if part),
+                    raw_line=_json_text(raw_payload),
+                    event_summary_tr=summary_map.get(event_type, event_type),
+                )
+            ],
+            RAW_LOG_SHEET_NAME: [
+                self._raw_row(
+                    received_at=received_at,
+                    source_topic="local/kiosk",
+                    source_code="tablet",
+                    raw_payload=raw_payload,
+                    parsed_flag=1,
+                    event_type_code=event_type,
+                    item_id=item_id,
+                    measure_id=measure_id,
+                )
+            ],
+        }
 
     def consume_mega_log(self, raw_line: str, received_at: str) -> dict[str, list[dict[str, Any]]]:
         self.pending_completed_row_update = None
@@ -1049,6 +1192,18 @@ class ExcelRuntimeSink:
                 )
             )
 
+    def record_kiosk_event(self, event_type: str, payload: dict[str, Any], received_at: str) -> None:
+        if self._enabled:
+            envelope_payload = dict(payload or {})
+            envelope_payload["event_type"] = str(event_type or "").strip()
+            self._queue.put(
+                SinkEnvelope(
+                    kind="kiosk_event",
+                    received_at=received_at,
+                    payload=envelope_payload,
+                )
+            )
+
     def _worker(self) -> None:
         from openpyxl import Workbook, load_workbook
         from openpyxl.utils.exceptions import InvalidFileException
@@ -1124,8 +1279,12 @@ class ExcelRuntimeSink:
                 elif item.kind == "work_order_state":
                     self._sync_work_order_sheets(workbook, item.payload, item.received_at)
                     self._sync_oee_snapshot_sheet(workbook, item.payload)
+                    self._sync_fault_sheet(workbook, item.payload)
+                    self._sync_maintenance_sheet(workbook, item.payload)
                     dirty = True
                     rows = {}
+                elif item.kind == "kiosk_event":
+                    rows = self.projector.consume_kiosk_event(item.payload, item.received_at)
                 else:
                     rows = self.projector.consume_local_counts_reset(item.received_at)
                 for sheet_name, row_dicts in rows.items():
@@ -1165,6 +1324,7 @@ class ExcelRuntimeSink:
             "6_Vision",
             WORK_ORDER_SHEET_NAME,
             INVENTORY_SHEET_NAME,
+            MAINTENANCE_SHEET_NAME,
             RAW_LOG_SHEET_NAME,
         ]
         if hasattr(workbook, "_sheets"):
@@ -1257,9 +1417,13 @@ class ExcelRuntimeSink:
                 "good_qty": int(snapshot["goodQty"]),
                 "rework_qty": int(snapshot["reworkQty"]),
                 "scrap_qty": int(snapshot["scrapQty"]),
+                "ideal_cycle_ms": int(snapshot["idealCycleMs"]),
                 "ideal_cycle_sec": round(float(snapshot["idealCycleSec"]), 1),
+                "planned_duration_ms": int(snapshot["plannedDurationMs"]),
                 "planned_duration_sec": round(float(snapshot["plannedDurationMs"]) / 1000.0, 1),
+                "runtime_ms": int(snapshot["runtimeMs"]),
                 "runtime_sec": round(float(snapshot["runtimeMs"]) / 1000.0, 1),
+                "unplanned_downtime_ms": int(snapshot["unplannedMs"]),
                 "unplanned_downtime_sec": round(float(snapshot["unplannedMs"]) / 1000.0, 1),
                 "availability_pct": _optional_pct(snapshot.get("availability")),
                 "performance_pct": _optional_pct(snapshot.get("performance")),
@@ -1337,6 +1501,106 @@ class ExcelRuntimeSink:
             }
             self._upsert_sheet_row(snapshot_sheet, "oee_snapshot_id", "snapshot_time", snapshot_time, target_row)
         self._update_auto_filter(snapshot_sheet, snapshot_sheet.max_column, max(snapshot_sheet.max_row, 2), None)
+
+    def _sync_fault_sheet(self, workbook: Any, state: dict[str, Any]) -> None:
+        sheet = workbook["3_Arizalar"]
+        payload_rows: list[dict[str, Any]] = []
+        active_fault = state.get("activeFault") if isinstance(state.get("activeFault"), dict) else None
+        if isinstance(active_fault, dict) and str(active_fault.get("source") or "").strip().lower() == "kiosk":
+            payload_rows.append(dict(active_fault))
+        for row in state.get("faultHistory") if isinstance(state.get("faultHistory"), list) else []:
+            if not isinstance(row, dict) or str(row.get("source") or "").strip().lower() != "kiosk":
+                continue
+            payload_rows.append(dict(row))
+        for row in payload_rows:
+            fault_id = str(row.get("faultId") or row.get("fault_id") or "").strip()
+            if not fault_id:
+                continue
+            started_at = row.get("startedAt") or row.get("started_at") or ""
+            ended_at = row.get("endedAt") or row.get("ended_at") or ""
+            duration_ms = int(float(row.get("durationMs") or 0))
+            duration_sec = round(duration_ms / 1000.0, 1)
+            status_code = "AKTIF" if not ended_at else "BITTI"
+            target_row = {
+                "fault_record_id": self._existing_or_next_id(sheet, "fault_record_id", "fault_id", fault_id),
+                "fault_id": fault_id,
+                "status_code": status_code,
+                "status_tr": "Aktif" if status_code == "AKTIF" else "Bitti",
+                "fault_type_code": str(row.get("reasonCode") or row.get("faultTypeCode") or "").strip(),
+                "fault_category": str(row.get("category") or "").strip(),
+                "fault_reason_tr": str(row.get("reason") or "").strip(),
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "duration_ms": duration_ms,
+                "duration_sec": duration_sec,
+                "source_code": str(row.get("source") or "kiosk").strip(),
+                "device_id": str(row.get("deviceId") or row.get("device_id") or "").strip(),
+                "device_name": str(row.get("deviceName") or row.get("device_name") or "").strip(),
+                "bound_station_id": str(row.get("boundStationId") or row.get("bound_station_id") or "").strip(),
+                "operator_id": str(row.get("operatorId") or row.get("operator_id") or "").strip(),
+                "operator_code": str(row.get("operatorCode") or row.get("operator_code") or "").strip(),
+                "operator_name": str(row.get("operatorName") or row.get("operator_name") or "").strip(),
+                "shift_code": str(((state.get("shift") or {}) if isinstance(state.get("shift"), dict) else {}).get("code") or "").strip(),
+                "notes": "",
+            }
+            self._upsert_sheet_row(sheet, "fault_record_id", "fault_id", fault_id, target_row)
+        self._update_auto_filter(sheet, sheet.max_column, max(sheet.max_row, 2), None)
+
+    def _sync_maintenance_sheet(self, workbook: Any, state: dict[str, Any]) -> None:
+        sheet = workbook[MAINTENANCE_SHEET_NAME]
+        maintenance = state.get("maintenance") if isinstance(state.get("maintenance"), dict) else {}
+        sessions: list[dict[str, Any]] = []
+        for key in ("openingSession", "closingSession"):
+            session = maintenance.get(key)
+            if isinstance(session, dict):
+                sessions.append(session)
+        for session in maintenance.get("history") if isinstance(maintenance.get("history"), list) else []:
+            if isinstance(session, dict):
+                sessions.append(session)
+        for session in sessions:
+            session_id = str(session.get("sessionId") or session.get("session_id") or "").strip()
+            if not session_id:
+                continue
+            phase_code = str(session.get("phase") or "").strip().lower() or "opening"
+            phase_tr = "Acilis" if phase_code == "opening" else "Kapanis"
+            session_started_at = session.get("startedAt") or session.get("started_at") or ""
+            session_ended_at = session.get("endedAt") or session.get("ended_at") or ""
+            duration_ms = _duration_milliseconds(session_started_at, session_ended_at)
+            if duration_ms is None:
+                duration_ms = int(float(session.get("durationMs") or 0))
+            duration_sec = round(duration_ms / 1000.0, 1)
+            for index, step in enumerate(session.get("steps") if isinstance(session.get("steps"), list) else [], start=1):
+                if not isinstance(step, dict):
+                    continue
+                step_code = str(step.get("stepCode") or step.get("step_code") or f"{phase_code}_step_{index}").strip()
+                row_key = f"{session_id}:{step_code}"
+                target_row = {
+                    "maintenance_record_id": self._existing_or_next_id(sheet, "maintenance_record_id", "maintenance_row_key", row_key),
+                    "maintenance_row_key": row_key,
+                    "session_id": session_id,
+                    "phase_code": phase_code,
+                    "phase_tr": phase_tr,
+                    "step_code": step_code,
+                    "step_label_tr": str(step.get("stepLabel") or step.get("step_label") or step_code).strip(),
+                    "required_flag": 1 if bool(step.get("required", True)) else 0,
+                    "completed_flag": 1 if bool(step.get("completed")) else 0,
+                    "completed_at": step.get("completedAt") or step.get("completed_at") or "",
+                    "session_started_at": session_started_at,
+                    "session_ended_at": session_ended_at,
+                    "duration_ms": duration_ms,
+                    "duration_sec": duration_sec,
+                    "shift_code": str(session.get("shiftCode") or session.get("shift_code") or "").strip(),
+                    "device_id": str(session.get("deviceId") or session.get("device_id") or "").strip(),
+                    "device_name": str(session.get("deviceName") or session.get("device_name") or "").strip(),
+                    "device_role": str(session.get("deviceRole") or session.get("device_role") or "").strip(),
+                    "bound_station_id": str(session.get("boundStationId") or session.get("bound_station_id") or "").strip(),
+                    "operator_id": str(session.get("operatorId") or session.get("operator_id") or "").strip(),
+                    "operator_code": str(session.get("operatorCode") or session.get("operator_code") or "").strip(),
+                    "operator_name": str(session.get("operatorName") or session.get("operator_name") or "").strip(),
+                    "note": str(session.get("note") or "").strip(),
+                }
+                self._upsert_sheet_row(sheet, "maintenance_record_id", "maintenance_row_key", row_key, target_row)
+        self._update_auto_filter(sheet, sheet.max_column, max(sheet.max_row, 2), None)
 
     def _existing_or_next_id(self, sheet: Any, id_header: str, key_header: str, target_key: str) -> int:
         headers = [sheet.cell(1, idx).value for idx in range(1, sheet.max_column + 1)]
@@ -1446,6 +1710,7 @@ class ExcelRuntimeSink:
             "4_Uretim_Tamamlanan",
             "5_OEE_Anliklari",
             "6_Vision",
+            MAINTENANCE_SHEET_NAME,
             RAW_LOG_SHEET_NAME,
         ]
         for sheet_name in preferred_sheet_names + list(workbook.sheetnames):

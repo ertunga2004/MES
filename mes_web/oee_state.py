@@ -2351,9 +2351,15 @@ def build_live_snapshot(state: dict[str, Any], *, now: datetime | None = None) -
         performance = (total / expected) if expected > 0 else 0.0
         target_text = f"{ideal_cycle_sec:.1f} sn cycle / beklenen {expected:.1f}"
     elif target_qty > 0:
-        expected = float(target_qty)
+        if planned_production_total_ms > 0:
+            target_progress = max(0.0, min(1.0, planned_production_elapsed_ms / planned_production_total_ms))
+            expected = float(target_qty) * target_progress
+        elif shift_active and planned_production_elapsed_ms > 0:
+            expected = float(target_qty)
+        else:
+            expected = 0.0
         performance = (total / expected) if expected > 0 else 0.0
-        target_text = f"{target_qty} adet hedef / beklenen {expected:.1f}"
+        target_text = f"{target_qty} adet vardiya hedefi / beklenen {expected:.1f}"
 
     performance = max(0.0, min(1.0, performance))
     oee = availability * performance * quality

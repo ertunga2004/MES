@@ -4,11 +4,13 @@ Bu dosya, repo genelindeki tum acik isleri tek yerde toplar. Her madde, en cok h
 
 ## Yarin - 2026-04-10
 
-- [ ] [mes_web] `web_mes` ve veritabani katmanini is emri odakli JSON giris/cikis ile calisir hale getir.
+- [x] [mes_web] `web_mes` ve veritabani katmanini is emri odakli JSON giris/cikis ile calisir hale getir.
   Hedef: sistem ERP entegrasyonuna hazir olsun; is emri verisi normalize JSON kontratiyla alinip yine JSON cikisi uretebilsin.
+  Sonuc: `work-orders/import`, `work-orders/reload`, siralama/baslatma/onay/rollback/reset API'leri ve dashboard/kiosk JSON snapshot akisi mevcut.
 
-- [ ] [mega] Mega kodunu cihaza yukle.
+- [x] [mega] Mega kodunu cihaza yukle.
   Hedef: saha akisinda kullanilacak guncel firmware fiziksel karta basilsin.
+  Sonuc: guncel Mega firmware'i sahada denendi; sensor/robot cakismasi icin kutu araligi standardi oturdu.
 
 - [ ] [tests] Sistemi uctan uca calistirip tam saha testi yap.
   Hedef: `mega + raspberry + mes_web + workbook/database` zinciri birlikte dogrulansin.
@@ -24,19 +26,81 @@ Bu dosya, repo genelindeki tum acik isleri tek yerde toplar. Her madde, en cok h
 - [x] [mes_web] Kalite override sonucunu workbook'a yaz.
   Sonuc: `4_Uretim_Tamamlanan` sheet'indeki kalite ve override alanlari backend tarafinda geri yaziliyor.
 
+## Tamamlanan - 2026-04-21
+
+- [x] [mes_web] Veritabani/workbook hata dayanimi kontrol edildi.
+  Sonuc: runtime state yaziminda transient `PermissionError` retry, bozuk workbook arsivleme ve startup work-order state testleri mevcut; `mes_web` test paketi 122 test OK.
+
+- [x] [mes_web] `planned stop` alanini availability hesabina dahil et.
+  Sonuc: planli durus butcesi availability paydasindan dusuluyor; kapanis checklist suresi planned stop olarak sayiliyor.
+
+- [x] [mes_web] `TARGET` performans modunu sureye bagli hale getir.
+  Sonuc: `TARGET` modunda beklenen adet artik `targetQty * planned_production_elapsed / planned_production_total` ile hesaplaniyor ve dashboard beklenen/gap bilgisini gosteriyor.
+
+- [x] [mes_web] Tablet, OEE control ve vardiya loglarini workbook'a yaz.
+  Sonuc: `tablet/log`, `shift_start`, `shift_stop`, `set_target`, `set_cycle`, `set_planned_stop` olaylari raw log ve olay logu satirlarina projekte ediliyor.
+
+- [x] [mes_web] MQTT broker offline/pir pir durumunu azalt.
+  Sonuc: MES Web varsayilan MQTT client id bilgisayar + proses bazli benzersiz uretiliyor; kisa kopmalarda `reconnecting` grace penceresi kullaniliyor.
+
+- [x] [mega] TCS3200 sensor akis ve rearm mantigini stabilize et.
+  Sonuc: bugunku deneme `ARM_RESUME`, `CENTER_CREDIT`, `sensorObjectConsumed` katmani kaldirildi; dunku calisan 3 ardisk algi + 100 ms merkezleme + 1 bosluk rearm akisi geri alindi.
+
+- [x] [mega] Sensor Q testini ve olcum loglarini renk teshisine uygun hale getir.
+  Sonuc: `q` testi 7 ornek median/oy/score logluyor; olcum loglarinda `CORE_SCORE_GAP`, vote ve score ayrimi takip ediliyor.
+
+- [x] [mega] Kirmizi/sari renk kararini iyilestir.
+  Sonuc: `SEARCH_HINT_OVERRIDE` devreden cikarildi; kirmiziyi sari yapan agresif red/yellow tie-break daraltildi.
+
+- [x] [tests] Bugunku repo regresyon testlerini calistir.
+  Sonuc: `python -m unittest discover -s tests` 135 test OK.
+
 ## P0 - Hemen Yapilacaklar
 
-- [ ] [mes_web] Veritabani hatalarini tespit et ve gider.
+- [x] [mes_web] Veritabani hatalarini tespit et ve gider.
   Hedef: `mes_web` veritabani katmanindaki baglanti, sorgu, schema ve veri esleme kaynakli hatalar tekrar uretilebilir sekilde toplanip operasyon akisini bozan DB bug'lari kapatilsin.
 
-- [ ] [mes_web] `planned stop` alanini availability hesabina dahil et.
+- [x] [mes_web] `planned stop` alanini availability hesabina dahil et.
   Hedef: planli durus, plansiz durus gibi OEE'yi bozmasin; availability hesabinda dogru ele alinsin.
 
-- [ ] [mes_web] `TARGET` performans modunu sureye bagli hale getir.
+- [x] [mes_web] `TARGET` performans modunu sureye bagli hale getir.
   Hedef: performans sadece `total / targetQty` olmasin; vardiya icinde gecen sureye gore hedef sapmasi hesaplanabilsin.
 
-- [ ] [mes_web] Tablet, OEE control ve vardiya loglarini workbook'a yaz.
+- [x] [mes_web] Tablet, OEE control ve vardiya loglarini workbook'a yaz.
   Hedef: sadece Mega ve vision degil; `tablet/log`, `shift_start`, `shift_stop`, `set_target`, `set_cycle`, `set_planned_stop` gibi olaylar da kalici izlensin.
+
+- [x] [mes_web] MQTT broker offline/pir pir durumunu azalt.
+  Hedef: ayni client id veya kisa kopmalar yuzunden dashboard broker durumunu gereksiz titretmesin.
+
+- [x] [mega] TCS3200 sensor akis ve rearm mantigini stabilize et.
+  Hedef: sikisik kutu diziliminde ayni urunu tekrar okuma, boslukta durma veya sonraki urunu kacirma riski azaltilsin.
+
+- [x] [mega] Kirmizi/sari renk kararini iyilestir.
+  Hedef: kalibrasyon sonrasi kirmizi kupun sari okunmasi azaltilsin; score modeli kirmiziyi net gosterirken tie-break sonucu sari ezmesin.
+
+## Bugun - 2026-04-21 Oncelik Sirasi
+
+1. [x] [P0-Saha] [mega] Mega kodunu fiziksel karta yukle.
+2. [x] [P0-Saha] [mega] TCS3200 sensor akis/rearm ve renk kararini saha testlerine gore stabilize et.
+3. [x] [P0-Kod] [mes_web] MQTT broker offline/pir pir durumunu azalt.
+4. [ ] [P0-Saha] [tests] `mega + raspberry + mes_web + workbook/database` zincirini uctan uca saha testiyle dogrula.
+5. [ ] [P1-Kod] [README] FERP ana import kararini JSON cikti olarak sabitle ve resmi JSON kontratini yaz.
+6. [ ] [P1-Kod] [mes_web] Workbook -> FERP JSON export katmanini ekle.
+7. [ ] [P1-Kod] [tools] Workbook replay / rebuild aracini ekle.
+8. [ ] [P1-Saha] [raspberry] Kamera konumu, ROI, `line_counter.x` ve tekli gecis crossing testlerini saha yerlesimine gore tamamla.
+9. [ ] [P2-Kod] [mes_web] Operasyon/OEE rapor-export ve analytics UI baslangicini ekle.
+10. [ ] [P2-Kod] [picktolight] Performans tarih filtresi ve barkod/kart operator girisi icin ayri faz baslat.
+
+## Mega / Saha Acik Isler
+
+- [ ] [mega] Yeni kirmizi/sari kararini saha regresyonu ile dogrula.
+  Hedef: ayni kalibrasyonla 4 kirmizi, 4 sari, 4 mavi ve bos seri testlerinde `FINAL`, `SCORE_NEAREST`, `MEDIAN_NEAREST`, `VOTE_R/Y/B` alanlari beklenen renkle uyumlu olsun.
+
+- [ ] [mega] TCS3200 kalibrasyon ve mekanik ayar runbook'unu yaz.
+  Hedef: mat siyah ic yuzey, LED acisi, `cal x/r/y/b` sirasi, `q` test kabul kriterleri ve kutu araligi standardi tekrar uygulanabilir olsun.
+
+- [ ] [tests] Raspberry dahil tam saha testi tamamla.
+  Hedef: Mega sensor/queue/robot akisi, Raspberry vision, MES Web ve workbook kaydi ayni senaryoda birlikte dogrulansin.
 
 ## P1 - Sonraki Faz
 
@@ -132,5 +196,6 @@ Bu dosya, repo genelindeki tum acik isleri tek yerde toplar. Her madde, en cok h
 
 ## Teknik Borc ve Repo Temizligi
 
-- [ ] [repo] Runtime output, arsiv ve generated dosyalar icin repo hijyenini koru.
+- [x] [repo] Runtime output, arsiv ve generated dosyalar icin repo hijyenini koru.
   Hedef: `logs/`, yerel workbook'lar, `desktop.ini` benzeri dosyalar repoya tekrar girmesin.
+  Sonuc: `.gitignore` `logs/`, `desktop.ini`, `*.bak.xlsx`, gecici dosyalar ve lokal arsivleri kapsiyor; calisma agaci temiz durumdan basladi.

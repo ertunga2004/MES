@@ -71,6 +71,18 @@ class DashboardStoreTests(unittest.TestCase):
         self.assertEqual(online_snapshot["connection"]["mega_heartbeat"]["state"], "online")
         self.assertEqual(offline_snapshot["connection"]["mega_heartbeat"]["state"], "offline")
 
+    def test_mqtt_disconnect_uses_reconnecting_grace_window(self) -> None:
+        base = datetime(2026, 4, 2, 10, 0, 0, tzinfo=timezone.utc)
+        self.store.set_mqtt_connection(True, received_at=utc_now_text(base))
+        self.store.set_mqtt_connection(False, received_at=utc_now_text(base + timedelta(seconds=1)))
+
+        grace_snapshot = self.store.get_dashboard_snapshot(self.module_id, now=base + timedelta(seconds=3))
+        expired_snapshot = self.store.get_dashboard_snapshot(self.module_id, now=base + timedelta(seconds=8))
+
+        self.assertFalse(grace_snapshot["connection"]["mqtt"]["connected"])
+        self.assertEqual(grace_snapshot["connection"]["mqtt"]["state"], "reconnecting")
+        self.assertEqual(expired_snapshot["connection"]["mqtt"]["state"], "offline")
+
     def test_status_fields_flow_into_snapshot(self) -> None:
         self.store.apply_status_line(
             self.module_id,
@@ -248,6 +260,9 @@ class DashboardStoreTests(unittest.TestCase):
             self.assertEqual(snapshot["oee"]["colors"]["blue"]["good"], 2)
             self.assertEqual(snapshot["oee"]["kpis"]["quality"], 100.0)
             self.assertGreater(snapshot["oee"]["kpis"]["performance"], 0.0)
+            self.assertEqual(snapshot["oee"]["targets"]["expected_qty"], 10.0)
+            self.assertEqual(snapshot["oee"]["targets"]["target_gap"], 6.0)
+            self.assertIn("beklenen 10.0", snapshot["oee"]["targets"]["target_text"])
 
     def test_runtime_state_exposes_recent_items_for_quality_override(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

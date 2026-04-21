@@ -272,6 +272,9 @@ class DashboardStore:
                 "target_qty": 0,
                 "ideal_cycle_sec": 0.0,
                 "planned_stop_min": 0.0,
+                "expected_qty": 0.0,
+                "target_gap": None,
+                "target_text": "-",
             },
             "controls": {
                 "selected_shift": "SHIFT-A",
@@ -364,6 +367,9 @@ class DashboardStore:
         return {
             "enabled": True,
             "mqtt_online": False,
+            "mqtt_last_changed_at": None,
+            "mqtt_last_online_at": None,
+            "mqtt_last_offline_at": None,
             "last_message_at": None,
             "last_status_at": None,
             "last_log_at": None,
@@ -615,6 +621,13 @@ class DashboardStore:
             }
 
             live = build_live_snapshot(payload, now=datetime.now().astimezone())
+            oee["targets"].update(
+                {
+                    "expected_qty": round(float(live["expected"]), 1),
+                    "target_gap": live["gap"],
+                    "target_text": str(live["targetText"] or "-"),
+                }
+            )
             oee["production"] = {
                 "total": int(live["total"]),
                 "good": int(live["good"]),
@@ -962,12 +975,18 @@ class DashboardStore:
                 }
             ]
 
-    def set_mqtt_connection(self, online: bool) -> None:
+    def set_mqtt_connection(self, online: bool, *, received_at: str | None = None) -> None:
+        stamp = received_at or utc_now_text()
         with self._lock:
             module = self._module(self.config.module_id)
             if module["mqtt_online"] == online:
                 return
             module["mqtt_online"] = online
+            module["mqtt_last_changed_at"] = stamp
+            if online:
+                module["mqtt_last_online_at"] = stamp
+            else:
+                module["mqtt_last_offline_at"] = stamp
         self._notify(self.config.module_id)
 
     def _touch_message(self, module_id: str, received_at: str) -> dict[str, Any]:
@@ -1259,11 +1278,20 @@ class DashboardStore:
             module = self._module(module_id)
             heartbeat_last_seen = parse_iso_text(module["last_heartbeat_at"])
             bridge_last_seen = parse_iso_text(module["bridge"]["last_seen_at"])
+            mqtt_last_offline_at = parse_iso_text(module["mqtt_last_offline_at"])
 
             heartbeat_online = bool(
                 heartbeat_last_seen
                 and current - heartbeat_last_seen <= timedelta(seconds=self.config.heartbeat_timeout_sec)
             )
+            mqtt_state = "online" if module["mqtt_online"] else "offline"
+            if (
+                not module["mqtt_online"]
+                and mqtt_last_offline_at is not None
+                and current - mqtt_last_offline_at <= timedelta(seconds=self.config.mqtt_offline_grace_sec)
+            ):
+                mqtt_state = "reconnecting"
+
             if bridge_last_seen is None:
                 bridge_state = "offline"
             elif current - bridge_last_seen > timedelta(seconds=self.config.bridge_stale_after_sec):
@@ -1292,8 +1320,13 @@ class DashboardStore:
                 },
                 "connection": {
                     "mqtt": {
-                        "state": "online" if module["mqtt_online"] else "offline",
+                        "state": mqtt_state,
+                        "connected": module["mqtt_online"],
                         "last_message_at": module["last_message_at"],
+                        "last_changed_at": module["mqtt_last_changed_at"],
+                        "last_online_at": module["mqtt_last_online_at"],
+                        "last_offline_at": module["mqtt_last_offline_at"],
+                        "offline_grace_sec": self.config.mqtt_offline_grace_sec,
                     },
                     "mega_heartbeat": {
                         "state": "online" if heartbeat_online else "offline",

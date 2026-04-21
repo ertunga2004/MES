@@ -378,7 +378,7 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
         self.assertEqual(snapshot["plannedProductionElapsedMs"], 3 * 60 * 60 * 1000 + 30 * 60 * 1000)
         self.assertAlmostEqual(snapshot["availability"], 6.0 / 7.0, places=4)
 
-    def test_target_mode_uses_target_quantity_for_expected_output(self) -> None:
+    def test_target_mode_uses_elapsed_shift_time_for_expected_output(self) -> None:
         state = {
             "performanceMode": "TARGET",
             "targetQty": 16,
@@ -409,11 +409,11 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
 
         snapshot = build_live_snapshot(state, now=datetime(2026, 4, 2, 12, 0, 0, tzinfo=timezone(timedelta(hours=3))))
 
-        self.assertAlmostEqual(snapshot["expected"], 16.0, places=4)
-        self.assertAlmostEqual(snapshot["performance"], 3.0 / 16.0, places=4)
-        self.assertIn("beklenen 16.0", snapshot["targetText"])
+        self.assertAlmostEqual(snapshot["expected"], 8.0, places=4)
+        self.assertAlmostEqual(snapshot["performance"], 3.0 / 8.0, places=4)
+        self.assertIn("beklenen 8.0", snapshot["targetText"])
 
-    def test_target_mode_does_not_jump_to_100_percent_after_first_item_when_target_is_six(self) -> None:
+    def test_target_mode_caps_performance_when_output_is_ahead_of_elapsed_target(self) -> None:
         state = {
             "performanceMode": "TARGET",
             "targetQty": 6,
@@ -444,8 +444,8 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
 
         snapshot = build_live_snapshot(state, now=datetime(2026, 4, 2, 8, 5, 0, tzinfo=timezone(timedelta(hours=3))))
 
-        self.assertAlmostEqual(snapshot["expected"], 6.0, places=4)
-        self.assertAlmostEqual(snapshot["performance"], 1.0 / 6.0, places=4)
+        self.assertAlmostEqual(snapshot["expected"], 0.0625, places=4)
+        self.assertEqual(snapshot["performance"], 1.0)
 
     def test_live_performance_is_capped_at_100_percent(self) -> None:
         state = {

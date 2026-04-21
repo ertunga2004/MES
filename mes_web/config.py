@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+import socket
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +30,17 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _safe_mqtt_client_token(value: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9_-]+", "-", value.strip())
+    token = token.strip("-_")
+    return token or "host"
+
+
+def _default_mqtt_client_id() -> str:
+    host = _safe_mqtt_client_token(socket.gethostname())
+    return f"mes-web-live-{host}-{os.getpid()}"
+
+
 @dataclass(slots=True)
 class AppConfig:
     host: str = "127.0.0.1"
@@ -40,7 +53,8 @@ class AppConfig:
     mqtt_host: str = "broker.emqx.io"
     mqtt_port: int = 1883
     mqtt_keepalive: int = 60
-    mqtt_client_id: str = "mes-web-live"
+    mqtt_client_id: str = field(default_factory=_default_mqtt_client_id)
+    mqtt_offline_grace_sec: int = 5
     command_mode: str = "full_live"
     publish_enabled: bool = True
     manual_command_enabled: bool = True
@@ -147,7 +161,8 @@ class AppConfig:
             mqtt_host=os.getenv("MES_WEB_MQTT_HOST", "broker.emqx.io"),
             mqtt_port=int(os.getenv("MES_WEB_MQTT_PORT", "1883")),
             mqtt_keepalive=int(os.getenv("MES_WEB_MQTT_KEEPALIVE", "60")),
-            mqtt_client_id=os.getenv("MES_WEB_MQTT_CLIENT_ID", "mes-web-live"),
+            mqtt_client_id=os.getenv("MES_WEB_MQTT_CLIENT_ID") or _default_mqtt_client_id(),
+            mqtt_offline_grace_sec=int(os.getenv("MES_WEB_MQTT_OFFLINE_GRACE_SEC", "5")),
             command_mode=os.getenv("MES_WEB_COMMAND_MODE", "full_live"),
             publish_enabled=_env_bool("MES_WEB_PUBLISH_ENABLED", True),
             manual_command_enabled=_env_bool("MES_WEB_MANUAL_COMMAND_ENABLED", True),

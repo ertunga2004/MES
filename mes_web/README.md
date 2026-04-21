@@ -101,6 +101,7 @@ Formuller:
 - `planned_production_elapsed = elapsed - planned_stop_budget`
 - `runtime = planned_production_elapsed - unplanned_downtime`
 - `Performance = completed / expected_by_shift_rate` veya `completed / expected_by_cycle`
+- `expected_by_shift_rate = targetQty * planned_production_elapsed / planned_production_total`
 - `Quality = good / total`
 - `OEE = Availability * Performance * Quality`
 
@@ -172,6 +173,8 @@ Onemli:
 - `paho-mqtt`, uygulamayi gercekten calistiran ayni Python ortaminda kurulu olmalidir
 - launcher hangi Python'u kullaniyorsa paketler de o Python'a kurulmalidir
 - `Broker Offline` goruluyorsa once ayni interpreter'da `paho-mqtt` var mi kontrol edilmelidir
+- varsayilan MQTT client id bilgisayar + proses bazli benzersiz uretilir; ayni id ile iki istemci baglanirsa broker eski baglantiyi dusurur
+- kisa MQTT kopuslari panelde once `Baglaniyor` olarak gosterilir, sure uzarsa `Offline` olur
 - kampus veya kurumsal aglarda `1883` cikisi engelleniyorsa broker baglantisi kurulamaz
 
 ## Ortam Degiskenleri
@@ -185,6 +188,7 @@ Ag ve servis:
 - `MES_WEB_MQTT_PORT`
 - `MES_WEB_MQTT_KEEPALIVE`
 - `MES_WEB_MQTT_CLIENT_ID`
+- `MES_WEB_MQTT_OFFLINE_GRACE_SEC`
 
 UI ve komut:
 

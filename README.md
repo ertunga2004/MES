@@ -45,6 +45,7 @@ Ana adresler:
 - `manualFaultDurationMs` unplanned stop olarak sayilir
 - hurda urun depoya dusmez
 - `Broker Offline` goruluyorsa once launcher'in kullandigi Python ortaminda `paho-mqtt` kurulu mu kontrol edilmelidir
+- MQTT client id varsayilan olarak benzersiz uretilir; ayni id ile iki MES Web acilmasi broker baglantisini titretir
 
 ## Dokuman Haritasi
 

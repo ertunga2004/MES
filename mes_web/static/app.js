@@ -52,7 +52,7 @@ const TOKEN_LABELS = {
   ready: "Hazir",
   bootstrapping: "Bootstrapping",
   live: "Canli",
-  reconnecting: "Reconnect",
+  reconnecting: "Baglaniyor",
   queued: "Kuyrukta",
   started: "Basladi",
   pending_approval: "Onay Bekliyor",
@@ -1108,7 +1108,7 @@ function renderOee(snapshot) {
     <article class="oee-summary-card">
       <span>Hedef Ayari</span>
       <strong>${targetValue}</strong>
-      <small>Planli durus ${formatNumber(oee.targets.planned_stop_min)} dk</small>
+      <small>Beklenen ${formatNumber(oee.targets.expected_qty)} | Gap ${formatNumber(oee.targets.target_gap)}</small>
     </article>
     <article class="oee-summary-card">
       <span>Ozet</span>
@@ -1143,6 +1143,8 @@ function renderOee(snapshot) {
     ["Sari Total", formatNumber(oee.colors.yellow.total)],
     ["Kirmizi Total", formatNumber(oee.colors.red.total)],
     ["Perf Modu", formatToken(oee.targets.performance_mode)],
+    ["Beklenen", formatNumber(oee.targets.expected_qty)],
+    ["Hedef Gap", formatNumber(oee.targets.target_gap)],
   ]);
 
   renderFieldGrid(els.oeeFaultGrid, [

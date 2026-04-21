@@ -189,7 +189,8 @@ Order satirlarinda ms taraflari da tutulur:
 - `Availability = runtime / planned_production_elapsed`
 - `planned_production_elapsed = elapsed - planned_stop_budget`
 - `runtime = planned_production_elapsed - unplanned_downtime`
-- `Performance = completed / target` veya `completed / expected_by_cycle`
+- `Performance = completed / expected_by_shift_rate` veya `completed / expected_by_cycle`
+- `expected_by_shift_rate = targetQty * planned_production_elapsed / planned_production_total`
 - `Quality = good / total`
 - `OEE = Availability * Performance * Quality`
 

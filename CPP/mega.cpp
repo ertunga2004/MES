@@ -48,6 +48,7 @@ extern bool activePickCompletedLogged;
 void logActivePickCompleted(const char* stateLabel);
 void logActivePickReturnDone(const char* stateLabel, bool useQueueLabel, uint8_t queueDepth);
 long dist3(int r1,int g1,int b1,int r2,int g2,int b2);
+int medianFromBuffer(const int *src, int n);
 const char* calibrationWorkflowExpectedLabel();
 const char* calibrationWorkflowNextLabel(uint8_t step);
 uint8_t calibrationWorkflowForTarget(const String& w);
@@ -947,6 +948,61 @@ static void colorScoresForRaw(int sampleR, int sampleG, int sampleB,
                           sigB.invNormR, sigB.invNormG, sigB.invNormB);
 }
 
+String redYellowRawTieBreak(int Rm, int Gm, int Bm,
+                            long dRColor, long dYColor, long dBColor){
+  if(!(hasR && hasY)) return "";
+
+  long bestRY = min(dRColor, dYColor);
+  long blueGuard = max(120L, colorDecisionGapThreshold);
+  if(dBColor <= bestRY + blueGuard) return "";
+
+  long scoreDeltaRY = dYColor - dRColor; // pozitif: kirmizi daha yakin, negatif: sari daha yakin
+  long scoreGuard = max(80L, colorDecisionGapThreshold);
+  if(scoreDeltaRY >= scoreGuard) return "KIRMIZI";
+  if(scoreDeltaRY <= -scoreGuard) return "SARI";
+
+  int redB = RB;
+  int yellowB = YB;
+  int gapB = abs(redB - yellowB);
+  int redG = RG;
+  int yellowG = YG;
+  int gapG = abs(redG - yellowG);
+  if(gapB < 20 && gapG < 10) return "";
+
+  int redR = RR;
+  int yellowR = YR;
+  int gapR = abs(redR - yellowR);
+  int marginB = constrain(gapB / 4, 6, 14);
+  int marginR = constrain(gapR / 3, 8, 18);
+  int marginG = constrain(gapG / 4, 4, 14);
+
+  bool redGSide = false;
+  bool yellowGSide = false;
+  if(gapG >= 10){
+    if(redG > yellowG){
+      redGSide = (Gm >= redG - marginG);
+      yellowGSide = (Gm <= yellowG + marginG);
+    } else {
+      redGSide = (Gm <= redG + marginG);
+      yellowGSide = (Gm >= yellowG - marginG);
+    }
+  }
+
+  if(redB > yellowB){
+    bool yellowRawSide = (Bm <= yellowB + marginB) && (Rm <= yellowR + marginR);
+    bool redRawSide = (Bm >= redB - marginB) && (Rm >= redR - marginR);
+    if(redGSide && redRawSide) return "KIRMIZI";
+    if(scoreDeltaRY <= 0 && yellowGSide && yellowRawSide) return "SARI";
+  } else {
+    bool yellowRawSide = (Bm >= yellowB - marginB) && (Rm <= yellowR + marginR);
+    bool redRawSide = (Bm <= redB + marginB) && (Rm >= redR - marginR);
+    if(redGSide && redRawSide) return "KIRMIZI";
+    if(scoreDeltaRY <= 0 && yellowGSide && yellowRawSide) return "SARI";
+  }
+
+  return "";
+}
+
 static void rebuildCalibrationModel(){
   calibrationModelReady = false;
   if(!(hasR && hasY && hasB && hasX)) return;
@@ -1188,6 +1244,9 @@ String classifyNearest(int Rm,int Gm,int Bm){
   if(dY < dMin){ dMin = dY; label="SARI"; }
   if(dB < dMin){ dMin = dB; label="MAVI"; }
 
+  String ryTie = redYellowRawTieBreak(Rm, Gm, Bm, dR, dY, dB);
+  if(ryTie.length() > 0) return ryTie;
+
   return label;
 }
 
@@ -1250,6 +1309,12 @@ String classifyStable(int Rm, int Gm, int Bm, bool &objectPresent, bool &confide
     label = "MAVI";
   } else if(dBColor < second){
     second = dBColor;
+  }
+
+  String ryTie = redYellowRawTieBreak(Rm, Gm, Bm, dRColor, dYColor, dBColor);
+  if(ryTie.length() > 0){
+    confident = true;
+    return ryTie;
   }
 
   confident = ((second - best) >= colorDecisionGapThreshold);
@@ -1645,6 +1710,125 @@ bool isColorDetectCode(uint8_t code){
   return code == MEAS_LABEL_R || code == MEAS_LABEL_Y || code == MEAS_LABEL_B;
 }
 
+void runSensorTest(){
+  const uint8_t TEST_N = 7;
+  int testRs[TEST_N];
+  int testGs[TEST_N];
+  int testBs[TEST_N];
+  uint16_t testBOS = 0;
+  uint16_t testR = 0;
+  uint16_t testY = 0;
+  uint16_t testB = 0;
+  uint16_t testCAL = 0;
+  uint8_t objectSamples = 0;
+
+  for(uint8_t i = 0; i < TEST_N; i++){
+    SensorSample s = quickClassifyOnce();
+    testRs[i] = s.R;
+    testGs[i] = s.G;
+    testBs[i] = s.B;
+    if(s.objectPresent) objectSamples++;
+    applyVoteForCode(sampleLabelCode(s.cls), testBOS, testR, testY, testB, testCAL);
+    if(i + 1 < TEST_N) delayWithStep(35);
+  }
+
+  int medR = medianFromBuffer(testRs, TEST_N);
+  int medG = medianFromBuffer(testGs, TEST_N);
+  int medB = medianFromBuffer(testBs, TEST_N);
+  bool medianObject = false;
+  bool medianConfident = false;
+  long medDX = 0;
+  long medRel = 0;
+  String medianCls = classifyStable(medR, medG, medB, medianObject, medianConfident, &medDX, &medRel);
+  String finalCls = medianCls;
+  String finalSource = "TEST_MEDIAN";
+
+  uint16_t voteWin = topVoteCountOf(testBOS, testR, testY, testB, testCAL);
+  uint16_t voteSecond = secondVoteCountOf(testBOS, testR, testY, testB, testCAL);
+  uint16_t classifiedVotes = testR + testY + testB;
+  String voteCls = majorityLabelOf(testBOS, testR, testY, testB, testCAL);
+
+  long scoreR = 0;
+  long scoreY = 0;
+  long scoreB = 0;
+  String scoreNearest = calibrationModelReady ? "KIRMIZI" : "CAL";
+  long scoreGap = 0;
+  if(calibrationModelReady){
+    colorScoresForRaw(medR, medG, medB, scoreR, scoreY, scoreB);
+    long bestScore = scoreR;
+    long secondScore = scoreY;
+    if(scoreY < bestScore){
+      secondScore = bestScore;
+      bestScore = scoreY;
+      scoreNearest = "SARI";
+    } else {
+      secondScore = scoreY;
+    }
+    if(scoreB < bestScore){
+      secondScore = bestScore;
+      bestScore = scoreB;
+      scoreNearest = "MAVI";
+    } else if(scoreB < secondScore){
+      secondScore = scoreB;
+    }
+    scoreGap = secondScore - bestScore;
+    if(scoreGap < 0) scoreGap = 0;
+  }
+
+  bool redYellowVoteScoreConflict =
+    ((voteCls == "KIRMIZI" && scoreNearest == "SARI") ||
+     (voteCls == "SARI" && scoreNearest == "KIRMIZI"));
+  if(finalCls == "BELIRSIZ" &&
+     voteCls != "BOS" && voteCls != "CAL" &&
+     classifiedVotes >= 4 && voteWin >= (voteSecond + 2) &&
+     !redYellowVoteScoreConflict){
+    finalCls = voteCls;
+    finalSource = "TEST_MAJORITY";
+    medianConfident = true;
+  }
+
+  Serial1.print("MEGA|TCS3200|TEST|CLASS=");
+  Serial1.print(finalCls);
+  Serial1.print("|SOURCE=");
+  Serial1.print(finalSource);
+  Serial1.print("|R=");
+  Serial1.print(medR);
+  Serial1.print("|G=");
+  Serial1.print(medG);
+  Serial1.print("|B=");
+  Serial1.print(medB);
+  Serial1.print("|OBJ=");
+  Serial1.print(medianObject ? 1 : 0);
+  Serial1.print("|CONF=");
+  Serial1.print(medianConfident ? 1 : 0);
+  Serial1.print("|N=");
+  Serial1.print(TEST_N);
+  Serial1.print("|OBJ_N=");
+  Serial1.print(objectSamples);
+  Serial1.print("|VOTE_R=");
+  Serial1.print(testR);
+  Serial1.print("|VOTE_Y=");
+  Serial1.print(testY);
+  Serial1.print("|VOTE_B=");
+  Serial1.print(testB);
+  Serial1.print("|VOTE_BOS=");
+  Serial1.print(testBOS);
+  Serial1.print("|VOTE_CAL=");
+  Serial1.print(testCAL);
+  Serial1.print("|VOTE_WIN=");
+  Serial1.print(voteWin);
+  Serial1.print("|VOTE_SECOND=");
+  Serial1.print(voteSecond);
+  Serial1.print("|SCORE_NEAREST=");
+  Serial1.print(scoreNearest);
+  Serial1.print("|SCORE_GAP=");
+  Serial1.print(scoreGap);
+  Serial1.print("|DX=");
+  Serial1.print(medDX);
+  Serial1.print("|REL=");
+  Serial1.println(medRel);
+}
+
 bool isSearchDetectCandidate(const SensorSample& s){
   uint8_t code = sampleLabelCode(s.cls);
   if(!s.objectPresent || !s.confident || !isColorDetectCode(code)) return false;
@@ -1666,7 +1850,6 @@ bool shouldReleaseRearmForSample(const SensorSample& s){
      dxDelta < SENSOR_REARM_SAME_OBJECT_DX_DELTA_MAX){
     return false;
   }
-
   return true;
 }
 
@@ -2174,20 +2357,7 @@ void loop() {
       if(autoMode){
         logEvent("TCS3200", "ERROR=Q_BLOCKED|REASON=AUTO_MODE");
       } else {
-        SensorSample s = quickClassifyOnce();
-
-        Serial1.print("MEGA|TCS3200|TEST|CLASS=");
-        Serial1.print(s.cls);
-        Serial1.print("|R=");
-        Serial1.print(s.R);
-        Serial1.print("|G=");
-        Serial1.print(s.G);
-        Serial1.print("|B=");
-        Serial1.print(s.B);
-        Serial1.print("|OBJ=");
-        Serial1.print(s.objectPresent ? 1 : 0);
-        Serial1.print("|CONF=");
-        Serial1.println(s.confident ? 1 : 0);
+        runSensorTest();
       }
     }
 
@@ -2627,8 +2797,23 @@ void loop() {
     String medianNearest = classifyNearest(medR, medG, medB);
     String scoreNearest = "KIRMIZI";
     long bestScore = coreScoreR;
-    if(coreScoreY < bestScore){ bestScore = coreScoreY; scoreNearest = "SARI"; }
-    if(coreScoreB < bestScore){ bestScore = coreScoreB; scoreNearest = "MAVI"; }
+    long secondScore = coreScoreY;
+    if(coreScoreY < bestScore){
+      secondScore = bestScore;
+      bestScore = coreScoreY;
+      scoreNearest = "SARI";
+    } else {
+      secondScore = coreScoreY;
+    }
+    if(coreScoreB < bestScore){
+      secondScore = bestScore;
+      bestScore = coreScoreB;
+      scoreNearest = "MAVI";
+    } else if(coreScoreB < secondScore){
+      secondScore = coreScoreB;
+    }
+    long scoreGap = secondScore - bestScore;
+    if(scoreGap < 0) scoreGap = 0;
     String finalCls = classifyStable(medR, medG, medB, medianObject, medianConfident);
     String finalSource = usedCoreWindow ? "CORE_STABLE" : "MEDIAN_STABLE";
     long medDR = 0;
@@ -2647,6 +2832,13 @@ void loop() {
     String searchHint = detectHintLabel(&searchHintWin, &searchHintSecond);
     bool searchHintStrong = (searchHint != "BELIRSIZ" && searchHintWin >= 2 && searchHintWin > searchHintSecond);
     bool searchHintFallbackAllowed = (classifiedVotes >= 3 && voteWin >= 2);
+    bool searchHintMatchesEvidence =
+      (searchHint == medianNearest) ||
+      (searchHint == scoreNearest) ||
+      (searchHint == voteCls && classifiedVotes >= 2);
+    bool redYellowVoteScoreConflict =
+      ((voteCls == "KIRMIZI" && scoreNearest == "SARI") ||
+       (voteCls == "SARI" && scoreNearest == "KIRMIZI"));
     bool reviewRequired = false;
 
     if(finalCls == "KIRMIZI" && scoreNearest == "SARI" && coreVoteY >= coreVoteR && coreVoteY >= 2){
@@ -2660,13 +2852,22 @@ void loop() {
     }
 
     if(finalCls == "BELIRSIZ" && voteCls == medianNearest && voteCls != "BOS" && voteCls != "CAL" &&
-       classifiedVotes >= 3 && voteWin >= 2 && ((voteWin * 100U) >= (classifiedVotes * 65U))){
+       classifiedVotes >= 3 && voteWin >= 2 && ((voteWin * 100U) >= (classifiedVotes * 65U)) &&
+       !redYellowVoteScoreConflict){
       finalCls = voteCls;
       finalSource = "CORE_VOTE_MATCH";
     } else if(finalCls == "BELIRSIZ" && scoreNearest == voteCls && voteCls != "BOS" && voteCls != "CAL" &&
               classifiedVotes >= 4 && voteWin >= 3){
       finalCls = scoreNearest;
       finalSource = "CORE_SCORE_VOTE";
+    }
+
+    bool aggregateScoreStrong = usedCoreWindow && selectedCount >= 4 && objectCount >= 4 &&
+      scoreGap >= max(80L, (colorDecisionGapThreshold * (long)selectedCount) / 2L);
+    if((finalCls == "BELIRSIZ" || finalCls == "BOS") && aggregateScoreStrong){
+      finalCls = scoreNearest;
+      finalSource = "CORE_SCORE_AGGREGATE";
+      reviewRequired = true;
     }
 
     if(finalCls == "BELIRSIZ" &&
@@ -2680,14 +2881,9 @@ void loop() {
       reviewRequired = true;
     }
 
-    if(finalCls == "BELIRSIZ" && searchHintStrong && searchHintFallbackAllowed){
+    if(finalCls == "BELIRSIZ" && searchHintStrong && searchHintFallbackAllowed && searchHintMatchesEvidence){
       finalCls = searchHint;
       finalSource = "SEARCH_HINT_STRONG";
-      reviewRequired = true;
-    } else if(searchHintStrong && searchHintFallbackAllowed && finalCls != searchHint &&
-              (!medianConfident || classifiedVotes < 4 || finalSource == "CORE_SCORE_VOTE")){
-      finalCls = searchHint;
-      finalSource = "SEARCH_HINT_OVERRIDE";
       reviewRequired = true;
     }
 
@@ -2762,6 +2958,8 @@ void loop() {
     Serial1.print(medianNearest);
     Serial1.print("|SCORE_NEAREST=");
     Serial1.print(scoreNearest);
+    Serial1.print("|CORE_SCORE_GAP=");
+    Serial1.print(scoreGap);
     Serial1.print("|MED_R=");
     Serial1.print(medR);
     Serial1.print("|MED_G=");

@@ -713,6 +713,10 @@ class WorkbookProjector:
             f"fault_code={row.get('fault_code')}" if row.get("fault_code") else "",
             f"repeat_count={row.get('repeat_count')}" if row.get("repeat_count") not in (None, "") else "",
             f"status={row.get('status')}" if row.get("status") else "",
+            f"technician={row.get('technician_name')}" if row.get("technician_name") else "",
+            f"response_ms={row.get('response_duration_ms')}" if row.get("response_duration_ms") not in (None, "") else "",
+            f"repair_ms={row.get('repair_duration_ms')}" if row.get("repair_duration_ms") not in (None, "") else "",
+            f"total_ms={row.get('total_duration_ms')}" if row.get("total_duration_ms") not in (None, "") else "",
             f"note={row.get('note')}" if row.get("note") else "",
             f"reason={row.get('reason')}" if row.get("reason") else "",
         ]
@@ -736,6 +740,7 @@ class WorkbookProjector:
             "step_code": row.get("step_code") or "",
             "phase": row.get("phase") or "",
             "fault_code": row.get("fault_code") or "",
+            "technician_name": row.get("technician_name") or "",
             "reason": row.get("reason") or "",
         }
         return {

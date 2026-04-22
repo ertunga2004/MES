@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MES Teknisyen Kiosk</title>
+  <link rel="stylesheet" href="/static/technician.css">
+</head>
+<body>
+  <div class="tech-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">MES Teknisyen Kiosk</p>
+        <h1 id="screenTitle">Teknisyen Cagri Ekrani</h1>
+      </div>
+      <div class="topbar-actions">
+        <label class="tech-name-field" for="technicianNameInput">
+          <span>Teknisyen</span>
+          <input id="technicianNameInput" type="text" autocomplete="name" placeholder="Teknisyen adi">
+        </label>
+        <div class="connection-pill" id="connectionState">Baglaniyor</div>
+      </div>
+    </header>
+
+    <main class="content-grid">
+      <section class="alarm-band" id="alarmBand">
+        <div>
+          <p class="section-label">Aktif Cagri</p>
+          <h2 id="alarmTitle">Cagri bekleniyor</h2>
+          <p id="alarmMeta" class="muted">Sistem canli baglanti kuruyor.</p>
+        </div>
+        <div class="summary-grid">
+          <div class="summary-box">
+            <span>Acik</span>
+            <strong id="openCount">0</strong>
+          </div>
+          <div class="summary-box">
+            <span>Kabul</span>
+            <strong id="ackCount">0</strong>
+          </div>
+          <div class="summary-box">
+            <span>Bugun</span>
+            <strong id="resolvedTodayCount">0</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="active-panel panel">
+        <div class="panel-head">
+          <div>
+            <p class="section-label">Canli Liste</p>
+            <h2>Aktif Teknisyen Cagrilari</h2>
+          </div>
+        </div>
+        <div id="activeRequestsList" class="request-list"></div>
+      </section>
+
+      <section class="history-panel panel">
+        <div class="history-section">
+          <div class="panel-head compact">
+            <div>
+              <p class="section-label">Dogrulama</p>
+              <h2>Bugun Cozulenler</h2>
+            </div>
+          </div>
+          <div id="resolvedTodayList" class="history-list"></div>
+        </div>
+
+        <div class="history-section">
+          <div class="panel-head compact">
+            <div>
+              <p class="section-label">Gecmis</p>
+              <h2>Son 10 Cagri</h2>
+            </div>
+          </div>
+          <div id="recentRequestsList" class="history-list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/static/technician.js" defer></script>
+</body>
+</html>

@@ -12,9 +12,10 @@ Bu belge aktif topicleri ve bugunku publisher/subscriber rollerini ozetler.
 
 ## Onemli Mimari Not
 
-- browser dashboard ve browser kiosk MQTT'ye dogrudan baglanmaz
+- browser dashboard, browser kiosk ve teknisyen ekranlari MQTT'ye dogrudan baglanmaz
 - MQTT subscriber/publisher rolu backend'deki `mes_web` icindedir
 - kiosk aksiyonlari REST ile gelir; gerekirse `mes_web` `cmd` topic'ine publish eder
+- teknisyen cagri `acknowledge/resolve` aksiyonlari REST ile gelir; MQTT komutu uretmez
 
 ## Ana Hat Topicleri
 
@@ -79,4 +80,4 @@ Asagidaki aileler plan notlarinda gecse de bugun aktif MQTT kontrati degildir:
 - `.../mes/state/*`
 - `.../tablet/event/*`
 
-Bugunku kiosk implementasyonu bunlar yerine `mes_web` REST + WebSocket katmanini kullanir.
+Bugunku kiosk ve teknisyen implementasyonu bunlar yerine `mes_web` REST + WebSocket katmanini kullanir.

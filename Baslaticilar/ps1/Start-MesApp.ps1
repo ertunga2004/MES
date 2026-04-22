@@ -2,7 +2,8 @@
 param(
     [string]$App,
     [switch]$ListApps,
-    [switch]$PrintCommand
+    [switch]$PrintCommand,
+    [switch]$OpenBrowser
 )
 
 Set-StrictMode -Version Latest
@@ -89,6 +90,53 @@ function Invoke-RaspberryClockSync {
     Write-Host ""
 }
 
+function Start-BrowserOpenWhenReady {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$HealthUrl,
+        [Parameter(Mandatory = $true)]
+        [string[]]$Urls
+    )
+
+    if (-not $HealthUrl -or -not $Urls -or $Urls.Count -eq 0) {
+        return
+    }
+
+    $scriptBlock = {
+        param(
+            [string]$HealthUrl,
+            [string[]]$Urls
+        )
+
+        $ready = $false
+        for ($attempt = 0; $attempt -lt 90; $attempt++) {
+            try {
+                $response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 2
+                if ([int]$response.StatusCode -ge 200 -and [int]$response.StatusCode -lt 500) {
+                    $ready = $true
+                    break
+                }
+            } catch {
+                Start-Sleep -Seconds 1
+            }
+        }
+
+        if ($ready) {
+            foreach ($url in $Urls) {
+                if ($url) {
+                    Start-Process $url
+                }
+            }
+        }
+    }
+
+    try {
+        Start-Job -ScriptBlock $scriptBlock -ArgumentList @($HealthUrl, (,$Urls)) | Out-Null
+    } catch {
+        Write-Host ("Tarayici otomatik acma baslatilamadi: {0}" -f $_.Exception.Message)
+    }
+}
+
 function Get-AppCatalog {
     return [ordered]@{
         "mes_web" = @{
@@ -102,7 +150,13 @@ function Get-AppCatalog {
             UrlHints = @(
                 "Lokal panel: http://127.0.0.1:8080",
                 "Kiosk ornegi: http://127.0.0.1:8080/kiosk/kiosk-test-1",
+                "Teknisyen ekrani: http://127.0.0.1:8080/technician/tech-1",
                 "Ag erisimi: http://<BU_BILGISAYAR_IP>:8080/kiosk/kiosk-test-1"
+            )
+            OpenUrls = @(
+                "http://127.0.0.1:8080",
+                "http://127.0.0.1:8080/kiosk/kiosk-test-1",
+                "http://127.0.0.1:8080/technician/tech-1"
             )
             Env = @{
                 "MES_WEB_HOST" = "0.0.0.0"
@@ -216,10 +270,12 @@ $requirements = [string]$config.Requirements
 $url = [string]$config.Url
 $syncClock = if ($config.Contains("SyncClock")) { [bool]$config["SyncClock"] } else { $false }
 $urlHints = if ($config.Contains("UrlHints")) { [string[]]$config["UrlHints"] } else { @() }
+$openUrls = if ($config.Contains("OpenUrls")) { [string[]]$config["OpenUrls"] } elseif ($url) { @($url) } else { @() }
 $envMap = if ($config.Contains("Env")) { [hashtable]$config["Env"] } else { @{} }
 $bindHost = if ($envMap.Contains("MES_WEB_HOST")) { [string]$envMap["MES_WEB_HOST"] } else { "" }
 $bindPort = if ($envMap.Contains("MES_WEB_PORT")) { [string]$envMap["MES_WEB_PORT"] } else { "" }
 $bindAddress = if ($bindHost -and $bindPort) { "{0}:{1}" -f $bindHost, $bindPort } else { "" }
+$healthUrl = if ($bindPort) { "http://127.0.0.1:{0}/health" -f $bindPort } else { "" }
 
 if (-not (Test-Path -LiteralPath $workingDir)) {
     throw "Calisma klasoru bulunamadi: $workingDir"
@@ -282,6 +338,9 @@ if ($PrintCommand) {
     foreach ($hint in $urlHints) {
         Write-Host ("URL           : {0}" -f $hint)
     }
+    foreach ($openUrl in $openUrls) {
+        Write-Host ("Tarayici      : {0}" -f $openUrl)
+    }
     foreach ($key in $envMap.Keys) {
         Write-Host ("ENV           : {0}={1}" -f $key, $envMap[$key])
     }
@@ -297,7 +356,10 @@ if ($bindAddress) {
     Write-Host ("Ag dinleme adresi: {0}" -f $bindAddress)
 }
 foreach ($hint in $urlHints) {
-    Write-Host ("Kiosk         : {0}" -f $hint)
+    Write-Host ("Link          : {0}" -f $hint)
+}
+if ($OpenBrowser -and $openUrls.Count -gt 0 -and $healthUrl) {
+    Write-Host "Tarayici      : server hazir olunca panel, kiosk ve teknisyen ekranlari otomatik acilacak."
 }
 if ($requirements -and (Test-Path -LiteralPath $requirements)) {
     Write-Host ("Bagimlilik gerekirse: python -m pip install -r {0}" -f $requirements)
@@ -316,6 +378,9 @@ Push-Location $workingDir
 try {
     foreach ($key in $envMap.Keys) {
         [System.Environment]::SetEnvironmentVariable($key, [string]$envMap[$key], "Process")
+    }
+    if ($OpenBrowser) {
+        Start-BrowserOpenWhenReady -HealthUrl $healthUrl -Urls $openUrls
     }
     & $python.Exe @commandArgs
     $exitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }

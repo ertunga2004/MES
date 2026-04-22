@@ -30,6 +30,12 @@ Komutu gormek icin:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Baslaticilar\ps1\Start-MesApp.ps1 -App mes_web -PrintCommand
 ```
 
+Tarayiciyi otomatik acmak icin:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Baslaticilar\ps1\Start-MesApp.ps1 -App mes_web -OpenBrowser
+```
+
 ## MES Web Ozel Notlari
 
 `MES Web.cmd` su environment ile acilir:
@@ -40,10 +46,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Baslaticilar\ps1\Start
 Bu sayede:
 
 - ayni PC'de `http://127.0.0.1:8080`
+- operator kiosk ornegi `http://127.0.0.1:8080/kiosk/kiosk-test-1`
+- teknisyen ekrani `http://127.0.0.1:8080/technician/tech-1`
 - ayni agdaki cihazlarda `http://<PC_IP>:8080`
 - kiosk ornegi `http://<PC_IP>:8080/kiosk/kiosk-test-1`
 
 Kiosk icin `device_id` URL'nin son parcasidir.
+Teknisyen ekrani icin de `device_id` URL'nin son parcasidir.
+`MES Web.cmd`, server hazir olunca dashboard, operator kiosk ve teknisyen ekranini varsayilan tarayicida otomatik acar; ayni linkleri CMD basinda da yazar.
 
 ## Bagimliliklar
 

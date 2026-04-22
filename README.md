@@ -6,7 +6,7 @@ Bu repo, mini konveyor hattinin kontrol, izleme, OEE, operator kiosk ve workbook
 
 - fiziksel karar ve hareket otoritesi `mega.cpp`
 - seri <-> MQTT bridge `esp32.cpp`
-- dashboard, kiosk, OEE runtime ve workbook yazimi `mes_web/`
+- dashboard, operator kiosk, teknisyen kiosk, OEE runtime ve workbook yazimi `mes_web/`
 - vision observer `raspberry/` altinda pasif capraz kontrol
 - `picktolight/` ayri bir modul olarak yasiyor
 - birincil kalici veri siniri CSV degil, tarihli workbook + runtime state
@@ -34,7 +34,10 @@ Ana adresler:
 
 - dashboard: `http://127.0.0.1:8080`
 - kiosk ornegi: `http://127.0.0.1:8080/kiosk/kiosk-test-1`
+- teknisyen ekrani: `http://127.0.0.1:8080/technician/tech-1`
 - ayni agdaki cihazdan: `http://<PC_IP>:8080/kiosk/kiosk-test-1`
+
+`Baslaticilar\MES Web.cmd`, server hazir oldugunda dashboard, kiosk ve teknisyen ekranlarini varsayilan tarayicida otomatik acar; linkler CMD ekraninda da yazilir.
 
 ## Onemli Operasyon Notlari
 
@@ -52,7 +55,7 @@ Ana adresler:
 - [Genel Mimari](README/architecture.md)
 - [Veri Modeli](README/data-model.md)
 - [MQTT Topicleri](README/mqtt-topics.md)
-- [Tablet Kiosk Durumu](README/tablet_plan.md)
+- [Tablet ve Teknisyen Kiosk Durumu](README/tablet_plan.md)
 - [MES Web](mes_web/README.md)
 - [Baslaticilar](Baslaticilar/README.md)
 - [AI Guide](README/AI_GUIDE.md)

@@ -264,6 +264,20 @@ def _parse_iso(value: str | None) -> datetime | None:
         return None
 
 
+def _duration_between_texts(start_text: Any, end_text: Any) -> int:
+    start_dt = _parse_iso(str(start_text or ""))
+    end_dt = _parse_iso(str(end_text or ""))
+    if start_dt is None or end_dt is None:
+        return 0
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.astimezone()
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.astimezone()
+    if end_dt < start_dt:
+        return 0
+    return max(0, int((end_dt - start_dt).total_seconds() * 1000))
+
+
 def _short_time(value: str) -> str:
     if not value:
         return "-"
@@ -382,21 +396,40 @@ def _normalize_maintenance_session(raw: Any, *, phase: str) -> dict[str, Any]:
 
 def _normalize_help_request_row(raw: Any) -> dict[str, Any]:
     row = raw if isinstance(raw, dict) else {}
+    response_duration_ms = _duration_ms(
+        _first_present(row.get("responseDurationMs"), row.get("response_duration_ms"))
+    )
+    repair_duration_ms = _duration_ms(
+        _first_present(row.get("repairDurationMs"), row.get("repair_duration_ms"))
+    )
+    total_duration_ms = _duration_ms(
+        _first_present(row.get("totalDurationMs"), row.get("total_duration_ms"))
+    )
     return {
         "requestId": str(row.get("requestId") or row.get("request_id") or ""),
         "requestKey": str(row.get("requestKey") or row.get("request_key") or ""),
+        "lineId": str(row.get("lineId") or row.get("line_id") or ""),
         "deviceId": str(row.get("deviceId") or row.get("device_id") or ""),
         "deviceName": str(row.get("deviceName") or row.get("device_name") or ""),
         "boundStationId": str(row.get("boundStationId") or row.get("bound_station_id") or ""),
+        "stationName": str(row.get("stationName") or row.get("station_name") or ""),
         "operatorId": str(row.get("operatorId") or row.get("operator_id") or ""),
         "operatorCode": str(row.get("operatorCode") or row.get("operator_code") or ""),
         "operatorName": str(row.get("operatorName") or row.get("operator_name") or ""),
         "status": str(row.get("status") or "open"),
         "repeatCount": max(1, round(_numeric(row.get("repeatCount") or row.get("repeat_count") or 1))),
+        "faultId": str(row.get("faultId") or row.get("fault_id") or ""),
+        "faultCode": str(row.get("faultCode") or row.get("fault_code") or row.get("reasonCode") or ""),
+        "reason": str(row.get("reason") or row.get("fault_reason") or ""),
+        "faultStartedAt": str(row.get("faultStartedAt") or row.get("fault_started_at") or ""),
         "createdAt": str(row.get("createdAt") or row.get("created_at") or ""),
         "lastRequestedAt": str(row.get("lastRequestedAt") or row.get("last_requested_at") or ""),
         "acknowledgedAt": str(row.get("acknowledgedAt") or row.get("acknowledged_at") or ""),
         "resolvedAt": str(row.get("resolvedAt") or row.get("resolved_at") or ""),
+        "technicianName": str(row.get("technicianName") or row.get("technician_name") or ""),
+        "responseDurationMs": response_duration_ms,
+        "repairDurationMs": repair_duration_ms,
+        "totalDurationMs": total_duration_ms,
     }
 
 
@@ -508,6 +541,19 @@ def _help_request_state(state: dict[str, Any]) -> dict[str, Any]:
         if isinstance(row, dict)
     ][:50]
     return help_request
+
+
+def _find_help_request_by_id(help_request: dict[str, Any], request_id: Any) -> tuple[str, dict[str, Any]] | None:
+    normalized_request_id = str(request_id or "").strip()
+    if not normalized_request_id:
+        return None
+    requests = help_request.get("requestsByKey") if isinstance(help_request.get("requestsByKey"), dict) else {}
+    for request_key, request in requests.items():
+        if not isinstance(request, dict):
+            continue
+        if str(request.get("requestId") or "").strip() == normalized_request_id:
+            return str(request_key or ""), request
+    return None
 
 
 def _device_registry_state(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1462,10 +1508,12 @@ def _close_active_fault(state: dict[str, Any], *, ended_at: str) -> None:
             "durationMin": _minutes_from_ms(duration_ms, precision=3),
             "source": str(active_fault.get("source") or ""),
             "deviceId": str(active_fault.get("deviceId") or ""),
+            "deviceName": str(active_fault.get("deviceName") or ""),
             "operatorId": str(active_fault.get("operatorId") or ""),
             "operatorCode": str(active_fault.get("operatorCode") or ""),
             "operatorName": str(active_fault.get("operatorName") or ""),
             "boundStationId": str(active_fault.get("boundStationId") or ""),
+            "countsTowardUnplanned": bool(active_fault.get("countsTowardUnplanned", True)),
         },
     )
     state["faultHistory"] = history[:20]
@@ -3277,6 +3325,7 @@ class OeeRuntimeStateManager:
             "durationMin": 0.0,
             "source": "kiosk",
             "deviceId": str(device_id or "").strip(),
+            "deviceName": str(device_name or device_id or "").strip(),
             "operatorId": str(operator_id or "").strip(),
             "operatorCode": str(operator_code or "").strip(),
             "operatorName": str(operator_name or "").strip(),
@@ -3312,9 +3361,15 @@ class OeeRuntimeStateManager:
         device_id: str,
         device_name: str = "",
         bound_station_id: str = "",
+        line_id: str = "",
+        station_name: str = "",
         operator_id: str = "",
         operator_code: str = "",
         operator_name: str = "",
+        fault_id: str = "",
+        fault_code: str = "",
+        reason: str = "",
+        fault_started_at: str = "",
         now: datetime | None = None,
     ) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
@@ -3331,28 +3386,64 @@ class OeeRuntimeStateManager:
             operator_name=operator_name,
             seen_at=seen_at,
         )
+        active_fault = state.get("activeFault") if isinstance(state.get("activeFault"), dict) else {}
+        active_fault_matches = False
+        if active_fault:
+            active_fault_device = str(active_fault.get("deviceId") or "").strip()
+            active_fault_station = str(active_fault.get("boundStationId") or "").strip()
+            active_fault_matches = (
+                bool(active_fault_device and active_fault_device == str(device_id or "").strip())
+                or bool(active_fault_station and active_fault_station == str(bound_station_id or "").strip())
+                or not str(bound_station_id or "").strip()
+            )
+        if active_fault_matches:
+            fault_id = str(fault_id or active_fault.get("faultId") or "").strip()
+            fault_code = str(fault_code or active_fault.get("reasonCode") or "").strip()
+            reason = str(reason or active_fault.get("reason") or "").strip()
+            fault_started_at = str(fault_started_at or active_fault.get("startedAt") or "").strip()
         help_request = _help_request_state(state)
         request_key = _device_request_key(device_id, bound_station_id)
         request = help_request["requestsByKey"].get(request_key)
         if isinstance(request, dict) and str(request.get("status") or "") in {"open", "acknowledged"}:
             request["repeatCount"] = max(1, round(_numeric(request.get("repeatCount")))) + 1
             request["lastRequestedAt"] = seen_at
+            request["deviceName"] = str(device_name or request.get("deviceName") or device_id or "").strip()
+            request["boundStationId"] = str(bound_station_id or request.get("boundStationId") or "").strip()
+            request["lineId"] = str(line_id or request.get("lineId") or "").strip()
+            request["stationName"] = str(station_name or request.get("stationName") or "").strip()
+            request["operatorId"] = str(operator_id or request.get("operatorId") or "").strip()
+            request["operatorCode"] = str(operator_code or request.get("operatorCode") or "").strip()
+            request["operatorName"] = str(operator_name or request.get("operatorName") or "").strip()
+            request["faultId"] = str(fault_id or request.get("faultId") or "").strip()
+            request["faultCode"] = str(fault_code or request.get("faultCode") or "").strip()
+            request["reason"] = str(reason or request.get("reason") or "").strip()
+            request["faultStartedAt"] = str(fault_started_at or request.get("faultStartedAt") or "").strip()
         else:
             request = {
                 "requestId": uuid.uuid4().hex,
                 "requestKey": request_key,
+                "lineId": str(line_id or "").strip(),
                 "deviceId": str(device_id or "").strip(),
                 "deviceName": str(device_name or device_id or "").strip(),
                 "boundStationId": str(bound_station_id or "").strip(),
+                "stationName": str(station_name or "").strip(),
                 "operatorId": str(operator_id or "").strip(),
                 "operatorCode": str(operator_code or "").strip(),
                 "operatorName": str(operator_name or "").strip(),
                 "status": "open",
                 "repeatCount": 1,
+                "faultId": str(fault_id or "").strip(),
+                "faultCode": str(fault_code or "").strip(),
+                "reason": str(reason or "").strip(),
+                "faultStartedAt": str(fault_started_at or "").strip(),
                 "createdAt": seen_at,
                 "lastRequestedAt": seen_at,
                 "acknowledgedAt": "",
                 "resolvedAt": "",
+                "technicianName": "",
+                "responseDurationMs": 0,
+                "repairDurationMs": 0,
+                "totalDurationMs": 0,
             }
             help_request["requestsByKey"][request_key] = request
         help_request["history"] = _prepend_capped(help_request["history"], dict(request), limit=50)
@@ -3360,6 +3451,126 @@ class OeeRuntimeStateManager:
         _refresh_operational_state(state)
         self.write_state(state)
         return {"state": state, "request": request, "summary": state["lastEventSummary"]}
+
+    @_state_locked
+    def acknowledge_help_request(
+        self,
+        request_id: str,
+        *,
+        technician_name: str = "",
+        technician_device_id: str = "",
+        technician_device_name: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        state = self.read_state()
+        seen_at = _pseudo_iso_text(stamp)
+        if str(technician_device_id or "").strip():
+            _update_device_presence(
+                state,
+                device_id=technician_device_id,
+                device_name=technician_device_name,
+                device_role="technician_kiosk",
+                seen_at=seen_at,
+            )
+        help_request = _help_request_state(state)
+        found = _find_help_request_by_id(help_request, request_id)
+        if found is None:
+            raise ValueError("HELP_REQUEST_NOT_FOUND")
+        _request_key, request = found
+        status = str(request.get("status") or "").strip()
+        if status == "resolved":
+            raise ValueError("HELP_REQUEST_ALREADY_RESOLVED")
+        if status not in {"open", "acknowledged"}:
+            raise ValueError("HELP_REQUEST_NOT_ACTIVE")
+        if not str(request.get("acknowledgedAt") or "").strip():
+            request["acknowledgedAt"] = seen_at
+        if str(technician_name or "").strip():
+            request["technicianName"] = str(technician_name).strip()
+        request["status"] = "acknowledged"
+        request["responseDurationMs"] = _duration_between_texts(
+            request.get("createdAt"),
+            request.get("acknowledgedAt"),
+        )
+        help_request["history"] = _prepend_capped(help_request["history"], dict(request), limit=50)
+        _set_summary(state, "Teknisyen yardim cagrisi kabul edildi.", now=stamp)
+        _refresh_operational_state(state)
+        self.write_state(state)
+        return {"state": state, "request": request, "summary": state["lastEventSummary"]}
+
+    @_state_locked
+    def resolve_help_request(
+        self,
+        request_id: str,
+        *,
+        technician_name: str = "",
+        technician_device_id: str = "",
+        technician_device_name: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        state = self.read_state()
+        seen_at = _pseudo_iso_text(stamp)
+        if str(technician_device_id or "").strip():
+            _update_device_presence(
+                state,
+                device_id=technician_device_id,
+                device_name=technician_device_name,
+                device_role="technician_kiosk",
+                seen_at=seen_at,
+            )
+        help_request = _help_request_state(state)
+        found = _find_help_request_by_id(help_request, request_id)
+        if found is None:
+            raise ValueError("HELP_REQUEST_NOT_FOUND")
+        _request_key, request = found
+        status = str(request.get("status") or "").strip()
+        if status == "resolved":
+            raise ValueError("HELP_REQUEST_ALREADY_RESOLVED")
+        if status not in {"open", "acknowledged"}:
+            raise ValueError("HELP_REQUEST_NOT_ACTIVE")
+        if not str(request.get("acknowledgedAt") or "").strip():
+            request["acknowledgedAt"] = seen_at
+        request["resolvedAt"] = seen_at
+        if str(technician_name or "").strip():
+            request["technicianName"] = str(technician_name).strip()
+        request["status"] = "resolved"
+        request["responseDurationMs"] = _duration_between_texts(
+            request.get("createdAt"),
+            request.get("acknowledgedAt"),
+        )
+        request["repairDurationMs"] = _duration_between_texts(
+            request.get("acknowledgedAt"),
+            request.get("resolvedAt"),
+        )
+        request["totalDurationMs"] = _duration_between_texts(
+            request.get("createdAt"),
+            request.get("resolvedAt"),
+        )
+        closed_fault: dict[str, Any] | None = None
+        active_fault = state.get("activeFault") if isinstance(state.get("activeFault"), dict) else None
+        if isinstance(active_fault, dict) and str(active_fault.get("source") or "").strip().lower() == "kiosk":
+            request_fault_id = str(request.get("faultId") or "").strip()
+            active_fault_id = str(active_fault.get("faultId") or "").strip()
+            fault_matches = bool(request_fault_id and request_fault_id == active_fault_id)
+            if not fault_matches:
+                fault_matches = (
+                    str(request.get("deviceId") or "").strip() == str(active_fault.get("deviceId") or "").strip()
+                    or str(request.get("boundStationId") or "").strip() == str(active_fault.get("boundStationId") or "").strip()
+                )
+            if fault_matches:
+                closed_fault = dict(active_fault)
+                _close_active_fault(state, ended_at=seen_at)
+        help_request["history"] = _prepend_capped(help_request["history"], dict(request), limit=50)
+        _set_summary(state, "Teknisyen yardim cagrisi cozuldu.", now=stamp)
+        _refresh_operational_state(state)
+        self.write_state(state)
+        return {
+            "state": state,
+            "request": request,
+            "closed_fault": closed_fault,
+            "summary": state["lastEventSummary"],
+        }
 
     @_state_locked
     def apply_kiosk_quality_override(

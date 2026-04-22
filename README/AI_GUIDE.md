@@ -17,6 +17,8 @@ Bu belge, repo uzerinde calisan ekip uyelerinin ChatGPT, Codex veya benzeri arac
 - tamamlanan urun varsayilan olarak `good` kabul edilir
 - kalite override dashboard ve kiosk uzerinde aktif olarak vardir
 - kiosk sadece son 5 tamamlanan urun icin quality override yapar
+- `Ariza Bildir`, manuel fault ile birlikte teknisyen cagrisi acar
+- teknisyen ekrani `acknowledge/resolve` ile cevap, giderme ve toplam sureleri backend state'e yazar
 - `__reset_counts__` artik Mega'ya gitmez, backend icinde yerel calisir
 - OEE aktif vardiya olmadan baslamaz
 - sistem acildiginda onceki vardiya otomatik acik gelmez
@@ -27,6 +29,7 @@ Bu belge, repo uzerinde calisan ekip uyelerinin ChatGPT, Codex veya benzeri arac
 
 - yeni ekran veya veri akisi onerirken `mes_web` hedeflenmelidir
 - dashboard kontrati bozulmamali, mevcut snapshot alanlari korunmalidir
+- operator kiosk ve teknisyen snapshot kontratlari ayri tutulmalidir
 - Mega tarafina yeni karar otoritesi yuklenmemelidir
 - vision verisi yardimci ve pasif katman olarak ele alinmalidir
 - workbook sheet yapisi entegrasyon siniri oldugu icin keyfi degistirilmemelidir
@@ -42,6 +45,7 @@ Bu belge, repo uzerinde calisan ekip uyelerinin ChatGPT, Codex veya benzeri arac
 ## Faydali Prompt Ornekleri
 
 - "`mes_web` icinde yeni kiosk davranisi ekle, mevcut dashboard snapshot kontratini bozma."
+- "`mes_web` icinde teknisyen cagri akisini genislet, mevcut kiosk snapshot kontratini bozma."
 - "Workbook sheet yapisini koruyarak yeni alanlari projector tarafinda doldur."
 - "OEE hesabini `PICKPLACE_DONE`, maintenance ve fault olaylarina gore backend tarafinda guncelle."
 - "Yerel Node-RED arsivini sadece parity referansi olarak kullan."

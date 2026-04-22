@@ -161,6 +161,80 @@ class KioskAppTests(unittest.TestCase):
         self.assertEqual(bootstrap["operational_state"], "manual_fault_active")
         self.assertEqual(bootstrap["active_fault"]["reason"], "Robot Kol Sikisti")
 
+    def test_fault_start_auto_opens_technician_request(self) -> None:
+        client, config, manager, store, runtime_service = self._build_client()
+        manager.apply_control("shift_start")
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        response = client.post(
+            f"/api/modules/{config.module_id}/kiosk/fault/start",
+            json={
+                "device_id": "kiosk-1",
+                "operator_id": "1",
+                "reason_code": "robot_arm_jam",
+                "reason_text": "Robot Kol Sikisti",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(runtime_service.mqtt_client.published, ["stop"])
+        request = response.json()["request"]
+        self.assertEqual(request["status"], "open")
+        self.assertEqual(request["reason"], "Robot Kol Sikisti")
+        technician = client.get(
+            f"/api/modules/{config.module_id}/technician/bootstrap",
+            params={"device_id": "tech-1", "technician_name": "Teknik-1"},
+        ).json()
+        self.assertEqual(technician["summary"]["open_count"], 1)
+        self.assertEqual(technician["active_requests"][0]["request_id"], request["requestId"])
+        self.assertEqual(technician["active_requests"][0]["operator_id"], "1")
+        self.assertEqual(technician["active_requests"][0]["reason"], "Robot Kol Sikisti")
+        event_types = [row[0] for row in runtime_service.excel_sink.kiosk_events]
+        self.assertIn("help_requested", event_types)
+
+    def test_technician_ack_and_resolve_closes_fault_and_updates_history(self) -> None:
+        client, config, manager, store, runtime_service = self._build_client()
+        manager.apply_control("shift_start")
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        fault_response = client.post(
+            f"/api/modules/{config.module_id}/kiosk/fault/start",
+            json={
+                "device_id": "kiosk-1",
+                "operator_id": "1",
+                "reason_code": "robot_arm_jam",
+                "reason_text": "Robot Kol Sikisti",
+            },
+        )
+        request_id = fault_response.json()["request"]["requestId"]
+
+        acknowledged = client.post(
+            f"/api/modules/{config.module_id}/technician/requests/{request_id}/acknowledge",
+            json={"device_id": "tech-1", "technician_name": "Teknik-1"},
+        )
+        resolved = client.post(
+            f"/api/modules/{config.module_id}/technician/requests/{request_id}/resolve",
+            json={"device_id": "tech-1", "technician_name": "Teknik-1"},
+        )
+
+        self.assertEqual(acknowledged.status_code, 200)
+        self.assertEqual(resolved.status_code, 200)
+        self.assertTrue(resolved.json()["fault_closed"])
+        state = manager.read_state()
+        self.assertIsNone(state["activeFault"])
+        self.assertEqual(state["operationalState"], "shift_active_running")
+        technician = client.get(
+            f"/api/modules/{config.module_id}/technician/bootstrap",
+            params={"device_id": "tech-1", "technician_name": "Teknik-1"},
+        ).json()
+        self.assertEqual(technician["summary"]["open_count"], 0)
+        self.assertEqual(technician["summary"]["resolved_today_count"], 1)
+        self.assertEqual(technician["resolved_today"][0]["request_id"], request_id)
+        self.assertEqual(technician["recent_requests"][0]["status"], "resolved")
+        event_types = [row[0] for row in runtime_service.excel_sink.kiosk_events]
+        self.assertIn("help_acknowledged", event_types)
+        self.assertIn("help_resolved", event_types)
+        self.assertIn("kiosk_fault_cleared", event_types)
+
     def test_kiosk_can_publish_system_start_command(self) -> None:
         client, config, _manager, _store, runtime_service = self._build_client()
 

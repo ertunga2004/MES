@@ -1,6 +1,6 @@
-# Tablet Kiosk Durumu
+# Tablet ve Teknisyen Kiosk Durumu
 
-Bu dosya ilk plan notu degil, mevcut kiosk v1 implementasyonunu ozetler.
+Bu dosya ilk plan notu degil, mevcut operator kiosk ve teknisyen kiosk implementasyonunu ozetler.
 
 ## Mimari
 
@@ -12,7 +12,9 @@ Bu dosya ilk plan notu degil, mevcut kiosk v1 implementasyonunu ozetler.
 ## Aktif Route'lar
 
 - `GET /kiosk/{device_id}`
+- `GET /technician/{device_id}`
 - `GET /api/modules/{module_id}/kiosk/bootstrap`
+- `GET /api/modules/{module_id}/technician/bootstrap`
 - `POST /api/modules/{module_id}/kiosk/register`
 - `POST /api/modules/{module_id}/kiosk/shift/start`
 - `POST /api/modules/{module_id}/kiosk/shift/stop`
@@ -20,11 +22,14 @@ Bu dosya ilk plan notu degil, mevcut kiosk v1 implementasyonunu ozetler.
 - `POST /api/modules/{module_id}/kiosk/fault/start`
 - `POST /api/modules/{module_id}/kiosk/fault/clear`
 - `POST /api/modules/{module_id}/kiosk/help/request`
+- `POST /api/modules/{module_id}/technician/requests/{request_id}/acknowledge`
+- `POST /api/modules/{module_id}/technician/requests/{request_id}/resolve`
 - `POST /api/modules/{module_id}/kiosk/system/start`
 - `POST /api/modules/{module_id}/kiosk/work-orders/start`
 - `POST /api/modules/{module_id}/kiosk/work-orders/accept-active`
 - `POST /api/modules/{module_id}/kiosk/quality/override`
 - `WS /ws/modules/{module_id}/kiosk/{device_id}`
+- `WS /ws/modules/{module_id}/technician/{device_id}`
 
 ## UI Bloklari
 
@@ -60,7 +65,17 @@ Fault grubunda ayri aksiyonlar vardir:
 - `Ariza Bildir`
 - `Ariza Bitir`
 
-Help request backend state'inde `open`, `acknowledged`, `resolved` yasam dongusu ile tutulur. Kiosk bugun sadece talep acabilir; ack/resolve gelecekte teknisyen ekranindan gelecek sekilde tasarlanmistir.
+Help request backend state'inde `open`, `acknowledged`, `resolved` yasam dongusu ile tutulur. Kiosk talebi acar; teknisyen ekrani `acknowledge` ve `resolve` aksiyonlarini isler.
+`Ariza Bildir` manuel fault ile birlikte teknisyen cagrisi da acar. `Yardim Cagir` acik cagri varsa ayni kaydin tekrar sayacini artirir.
+
+## Teknisyen Ekrani Davranisi
+
+- teknisyen adresi: `http://<mes_web_host>:8080/technician/{device_id}`
+- aktif `open` ve `acknowledged` cagrilar canli listede gorunur
+- `Cevapla`, cagri acilisindan kabul anina kadar cevap suresini sabitler
+- `Tamamla`, kabulden cozum anina kadar giderme suresini ve cagri acilisindan cozum anina kadar toplam sureyi sabitler
+- tamamlanan cagriya bagli aktif kiosk fault varsa ayni aksiyon fault'u da kapatir
+- `Bugun Cozulenler` ve `Son 10 Cagri` panelleri teknisyenin yaptigi isi aninda dogrulamasi icin salt okunur gecmis sunar
 
 ## Bakim ve Vardiya Davranisi
 
@@ -97,13 +112,12 @@ Backend'de cihaz bazli audit tutulur:
 
 Su an henuz yok:
 
-- teknisyen el terminali UI
 - kiosk tarafinda eski urun arama
 - rollback veya geri alma aksiyonlari
 - direct MQTT JSON tablet topic kontrati
 
 ## Gelecek Adimlar
 
-- teknisyen tablet ekraninin eklenmesi
+- teknisyen cagri ekraninin saha akisi ile dogrulanmasi
 - kiosk auth / PIN katmani
 - yeni MQTT JSON domain contract'i gerekirse ayri versiyon olarak tasarlanmasi

@@ -2,7 +2,7 @@
 
 ## Mevcut Faz
 
-Proje, Node-RED'den kademeli ayrisma fazindadir. Yeni calisan katman `mes_web/` altinda bulunur. Fiziksel hat, MQTT bridge ve legacy akislar yerel arsivde korunurken yeni web ekran, kiosk, OEE runtime ve workbook kaydi paralel olarak olgunlastirilmaktadir.
+Proje, Node-RED'den kademeli ayrisma fazindadir. Yeni calisan katman `mes_web/` altinda bulunur. Fiziksel hat, MQTT bridge ve legacy akislar yerel arsivde korunurken yeni web ekran, operator kiosk, teknisyen kiosk, OEE runtime ve workbook kaydi paralel olarak olgunlastirilmaktadir.
 
 ## Tamamlanan Ana Isler
 
@@ -10,6 +10,7 @@ Proje, Node-RED'den kademeli ayrisma fazindadir. Yeni calisan katman `mes_web/` 
 - REST bootstrap ve reconnect eden WebSocket modeli devreye alindi.
 - MQTT ingest ve normalize dashboard snapshot yapisi olusturuldu.
 - operator kiosk route'u ve cihaz bazli registry eklendi.
+- teknisyen cagri ekrani, `acknowledge/resolve` akisi ve bugun/son 10 gecmis panelleri eklendi.
 - kalite override dashboard ve kiosk tarafinda devreye alindi.
 - `good -> rework / scrap` duzeltmesi OEE ve workbook'a baglandi.
 - hurda urunlerin depoya dusmemesi kural olarak uygulandi.
@@ -19,11 +20,12 @@ Proje, Node-RED'den kademeli ayrisma fazindadir. Yeni calisan katman `mes_web/` 
 - OEE vardiya kontrolu, hedef/cycle/planned stop ayarlari ve runtime state backend'e alindi.
 - OEE sure alanlari ms-first olacak sekilde toplandi.
 - maintenance ve fault sure siniflandirmasi availability hesabina uygun hale getirildi.
+- `MES Web.cmd`, dashboard, operator kiosk ve teknisyen ekranini server hazir olunca otomatik acacak hale getirildi.
 
 ## Kisa Vade
 
-- teknisyen el terminali UI eklemek
-- help request ack/resolve akislarini sahada tamamlamak
+- teknisyen cagri ekranini saha akisi ile dogrulamak
+- help request surelerini workbook ve operasyon raporlarinda sahada kontrol etmek
 - workbook replay / rebuild araci eklemek
 - OEE ekraninda fault, hedef gap ve vardiya ozetini saha testi ile parity etmek
 - launcher tarafinda interpreter / dependency tanisini daha otomatik hale getirmek
@@ -62,7 +64,7 @@ Proje, Node-RED'den kademeli ayrisma fazindadir. Yeni calisan katman `mes_web/` 
 
 - `mes_web/`
 - OEE runtime
-- dashboard ve kiosk ekranlari
+- dashboard, operator kiosk ve teknisyen ekranlari
 - workbook yazimi
 
 ### Vision

@@ -1577,6 +1577,110 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(first["request"]["requestId"], second["request"]["requestId"])
             self.assertEqual(second["request"]["repeatCount"], 2)
 
+    def test_help_request_acknowledge_and_resolve_records_durations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            request = manager.request_help(
+                device_id="kiosk-1",
+                bound_station_id="4",
+                operator_id="1",
+                operator_code="OP-001",
+                operator_name="Test",
+                reason="Robot kol sikisti",
+                now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=timezone.utc),
+            )["request"]
+
+            acknowledged = manager.acknowledge_help_request(
+                request["requestId"],
+                technician_name="Teknik-1",
+                now=datetime(2026, 4, 2, 8, 2, 0, tzinfo=timezone.utc),
+            )["request"]
+            resolved = manager.resolve_help_request(
+                request["requestId"],
+                technician_name="Teknik-1",
+                now=datetime(2026, 4, 2, 8, 10, 0, tzinfo=timezone.utc),
+            )["request"]
+
+            self.assertEqual(acknowledged["status"], "acknowledged")
+            self.assertEqual(acknowledged["responseDurationMs"], 2 * 60 * 1000)
+            self.assertEqual(resolved["status"], "resolved")
+            self.assertEqual(resolved["technicianName"], "Teknik-1")
+            self.assertEqual(resolved["responseDurationMs"], 2 * 60 * 1000)
+            self.assertEqual(resolved["repairDurationMs"], 8 * 60 * 1000)
+            self.assertEqual(resolved["totalDurationMs"], 10 * 60 * 1000)
+
+    def test_resolving_help_request_closes_matching_manual_fault(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            local_tz = timezone(timedelta(hours=3))
+            manager.apply_control("shift_start", now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=local_tz))
+            fault = manager.start_manual_fault(
+                device_id="kiosk-1",
+                bound_station_id="4",
+                reason_code="jam",
+                reason_text="Sikisma",
+                operator_id="1",
+                operator_code="OP-001",
+                operator_name="Test",
+                now=datetime(2026, 4, 2, 8, 1, 0, tzinfo=local_tz),
+            )["fault"]
+            request = manager.request_help(
+                device_id="kiosk-1",
+                bound_station_id="4",
+                operator_id="1",
+                operator_code="OP-001",
+                operator_name="Test",
+                fault_id=fault["faultId"],
+                fault_code=fault["reasonCode"],
+                reason=fault["reason"],
+                fault_started_at=fault["startedAt"],
+                now=datetime(2026, 4, 2, 8, 1, 0, tzinfo=local_tz),
+            )["request"]
+            manager.acknowledge_help_request(
+                request["requestId"],
+                technician_name="Teknik-1",
+                now=datetime(2026, 4, 2, 8, 2, 0, tzinfo=local_tz),
+            )
+
+            result = manager.resolve_help_request(
+                request["requestId"],
+                technician_name="Teknik-1",
+                now=datetime(2026, 4, 2, 8, 5, 0, tzinfo=local_tz),
+            )
+
+            state = manager.read_state()
+            self.assertIsNotNone(result["closed_fault"])
+            self.assertIsNone(state["activeFault"])
+            self.assertEqual(state["faultHistory"][0]["durationMs"], 4 * 60 * 1000)
+            self.assertEqual(state["manualFaultDurationMs"], 4 * 60 * 1000)
+            self.assertEqual(state["operationalState"], "shift_active_running")
+
+    def test_legacy_help_request_state_gets_technician_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            state = manager.read_state()
+            state["helpRequest"] = {
+                "requestsByKey": {
+                    "kiosk-1:4": {
+                        "requestId": "REQ-1",
+                        "requestKey": "kiosk-1:4",
+                        "deviceId": "kiosk-1",
+                        "boundStationId": "4",
+                        "status": "open",
+                        "createdAt": "2026-04-02T08:00:00+00:00",
+                    }
+                },
+                "history": [],
+            }
+            manager.write_state(state)
+
+            normalized = manager.read_state()["helpRequest"]["requestsByKey"]["kiosk-1:4"]
+
+            self.assertEqual(normalized["technicianName"], "")
+            self.assertEqual(normalized["responseDurationMs"], 0)
+            self.assertEqual(normalized["repairDurationMs"], 0)
+            self.assertEqual(normalized["totalDurationMs"], 0)
+
     def test_kiosk_quality_override_rejects_completed_work_order_items(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")

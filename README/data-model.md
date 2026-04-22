@@ -62,7 +62,21 @@ Ana bloklar:
 - `maintenance`
 - `system_start`
 
-### 4. OEE Runtime State
+### 4. Teknisyen Snapshot
+
+Teknisyen route'u icin uretilen canli cagri kontratidir.
+
+Ana bloklar:
+
+- `module`
+- `device`
+- `technician`
+- `summary`
+- `active_requests`
+- `resolved_today`
+- `recent_requests`
+
+### 5. OEE Runtime State
 
 Dosya:
 
@@ -96,9 +110,18 @@ Ana alanlar:
 - `lastEventSummary`
 - `lastUpdatedAt`
 
+`helpRequest` satirlari teknisyen surelerini de tasir:
+
+- `status`: `open`, `acknowledged`, `resolved`
+- `faultId`, `faultCode`, `reason`, `faultStartedAt`
+- `technicianName`
+- `responseDurationMs`
+- `repairDurationMs`
+- `totalDurationMs`
+
 Ic sure modeli ms-first'tur. `sec/min` alanlari geriye uyum icin turetilir.
 
-### 5. Gunluk Workbook
+### 6. Gunluk Workbook
 
 Dosya:
 
@@ -133,7 +156,7 @@ Sadece vision observer tarafindaki track kimligidir. `item_id` yerine gecmez.
 
 ### `device_id`
 
-Kiosk veya gelecekteki tablet istemcisinin cihaz kimligidir. Device registry bunun uzerinden tutulur.
+Kiosk veya teknisyen browser istemcisinin cihaz kimligidir. Device registry bunun uzerinden tutulur.
 
 ## Olay ve Urun Kurallari
 
@@ -199,7 +222,7 @@ Order satirlarinda ms taraflari da tutulur:
 ### `1_Olay_Logu`
 
 - normalize olay kaydi
-- kiosk fault, help, maintenance ve audit eventleri burada da tutulur
+- kiosk fault, help, teknisyen ack/resolve, maintenance ve audit eventleri burada da tutulur
 
 ### `3_Arizalar`
 
@@ -231,6 +254,6 @@ Order satirlarinda ms taraflari da tutulur:
 
 ## Sonraki Adimlar
 
-- teknisyen el terminali veri modeli
+- teknisyen cagri ekraninin saha sureleriyle dogrulanmasi
 - direct JSON event/state topic kontrati
 - workbook replay / rebuild araci

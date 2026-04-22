@@ -1,12 +1,12 @@
 # MES Web
 
-`mes_web/`, konveyor hattinin aktif web katmanidir. Bu klasor; MQTT ingest, dashboard snapshot, kiosk UI, vardiya kontrollu OEE runtime state ve workbook kaydini tek yerde toplar.
+`mes_web/`, konveyor hattinin aktif web katmanidir. Bu klasor; MQTT ingest, dashboard snapshot, operator kiosk UI, teknisyen cagri UI, vardiya kontrollu OEE runtime state ve workbook kaydini tek yerde toplar.
 
 ## Ana Sorumluluklar
 
 - MQTT topiclerini dinlemek
 - browser icin REST + WebSocket snapshot uretmek
-- dashboard ve kiosk ekranlarini servis etmek
+- dashboard, operator kiosk ve teknisyen ekranlarini servis etmek
 - preset komutlari `cmd` topic'ine publish etmek
 - vardiya, OEE, fault, quality ve work order state'ini backend'de yonetmek
 - gunluk workbook'a normalize audit ve rapor kaydi yazmak
@@ -17,8 +17,10 @@
   - ana dashboard
 - `GET /kiosk/{device_id}`
   - ayni agdaki telefon, tablet veya laptop icin operator kiosk ekrani
+- `GET /technician/{device_id}`
+  - teknisyen icin canli ariza cagri ve gecmis ekrani
 
-Kiosk browser tabanlidir. MQTT kullanmaz; `mes_web` ile REST + WebSocket uzerinden konusur.
+Kiosk ve teknisyen ekranlari browser tabanlidir. MQTT kullanmaz; `mes_web` ile REST + WebSocket uzerinden konusur.
 
 ## Aktif API
 
@@ -26,6 +28,7 @@ Kiosk browser tabanlidir. MQTT kullanmaz; `mes_web` ile REST + WebSocket uzerind
 - `GET /api/modules`
 - `GET /api/modules/{module_id}/dashboard`
 - `GET /api/modules/{module_id}/kiosk/bootstrap`
+- `GET /api/modules/{module_id}/technician/bootstrap`
 - `POST /api/modules/{module_id}/kiosk/register`
 - `POST /api/modules/{module_id}/kiosk/shift/start`
 - `POST /api/modules/{module_id}/kiosk/shift/stop`
@@ -33,6 +36,8 @@ Kiosk browser tabanlidir. MQTT kullanmaz; `mes_web` ile REST + WebSocket uzerind
 - `POST /api/modules/{module_id}/kiosk/fault/start`
 - `POST /api/modules/{module_id}/kiosk/fault/clear`
 - `POST /api/modules/{module_id}/kiosk/help/request`
+- `POST /api/modules/{module_id}/technician/requests/{request_id}/acknowledge`
+- `POST /api/modules/{module_id}/technician/requests/{request_id}/resolve`
 - `POST /api/modules/{module_id}/kiosk/system/start`
 - `POST /api/modules/{module_id}/kiosk/work-orders/start`
 - `POST /api/modules/{module_id}/kiosk/work-orders/accept-active`
@@ -51,6 +56,7 @@ Kiosk browser tabanlidir. MQTT kullanmaz; `mes_web` ile REST + WebSocket uzerind
 - `POST /api/modules/{module_id}/work-orders/inventory/remove`
 - `WS /ws/modules/{module_id}`
 - `WS /ws/modules/{module_id}/kiosk/{device_id}`
+- `WS /ws/modules/{module_id}/technician/{device_id}`
 
 ## Kiosk V1 Davranisi
 
@@ -65,8 +71,18 @@ Kiosk browser tabanlidir. MQTT kullanmaz; `mes_web` ile REST + WebSocket uzerind
 - kioskta aktif is emri, bekleyen is emirleri, son 5 urun, fault/help ve planli bakim akislari vardir
 - bekleyen is emirlerinden herhangi biri baslatilabilir; siradaki ilk is emri atlanacaksa sebep zorunludur
 - fault, help request ve system start ayri aksiyonlardir
+- `Ariza Bildir`, manuel fault ile birlikte teknisyen cagrisi da acar
 - kalite duzeltme sadece son 5 tamamlanan urun icin vardir
 - mobil tarayicida klavye odagi bozulmasin diye serbest sebep alanlari kioskta browser `prompt` akisi ile alinir
+
+## Teknisyen Kiosk V1 Davranisi
+
+- teknisyen adresi: `http://127.0.0.1:8080/technician/tech-1`
+- aktif `open` ve `acknowledged` cagrilari canli listede gosterilir
+- `Cevapla`, cagri acilisindan kabul anina kadar olan cevap suresini sabitler
+- `Tamamla`, kabulden cozum anina kadar olan giderme suresini ve toplam sureyi sabitler
+- tamamlanan cagriya bagli aktif kiosk fault varsa ayni aksiyon fault'u da kapatir
+- ekranda `Bugun Cozulenler` ve `Son 10 Cagri` salt okunur gecmis panelleri bulunur
 
 ## OEE ve Sure Kurallari
 
@@ -158,7 +174,10 @@ Varsayilan adresler:
 
 - dashboard: `http://127.0.0.1:8080`
 - kiosk ornegi: `http://127.0.0.1:8080/kiosk/kiosk-test-1`
+- teknisyen ekrani: `http://127.0.0.1:8080/technician/tech-1`
 - ayni agdan erisim: `http://<PC_IP>:8080/kiosk/kiosk-test-1`
+
+`Baslaticilar\MES Web.cmd`, server hazir oldugunda dashboard, kiosk ve teknisyen ekranlarini varsayilan tarayicida otomatik acar; linkleri CMD ekraninda da yazar.
 
 ## MQTT Notlari
 

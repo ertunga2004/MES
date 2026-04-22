@@ -1,5 +1,6 @@
 from __future__ import annotations
 import copy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ from .masterdata import load_kiosk_masterdata
 from .oee_state import WorkOrderTransitionReasonRequired, build_work_order_snapshot
 from .parsers import normalize_color
 from .runtime import RuntimeService, SnapshotHub
-from .store import DashboardStore, utc_now_text
+from .store import DashboardStore, parse_iso_text, utc_now_text
 from .windows_asyncio import install_windows_connection_reset_filter
 
 
@@ -454,6 +455,219 @@ def _build_kiosk_snapshot(module_id: str, device_id: str) -> dict[str, Any]:
     }
 
 
+def _duration_ms_between(start_value: Any, end_value: Any) -> int:
+    start_at = parse_iso_text(str(start_value or ""))
+    if isinstance(end_value, datetime):
+        end_at = end_value.astimezone()
+    else:
+        end_at = parse_iso_text(str(end_value or ""))
+    if start_at is None or end_at is None or end_at < start_at:
+        return 0
+    return max(0, int((end_at - start_at).total_seconds() * 1000))
+
+
+def _duration_text(duration_ms: Any) -> str:
+    total_seconds = max(0, int(float(duration_ms or 0) // 1000))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def _request_event_at(row: dict[str, Any]) -> datetime | None:
+    candidates = [
+        parse_iso_text(str(row.get("resolvedAt") or "")),
+        parse_iso_text(str(row.get("acknowledgedAt") or "")),
+        parse_iso_text(str(row.get("lastRequestedAt") or "")),
+        parse_iso_text(str(row.get("createdAt") or "")),
+    ]
+    parsed = [candidate for candidate in candidates if candidate is not None]
+    return max(parsed) if parsed else None
+
+
+def _sort_floor_datetime() -> datetime:
+    return datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _sort_ceiling_datetime() -> datetime:
+    return datetime(9999, 12, 31, tzinfo=timezone.utc)
+
+
+def _active_fault_matches_request(active_fault: dict[str, Any] | None, row: dict[str, Any]) -> bool:
+    if not isinstance(active_fault, dict):
+        return False
+    request_fault_id = str(row.get("faultId") or "").strip()
+    active_fault_id = str(active_fault.get("faultId") or "").strip()
+    if request_fault_id and active_fault_id and request_fault_id == active_fault_id:
+        return True
+    request_device_id = str(row.get("deviceId") or "").strip()
+    active_device_id = str(active_fault.get("deviceId") or "").strip()
+    request_station_id = str(row.get("boundStationId") or "").strip()
+    active_station_id = str(active_fault.get("boundStationId") or "").strip()
+    return bool(
+        (request_device_id and active_device_id and request_device_id == active_device_id)
+        or (request_station_id and active_station_id and request_station_id == active_station_id)
+    )
+
+
+def _project_technician_request(
+    row: dict[str, Any],
+    *,
+    catalog: dict[str, Any],
+    active_fault: dict[str, Any] | None,
+    now: datetime,
+) -> dict[str, Any]:
+    status = str(row.get("status") or "open").strip() or "open"
+    station = _catalog_station(catalog, row.get("boundStationId"))
+    station_id = str(row.get("boundStationId") or "").strip()
+    station_name = (
+        str(row.get("stationName") or "").strip()
+        or str((station or {}).get("station_name_tr") or "").strip()
+        or str((station or {}).get("station_code") or "").strip()
+        or station_id
+    )
+    line_id = str(row.get("lineId") or "").strip() or str((station or {}).get("line_id") or "").strip()
+    created_at = str(row.get("createdAt") or "")
+    acknowledged_at = str(row.get("acknowledgedAt") or "")
+    resolved_at = str(row.get("resolvedAt") or "")
+    response_duration_ms = int(row.get("responseDurationMs") or 0)
+    repair_duration_ms = int(row.get("repairDurationMs") or 0)
+    total_duration_ms = int(row.get("totalDurationMs") or 0)
+    if status == "open":
+        response_duration_ms = _duration_ms_between(created_at, now)
+        repair_duration_ms = 0
+        total_duration_ms = response_duration_ms
+    elif status == "acknowledged":
+        response_duration_ms = response_duration_ms or _duration_ms_between(created_at, acknowledged_at)
+        repair_duration_ms = _duration_ms_between(acknowledged_at, now)
+        total_duration_ms = _duration_ms_between(created_at, now)
+    else:
+        response_duration_ms = response_duration_ms or _duration_ms_between(created_at, acknowledged_at)
+        repair_duration_ms = repair_duration_ms or _duration_ms_between(acknowledged_at, resolved_at)
+        total_duration_ms = total_duration_ms or _duration_ms_between(created_at, resolved_at)
+    reason = str(row.get("reason") or "").strip()
+    if not reason and _active_fault_matches_request(active_fault, row):
+        reason = str((active_fault or {}).get("reason") or "").strip()
+    fault_code = str(row.get("faultCode") or "").strip()
+    if not fault_code and _active_fault_matches_request(active_fault, row):
+        fault_code = str((active_fault or {}).get("reasonCode") or "").strip()
+    fault_started_at = str(row.get("faultStartedAt") or "").strip()
+    if not fault_started_at and _active_fault_matches_request(active_fault, row):
+        fault_started_at = str((active_fault or {}).get("startedAt") or "").strip()
+    return {
+        "request_id": str(row.get("requestId") or ""),
+        "status": status,
+        "repeat_count": int(row.get("repeatCount") or 1),
+        "line_id": line_id,
+        "station_id": station_id,
+        "station_name": station_name,
+        "device_id": str(row.get("deviceId") or ""),
+        "device_name": str(row.get("deviceName") or row.get("deviceId") or ""),
+        "operator_id": str(row.get("operatorId") or ""),
+        "operator_code": str(row.get("operatorCode") or ""),
+        "operator_name": str(row.get("operatorName") or ""),
+        "fault_id": str(row.get("faultId") or ""),
+        "fault_code": fault_code,
+        "reason": reason,
+        "fault_started_at": fault_started_at,
+        "created_at": created_at,
+        "last_requested_at": str(row.get("lastRequestedAt") or ""),
+        "acknowledged_at": acknowledged_at,
+        "resolved_at": resolved_at,
+        "technician_name": str(row.get("technicianName") or ""),
+        "response_duration_ms": response_duration_ms,
+        "repair_duration_ms": repair_duration_ms,
+        "total_duration_ms": total_duration_ms,
+        "response_duration_text": _duration_text(response_duration_ms),
+        "repair_duration_text": _duration_text(repair_duration_ms),
+        "total_duration_text": _duration_text(total_duration_ms),
+        "is_active_fault": _active_fault_matches_request(active_fault, row),
+    }
+
+
+def _build_technician_snapshot(module_id: str, device_id: str, technician_name: str = "") -> dict[str, Any]:
+    state = oee_state_manager.read_state()
+    catalog = load_kiosk_masterdata(config)
+    now = datetime.now().astimezone()
+    help_request = state.get("helpRequest") if isinstance(state.get("helpRequest"), dict) else {}
+    requests_by_key = help_request.get("requestsByKey") if isinstance(help_request.get("requestsByKey"), dict) else {}
+    history = help_request.get("history") if isinstance(help_request.get("history"), list) else []
+    latest_by_id: dict[str, dict[str, Any]] = {}
+    latest_rank: dict[str, datetime] = {}
+    for raw_row in list(requests_by_key.values()) + [row for row in history if isinstance(row, dict)]:
+        if not isinstance(raw_row, dict):
+            continue
+        request_id = str(raw_row.get("requestId") or "").strip()
+        if not request_id:
+            continue
+        event_at = _request_event_at(raw_row) or _sort_floor_datetime()
+        if request_id not in latest_by_id or event_at >= latest_rank[request_id]:
+            latest_by_id[request_id] = raw_row
+            latest_rank[request_id] = event_at
+    active_fault = state.get("activeFault") if isinstance(state.get("activeFault"), dict) else None
+    projected = [
+        _project_technician_request(row, catalog=catalog, active_fault=active_fault, now=now)
+        for row in latest_by_id.values()
+    ]
+    projected.sort(
+        key=lambda row: (
+            parse_iso_text(str(row.get("resolved_at") or row.get("acknowledged_at") or row.get("last_requested_at") or row.get("created_at") or ""))
+            or _sort_floor_datetime()
+        ),
+        reverse=True,
+    )
+    active_requests = [
+        row
+        for row in projected
+        if str(row.get("status") or "") in {"open", "acknowledged"}
+    ]
+    active_requests.sort(
+        key=lambda row: (
+            0 if str(row.get("status") or "") == "open" else 1,
+            parse_iso_text(str(row.get("created_at") or "")) or _sort_ceiling_datetime(),
+        )
+    )
+    today = now.date()
+    resolved_today = [
+        row
+        for row in projected
+        if str(row.get("status") or "") == "resolved"
+        and (parse_iso_text(str(row.get("resolved_at") or "")) or _sort_floor_datetime()).astimezone().date() == today
+    ]
+    recent_requests = projected[:10]
+    device_registry = state.get("deviceRegistry") if isinstance(state.get("deviceRegistry"), dict) else {}
+    device_entry = device_registry.get(device_id) if isinstance(device_registry.get(device_id), dict) else {}
+    open_count = sum(1 for row in active_requests if str(row.get("status") or "") == "open")
+    acknowledged_count = sum(1 for row in active_requests if str(row.get("status") or "") == "acknowledged")
+    return {
+        "module": {
+            "module_id": module_id,
+            "title": config.module_title,
+            "snapshot_at": utc_now_text(now),
+        },
+        "device": {
+            "device_id": device_id,
+            "device_name": str(device_entry.get("deviceName") or device_id),
+            "device_role": str(device_entry.get("deviceRole") or "technician_kiosk"),
+            "last_seen_at": device_entry.get("lastSeenAt"),
+        },
+        "technician": {
+            "technician_name": str(technician_name or "").strip(),
+        },
+        "summary": {
+            "open_count": open_count,
+            "acknowledged_count": acknowledged_count,
+            "resolved_today_count": len(resolved_today),
+            "recent_count": len(recent_requests),
+        },
+        "active_requests": copy.deepcopy(active_requests),
+        "resolved_today": copy.deepcopy(resolved_today),
+        "recent_requests": copy.deepcopy(recent_requests),
+    }
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="MES Web", version="0.1.0")
     static_dir = Path(config.static_dir)
@@ -511,6 +725,24 @@ def create_app() -> FastAPI:
             "operator_name": str((operator or {}).get("operator_name") or ""),
         }
 
+    def _station_context_for_actor(actor: dict[str, str]) -> dict[str, str]:
+        catalog = load_kiosk_masterdata(config)
+        station = _catalog_station(catalog, actor.get("bound_station_id"))
+        return {
+            "line_id": str((station or {}).get("line_id") or ""),
+            "station_name": str((station or {}).get("station_name_tr") or (station or {}).get("station_code") or ""),
+        }
+
+    def _resolve_technician_actor(payload: dict[str, Any]) -> dict[str, str]:
+        device_id = str(payload.get("device_id") or payload.get("deviceId") or "").strip()
+        device_name = str(payload.get("device_name") or payload.get("deviceName") or device_id or "Teknisyen Ekrani").strip()
+        technician_name = str(payload.get("technician_name") or payload.get("technicianName") or "").strip() or "Teknisyen"
+        return {
+            "device_id": device_id,
+            "device_name": device_name,
+            "technician_name": technician_name,
+        }
+
     def _record_kiosk_event(event_type: str, payload: dict[str, Any], *, received_at: str) -> None:
         runtime_service.excel_sink.record_kiosk_event(event_type, payload, received_at)
 
@@ -555,6 +787,19 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.get("/technician/{device_id}")
+    async def technician_index(device_id: str) -> FileResponse:
+        if not str(device_id or "").strip():
+            raise HTTPException(status_code=400, detail="DEVICE_ID_REQUIRED")
+        return FileResponse(
+            static_dir / "technician.html",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
+
     @app.get("/api/modules")
     async def list_modules() -> list[dict[str, Any]]:
         return store.modules_summary()
@@ -573,6 +818,14 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="DEVICE_ID_REQUIRED")
         store.refresh_oee_runtime_state(module_id, force=True)
         return _build_kiosk_snapshot(module_id, str(device_id).strip())
+
+    @app.get("/api/modules/{module_id}/technician/bootstrap")
+    async def get_technician_bootstrap(module_id: str, device_id: str, technician_name: str = "") -> dict[str, Any]:
+        _ensure_module(module_id)
+        if not str(device_id or "").strip():
+            raise HTTPException(status_code=400, detail="DEVICE_ID_REQUIRED")
+        store.refresh_oee_runtime_state(module_id, force=True)
+        return _build_technician_snapshot(module_id, str(device_id).strip(), technician_name)
 
     @app.post("/api/modules/{module_id}/kiosk/register")
     async def register_kiosk_device(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -762,6 +1015,7 @@ def create_app() -> FastAPI:
     async def kiosk_start_fault(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         _ensure_module(module_id)
         actor = _resolve_kiosk_actor(payload)
+        station_context = _station_context_for_actor(actor)
         fault_code = str(payload.get("reason_code") or payload.get("reasonCode") or "").strip()
         fault_text = str(payload.get("reason_text") or payload.get("reasonText") or "").strip()
         catalog = load_kiosk_masterdata(config)
@@ -797,9 +1051,28 @@ def create_app() -> FastAPI:
         except OSError as exc:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
         stamp = utc_now_text()
-        updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
-        _refresh_after_kiosk_write(module_id, updated_state)
         fault = result.get("fault") if isinstance(result.get("fault"), dict) else {}
+        try:
+            help_result = oee_state_manager.request_help(
+                device_id=actor["device_id"],
+                device_name=actor["device_name"],
+                bound_station_id=actor["bound_station_id"],
+                line_id=station_context["line_id"],
+                station_name=station_context["station_name"],
+                operator_id=actor["operator_id"],
+                operator_code=actor["operator_code"],
+                operator_name=actor["operator_name"],
+                fault_id=str(fault.get("faultId") or ""),
+                fault_code=fault_code,
+                reason=fault_text,
+                fault_started_at=str(fault.get("startedAt") or ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        updated_state = help_result.get("state") if isinstance(help_result.get("state"), dict) else None
+        _refresh_after_kiosk_write(module_id, updated_state)
         _record_kiosk_event(
             "kiosk_fault_started",
             {
@@ -816,10 +1089,29 @@ def create_app() -> FastAPI:
             topic="local/kiosk",
             received_at=stamp,
         )
+        request_row = help_result.get("request") if isinstance(help_result.get("request"), dict) else {}
+        _record_kiosk_event(
+            "help_requested",
+            {
+                **actor,
+                "status": str(request_row.get("status") or "open"),
+                "repeat_count": int(request_row.get("repeatCount") or 1),
+                "fault_code": str(request_row.get("faultCode") or fault_code),
+                "reason": str(request_row.get("reason") or fault_text),
+            },
+            received_at=str(request_row.get("lastRequestedAt") or stamp),
+        )
+        store.append_system_log(
+            module_id,
+            f"SYSTEM|KIOSK|HELP_REQUEST|DEVICE={actor['device_id']}|REPEAT={int(request_row.get('repeatCount') or 1)}",
+            topic="local/kiosk",
+            received_at=stamp,
+        )
         return {
             "status": "accepted",
             "summary": str(result.get("summary") or ""),
             "fault": fault,
+            "request": request_row,
         }
 
     @app.post("/api/modules/{module_id}/kiosk/fault/clear")
@@ -857,11 +1149,14 @@ def create_app() -> FastAPI:
     async def kiosk_request_help(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         _ensure_module(module_id)
         actor = _resolve_kiosk_actor(payload)
+        station_context = _station_context_for_actor(actor)
         try:
             result = oee_state_manager.request_help(
                 device_id=actor["device_id"],
                 device_name=actor["device_name"],
                 bound_station_id=actor["bound_station_id"],
+                line_id=station_context["line_id"],
+                station_name=station_context["station_name"],
                 operator_id=actor["operator_id"],
                 operator_code=actor["operator_code"],
                 operator_name=actor["operator_name"],
@@ -892,6 +1187,111 @@ def create_app() -> FastAPI:
             "status": "accepted",
             "summary": str(result.get("summary") or ""),
             "request": request_row,
+        }
+
+    @app.post("/api/modules/{module_id}/technician/requests/{request_id}/acknowledge")
+    async def technician_acknowledge_request(module_id: str, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        _ensure_module(module_id)
+        actor = _resolve_technician_actor(payload)
+        try:
+            result = oee_state_manager.acknowledge_help_request(
+                request_id,
+                technician_name=actor["technician_name"],
+                technician_device_id=actor["device_id"],
+                technician_device_name=actor["device_name"],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        stamp = utc_now_text()
+        _refresh_after_kiosk_write(module_id, result.get("state") if isinstance(result.get("state"), dict) else None)
+        request_row = result.get("request") if isinstance(result.get("request"), dict) else {}
+        _record_kiosk_event(
+            "help_acknowledged",
+            {
+                "device_id": str(request_row.get("deviceId") or ""),
+                "bound_station_id": str(request_row.get("boundStationId") or ""),
+                "operator_id": str(request_row.get("operatorId") or ""),
+                "fault_code": str(request_row.get("faultCode") or ""),
+                "reason": str(request_row.get("reason") or ""),
+                "status": str(request_row.get("status") or "acknowledged"),
+                "technician_name": actor["technician_name"],
+                "response_duration_ms": int(request_row.get("responseDurationMs") or 0),
+            },
+            received_at=str(request_row.get("acknowledgedAt") or stamp),
+        )
+        store.append_system_log(
+            module_id,
+            f"SYSTEM|TECHNICIAN|HELP_ACK|REQUEST={request_id}|TECHNICIAN={actor['technician_name']}",
+            topic="local/technician",
+            received_at=stamp,
+        )
+        return {
+            "status": "accepted",
+            "summary": str(result.get("summary") or ""),
+            "request": request_row,
+        }
+
+    @app.post("/api/modules/{module_id}/technician/requests/{request_id}/resolve")
+    async def technician_resolve_request(module_id: str, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        _ensure_module(module_id)
+        actor = _resolve_technician_actor(payload)
+        try:
+            result = oee_state_manager.resolve_help_request(
+                request_id,
+                technician_name=actor["technician_name"],
+                technician_device_id=actor["device_id"],
+                technician_device_name=actor["device_name"],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        stamp = utc_now_text()
+        _refresh_after_kiosk_write(module_id, result.get("state") if isinstance(result.get("state"), dict) else None)
+        request_row = result.get("request") if isinstance(result.get("request"), dict) else {}
+        _record_kiosk_event(
+            "help_resolved",
+            {
+                "device_id": str(request_row.get("deviceId") or ""),
+                "bound_station_id": str(request_row.get("boundStationId") or ""),
+                "operator_id": str(request_row.get("operatorId") or ""),
+                "fault_code": str(request_row.get("faultCode") or ""),
+                "reason": str(request_row.get("reason") or ""),
+                "status": str(request_row.get("status") or "resolved"),
+                "technician_name": actor["technician_name"],
+                "response_duration_ms": int(request_row.get("responseDurationMs") or 0),
+                "repair_duration_ms": int(request_row.get("repairDurationMs") or 0),
+                "total_duration_ms": int(request_row.get("totalDurationMs") or 0),
+            },
+            received_at=str(request_row.get("resolvedAt") or stamp),
+        )
+        closed_fault = result.get("closed_fault") if isinstance(result.get("closed_fault"), dict) else None
+        if closed_fault is not None:
+            _record_kiosk_event(
+                "kiosk_fault_cleared",
+                {
+                    "device_id": str(closed_fault.get("deviceId") or ""),
+                    "bound_station_id": str(closed_fault.get("boundStationId") or ""),
+                    "operator_id": str(closed_fault.get("operatorId") or ""),
+                    "fault_code": str(closed_fault.get("reasonCode") or ""),
+                    "reason": str(closed_fault.get("reason") or ""),
+                    "status": "resolved",
+                },
+                received_at=str(request_row.get("resolvedAt") or stamp),
+            )
+        store.append_system_log(
+            module_id,
+            f"SYSTEM|TECHNICIAN|HELP_RESOLVE|REQUEST={request_id}|TECHNICIAN={actor['technician_name']}",
+            topic="local/technician",
+            received_at=stamp,
+        )
+        return {
+            "status": "accepted",
+            "summary": str(result.get("summary") or ""),
+            "request": request_row,
+            "fault_closed": closed_fault is not None,
         }
 
     @app.post("/api/modules/{module_id}/kiosk/system/start")
@@ -1460,6 +1860,50 @@ def create_app() -> FastAPI:
                         "module_id": module_id,
                         "device_id": str(device_id).strip(),
                         "data": _build_kiosk_snapshot(module_id, str(device_id).strip()),
+                    }
+                )
+        except WebSocketDisconnect:
+            pass
+        except OSError as exc:
+            if not _is_benign_socket_disconnect_error(exc):
+                raise
+        finally:
+            await hub.unregister(module_id, queue)
+
+    @app.websocket("/ws/modules/{module_id}/technician/{device_id}")
+    async def technician_stream(websocket: WebSocket, module_id: str, device_id: str) -> None:
+        if module_id != config.module_id or not str(device_id or "").strip():
+            await websocket.close(code=4404)
+            return
+        technician_name = str(websocket.query_params.get("technician_name") or "").strip()
+        try:
+            oee_state_manager.register_kiosk_device(
+                device_id=str(device_id).strip(),
+                device_name=str(device_id).strip(),
+                device_role="technician_kiosk",
+            )
+            store.refresh_oee_runtime_state(module_id, force=True)
+        except OSError:
+            pass
+        await websocket.accept()
+        queue = await hub.register(module_id)
+        try:
+            await websocket.send_json(
+                {
+                    "type": "technician_snapshot",
+                    "module_id": module_id,
+                    "device_id": str(device_id).strip(),
+                    "data": _build_technician_snapshot(module_id, str(device_id).strip(), technician_name),
+                }
+            )
+            while True:
+                await queue.get()
+                await websocket.send_json(
+                    {
+                        "type": "technician_snapshot",
+                        "module_id": module_id,
+                        "device_id": str(device_id).strip(),
+                        "data": _build_technician_snapshot(module_id, str(device_id).strip(), technician_name),
                     }
                 )
         except WebSocketDisconnect:

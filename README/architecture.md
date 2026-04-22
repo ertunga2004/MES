@@ -2,7 +2,7 @@
 
 ## Mimari Amac
 
-Bu proje, saha cihazlarindan gelen telemetry'yi canli dashboard'a, operator kiosk'una ve gunluk workbook kaydina donusturen katmanli bir MES prototipidir.
+Bu proje, saha cihazlarindan gelen telemetry'yi canli dashboard'a, operator kiosk'una, teknisyen cagri ekranina ve gunluk workbook kaydina donusturen katmanli bir MES prototipidir.
 
 ## Katmanlar
 
@@ -45,7 +45,7 @@ Sorumluluklari:
 - varsayilan broker: `broker.emqx.io:1883`
 - root: `sau/iot/mega/konveyor/`
 
-Bu katman veri tasir. Browser dashboard ve browser kiosk MQTT'ye dogrudan baglanmaz.
+Bu katman veri tasir. Browser dashboard, operator kiosk ve teknisyen kiosk MQTT'ye dogrudan baglanmaz.
 
 ### 5. Application Layer
 
@@ -56,6 +56,7 @@ Sorumluluklari:
 - MQTT ingest
 - dashboard snapshot
 - kiosk bootstrap snapshot
+- teknisyen cagri bootstrap snapshot
 - REST + WebSocket canli yayin
 - komut publish
 - work order, quality, fault, maintenance ve OEE runtime state yonetimi
@@ -100,7 +101,16 @@ Aktif veri katmanlari:
 2. Kiosk `GET /api/modules/{module_id}/kiosk/bootstrap` ile ilk state'i alir.
 3. Kiosk `WS /ws/modules/{module_id}/kiosk/{device_id}` ile canli snapshot'a baglanir.
 4. Operatorden gelen aksiyonlar REST endpoint'leri ile backend'e gider.
-5. Backend gerekli ise MQTT `cmd` topic'ine komut publish eder.
+5. `Ariza Bildir`, manuel fault ile birlikte teknisyen cagrisi acar.
+6. Backend gerekli ise MQTT `cmd` topic'ine komut publish eder.
+
+### Teknisyen Akisi
+
+1. Teknisyen `GET /technician/{device_id}` ile cagri ekranini acar.
+2. Ekran `GET /api/modules/{module_id}/technician/bootstrap` ile aktif ve gecmis cagrilari alir.
+3. Ekran `WS /ws/modules/{module_id}/technician/{device_id}` ile canli snapshot'a baglanir.
+4. `Cevapla`, cagri acilisindan kabul anina kadar cevap suresini sabitler.
+5. `Tamamla`, giderme/toplam sureyi sabitler ve bagli aktif kiosk fault varsa kapatir.
 
 ### OEE Akisi
 
@@ -133,7 +143,7 @@ Bir alan cakisirsa su oncelik kullanilir:
 ## Tasarim Kurallari
 
 - MQTT tasima katmanidir; UI otoritesi degildir
-- browser kiosk MQTT bilgisi bilmez
+- browser kiosk ve teknisyen ekranlari MQTT bilgisi bilmez
 - cihaz bazli audit backend device registry ile tutulur
 - Excel workbook bugunku birincil kalici sinirdir
 - OEE sayimi aktif vardiya olmadan baslamaz
@@ -142,7 +152,6 @@ Bir alan cakisirsa su oncelik kullanilir:
 
 ## Bilincli Olarak Sonraya Birakilanlar
 
-- teknisyen el terminali UI
 - direct JSON state topic ailesi
 - workbook replay / rebuild araci
 - FastAPI `lifespan` gecisi

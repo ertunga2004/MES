@@ -1195,13 +1195,19 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
             multiplier=1000.0,
         ),
     )
+    ferp_warning_source = entry.get("_ferp_validation") if isinstance(entry.get("_ferp_validation"), dict) else None
+    ferp_warnings = (
+        list(ferp_warning_source.get("warnings") or [])
+        if ferp_warning_source is not None
+        else list(current.get("ferpWarnings") or [])
+    )
     order = {
         "orderId": order_id,
         "erpType": _text_or_default(entry.get("erp_type") or entry.get("erpType") or entry.get("tip") or current.get("erpType"), "Is Emirleri"),
         "ferpObject": _text_or_default(entry.get("ferp_object") or entry.get("ferpObject") or current.get("ferpObject")),
         "ferpScreen": _text_or_default(entry.get("ferp_screen") or entry.get("ferpScreen") or current.get("ferpScreen")),
         "ferpLabels": dict(entry.get("ferp_labels") if isinstance(entry.get("ferp_labels"), dict) else current.get("ferpLabels") if isinstance(current.get("ferpLabels"), dict) else {}),
-        "ferpWarnings": list((entry.get("_ferp_validation") or {}).get("warnings") or current.get("ferpWarnings") or []),
+        "ferpWarnings": ferp_warnings,
         "date": _text_or_default(entry.get("date") or entry.get("tarih") or entry.get("lblMMFB0_DATE") or current.get("date")),
         "systemNo": _text_or_default(entry.get("system_no") or entry.get("systemNo") or entry.get("sistem_no") or entry.get("sistemNo") or entry.get("lblMMFB0_NUMBER") or current.get("systemNo")),
         "sequenceNo": max(0, round(_numeric(entry.get("sequence_no") or entry.get("sequenceNo") or entry.get("sira") or entry.get("sıra") or entry.get("lblMMFB0_PRNT_ORDER") or current.get("sequenceNo")))),

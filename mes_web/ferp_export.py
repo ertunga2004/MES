@@ -137,11 +137,13 @@ def _iter_items(items: Any) -> list[dict[str, Any]]:
 
 
 def _linked_items(items: Any, order_id: str) -> list[dict[str, Any]]:
-    linked: list[dict[str, Any]] = []
-    for item in _iter_items(items):
-        if _text(item.get("work_order_id")) == order_id:
-            linked.append(item)
-    return linked
+    source = _iter_items(items)
+    if not order_id:
+        return source
+    items_with_order = [item for item in source if _text(item.get("work_order_id"))]
+    if isinstance(items, list) and not items_with_order:
+        return source
+    return [item for item in source if _text(item.get("work_order_id")) == order_id]
 
 
 def _first_text(row: dict[str, Any], *keys: str) -> str:
@@ -275,10 +277,20 @@ def _movement_line(
     }
 
 
-def _quality_summary(items: list[dict[str, Any]]) -> dict[str, int]:
+def _work_order_export_qty(order: dict[str, Any]) -> int:
+    for key in ("completedQty", "completed_qty", "productionQty", "production_qty", "quantity", "targetQty", "target_qty"):
+        qty = _quantity(order.get(key))
+        if qty:
+            return qty
+    return 0
+
+
+def _quality_summary(items: list[dict[str, Any]], work_order: dict[str, Any] | None = None) -> dict[str, int]:
     summary = {"GOOD": 0, "REWORK": 0, "SCRAP": 0}
     for item in items:
         summary[_classification(item.get("classification"))] += 1
+    if not items and isinstance(work_order, dict):
+        summary["GOOD"] = _work_order_export_qty(work_order)
     summary["TOTAL"] = sum(summary.values())
     return summary
 
@@ -308,7 +320,8 @@ def build_ferp_documents(
     order_id = _first_text(work_order, "orderId", "order_id", "id")
     date_text = _first_text(work_order, "completedAt", "autoCompletedAt", "date") or _iso_text()
     linked_items = _linked_items(items, order_id)
-    summary = _quality_summary(linked_items)
+    summary = _quality_summary(linked_items, work_order)
+    movement_qty = len(linked_items) if linked_items else _work_order_export_qty(work_order)
     warnings = ["FERP_MATERIAL_QTY_LABEL_NOT_FOUND: material movement line qty is exported as qty."]
 
     raw_exit = _movement_header(
@@ -320,14 +333,14 @@ def build_ferp_documents(
         warehouse="RAW",
         location="SENSOR-01",
     )
-    if linked_items:
+    if movement_qty:
         raw_exit["lines"].append(
             _movement_line(
                 order=work_order,
                 items=linked_items,
                 stage="RAW",
                 classification="RAW_CONSUMED",
-                qty=len(linked_items),
+                qty=movement_qty,
             )
         )
 
@@ -340,19 +353,26 @@ def build_ferp_documents(
         warehouse="FG",
         location="ROBOT-01",
     )
-    if linked_items:
+    if movement_qty:
         material_entry["lines"].append(
             _movement_line(
                 order=work_order,
                 items=linked_items,
                 stage="SEMI_FINISHED",
                 classification="SEMI_FINISHED",
-                qty=len(linked_items),
+                qty=movement_qty,
             )
         )
-    for classification, stage in (("GOOD", "FINISHED_GOOD"), ("REWORK", "REWORK"), ("SCRAP", "SCRAP")):
-        bucket = [item for item in linked_items if _classification(item.get("classification")) == classification]
-        if not bucket:
+    if linked_items:
+        quality_buckets = [
+            (classification, stage, [item for item in linked_items if _classification(item.get("classification")) == classification])
+            for classification, stage in (("GOOD", "FINISHED_GOOD"), ("REWORK", "REWORK"), ("SCRAP", "SCRAP"))
+        ]
+    else:
+        quality_buckets = [("GOOD", "FINISHED_GOOD", [])] if movement_qty else []
+    for classification, stage, bucket in quality_buckets:
+        qty = len(bucket) if bucket else (movement_qty if classification == "GOOD" else 0)
+        if not qty:
             continue
         material_entry["lines"].append(
             _movement_line(
@@ -360,7 +380,7 @@ def build_ferp_documents(
                 items=bucket,
                 stage=stage,
                 classification=classification,
-                qty=len(bucket),
+                qty=qty,
             )
         )
 
@@ -376,20 +396,25 @@ def build_ferp_documents(
         location_out="SENSOR-01",
         location_in="ROBOT-01",
     )
-    if linked_items:
+    if movement_qty:
         transfer["lines"].append(
             _movement_line(
                 order=work_order,
                 items=linked_items,
                 stage="SEMI_FINISHED_TRANSFER",
                 classification="WIP_TRANSFER",
-                qty=len(linked_items),
+                qty=movement_qty,
             )
         )
 
     documents = [raw_exit, material_entry, transfer]
     for document in documents:
         _append_validation_warning(warnings, document["ferp_object"], document["ferp_labels"], registry_path=registry_path)
+        for line in document["lines"]:
+            line_labels = line.get("ferp_labels") if isinstance(line.get("ferp_labels"), dict) else {}
+            combined_labels = dict(document["ferp_labels"])
+            combined_labels.update(line_labels)
+            _append_validation_warning(warnings, document["ferp_object"], combined_labels, registry_path=registry_path)
 
     if summary["SCRAP"]:
         warnings.append("FERP_SCRAP_EXPORTED_SEPARATELY_FROM_FINISHED_GOOD")
@@ -439,7 +464,7 @@ def build_ferp_export_package(
         },
         "station_flow": station_flow,
         "ferp_documents": documents,
-        "quality_summary": _quality_summary(linked_items),
+        "quality_summary": _quality_summary(linked_items, work_order),
         "warnings": warnings,
     }
     if include_mes_runtime:

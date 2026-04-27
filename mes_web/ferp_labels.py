@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 from dataclasses import asdict, dataclass
 from functools import lru_cache
@@ -57,6 +58,10 @@ class FerpLabel:
 
 
 def default_ferp_labels_path(root_dir: str | Path | None = None) -> Path:
+    if root_dir is None:
+        raw = os.getenv("MES_WEB_FERP_LABELS_PATH")
+        if raw:
+            return Path(raw)
     base = Path(root_dir) if root_dir is not None else Path(__file__).resolve().parent.parent
     return base / FERP_LABELS_RELATIVE_PATH
 

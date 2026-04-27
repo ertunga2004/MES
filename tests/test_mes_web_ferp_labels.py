@@ -141,6 +141,42 @@ class FerpImportTests(unittest.TestCase):
             self.assertEqual(order["ferpLabels"]["lblMMFB0_NUMBER"], "WO-FERP-001")
             self.assertIn("lblUNKNOWN", result["warnings"][0]["unknown_labels"])
 
+    def test_clean_label_import_clears_previous_ferp_warnings(self) -> None:
+        with _temporary_directory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            manager.import_work_orders(
+                [
+                    {
+                        "ferp_object": "mym4004",
+                        "ferp_screen": "Is Emirleri",
+                        "ferp_labels": {
+                            "lblMMFB0_NUMBER": "WO-FERP-WARN",
+                            "lblMMFB0_QTY": 2,
+                            "lblUNKNOWN": "x",
+                        },
+                    }
+                ],
+                now=datetime(2026, 4, 27, 9, 0, tzinfo=timezone.utc),
+            )
+
+            result = manager.import_work_orders(
+                [
+                    {
+                        "ferp_object": "mym4004",
+                        "ferp_screen": "Is Emirleri",
+                        "ferp_labels": {
+                            "lblMMFB0_NUMBER": "WO-FERP-WARN",
+                            "lblMMFB0_QTY": 2,
+                        },
+                    }
+                ],
+                now=datetime(2026, 4, 27, 9, 5, tzinfo=timezone.utc),
+            )
+
+            order = result["state"]["workOrders"]["ordersById"]["WO-FERP-WARN"]
+            self.assertEqual(order["ferpWarnings"], [])
+            self.assertEqual(result["warnings"], [])
+
 
 class FerpExportTests(unittest.TestCase):
     def _sample_order_and_items(self) -> tuple[dict[str, object], list[dict[str, object]]]:
@@ -230,6 +266,36 @@ class FerpExportTests(unittest.TestCase):
             self.assertNotEqual(first_path, second_path)
             self.assertNotIn(":", first_path.name)
             self.assertNotIn("/", first_path.name)
+
+    def test_export_accepts_item_list_without_work_order_ids(self) -> None:
+        order, items = self._sample_order_and_items()
+        item_list = [{key: value for key, value in item.items() if key != "work_order_id"} for item in items]
+
+        package = build_ferp_export_package(
+            {},
+            order,
+            item_list,
+            created_at=datetime(2026, 4, 27, 9, 10, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(package["quality_summary"]["TOTAL"], 3)
+        self.assertEqual(len(package["station_flow"]), 9)
+
+    def test_export_uses_order_quantity_when_item_details_are_missing(self) -> None:
+        order, _items = self._sample_order_and_items()
+        order["completedQty"] = 3
+
+        package = build_ferp_export_package(
+            {},
+            order,
+            [],
+            created_at=datetime(2026, 4, 27, 9, 10, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(package["quality_summary"]["GOOD"], 3)
+        entry_doc = next(row for row in package["ferp_documents"] if row["ferp_object"] == "mym2008")
+        good_line = next(row for row in entry_doc["lines"] if row["classification"] == "GOOD")
+        self.assertEqual(good_line["qty"], 3)
 
 
 class FerpAcceptActiveEndpointTests(unittest.TestCase):

@@ -7,6 +7,7 @@ _css_dump.txt
 _current_css.txt
 _node_red_current_summary.json
 _ui_nodes_snapshot.json
+.tmp-tests/
 ~$*.xlsx
 MES_Konveyor_Veritabani_Sablonu_v2.xlsx
 

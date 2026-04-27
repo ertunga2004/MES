@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .command_policy import is_local_only_command
 from .config import AppConfig
+from .ferp_export import build_ferp_export_package, write_ferp_export_package
 from .masterdata import load_kiosk_masterdata
 from .oee_state import WorkOrderTransitionReasonRequired, build_work_order_snapshot
 from .parsers import normalize_color
@@ -676,6 +677,42 @@ def create_app() -> FastAPI:
     def sync_work_order_runtime(state: dict[str, Any] | None = None) -> None:
         runtime_state = state if isinstance(state, dict) else oee_state_manager.read_state()
         runtime_service.excel_sink.record_work_order_state(runtime_state, utc_now_text())
+
+    def _ferp_export_acceptance_result(result: dict[str, Any]) -> dict[str, Any]:
+        try:
+            state = result.get("state") if isinstance(result.get("state"), dict) else {}
+            order = result.get("order") if isinstance(result.get("order"), dict) else {}
+            items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
+            package = build_ferp_export_package(
+                state,
+                order,
+                items,
+                module_id=config.module_id,
+                registry_path=config.ferp_labels_path,
+            )
+            registry_errors = [
+                str(warning)
+                for warning in package.get("warnings", [])
+                if str(warning).startswith(("FERP_LABELS_", "FERP_LABEL_REGISTRY_"))
+            ]
+            if registry_errors:
+                return {
+                    "status": "error",
+                    "message": registry_errors[0],
+                    "warnings": list(package.get("warnings") or []),
+                }
+            export_path = write_ferp_export_package(package, config.ferp_export_pending_dir)
+            return {
+                "status": "pending",
+                "export_id": str(package.get("export_id") or ""),
+                "file": str(export_path),
+                "warnings": list(package.get("warnings") or []),
+            }
+        except Exception as exc:
+            return {
+                "status": "error",
+                "message": str(exc),
+            }
 
     def _ensure_module(module_id: str) -> None:
         if module_id != config.module_id:
@@ -1416,6 +1453,7 @@ def create_app() -> FastAPI:
         updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
         _refresh_after_kiosk_write(module_id, updated_state)
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
+        ferp_export = _ferp_export_acceptance_result(result)
         store.append_system_log(
             module_id,
             f"SYSTEM|KIOSK|WORK_ORDER_ACCEPT|ORDER={str(order.get('orderId') or '')}",
@@ -1426,6 +1464,7 @@ def create_app() -> FastAPI:
             "status": "accepted",
             "summary": str(result.get("summary") or ""),
             "order_id": str(order.get("orderId") or ""),
+            "ferp_export": ferp_export,
         }
 
     @app.post("/api/modules/{module_id}/kiosk/quality/override")
@@ -1589,6 +1628,7 @@ def create_app() -> FastAPI:
             "summary": summary,
             "queued_count": int(result.get("queued_count") or 0),
             "total_count": int(result.get("total_count") or 0),
+            "warnings": list(result.get("warnings") or []),
         }
 
     @app.post("/api/modules/{module_id}/work-orders/reload")
@@ -1614,6 +1654,7 @@ def create_app() -> FastAPI:
             "status": "accepted",
             "summary": summary,
             "source_file": candidates[0].name,
+            "warnings": list(result.get("warnings") or []),
         }
 
     @app.post("/api/modules/{module_id}/work-orders/tolerance")
@@ -1731,6 +1772,7 @@ def create_app() -> FastAPI:
         sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
         summary = str(result.get("summary") or "Is emri operator onayi ile kapatildi.")
+        ferp_export = _ferp_export_acceptance_result(result)
         store.append_system_log(
             module_id,
             f"SYSTEM|WORK_ORDER|ACCEPT|ORDER={order.get('orderId') or ''}",
@@ -1740,6 +1782,7 @@ def create_app() -> FastAPI:
             "status": "accepted",
             "summary": summary,
             "order_id": str(order.get("orderId") or ""),
+            "ferp_export": ferp_export,
         }
 
     @app.post("/api/modules/{module_id}/work-orders/rollback-active")

@@ -11,6 +11,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any
 
+from .ferp_labels import FerpLabelRegistryError, validate_label_payload
 from .parsers import (
     normalize_color,
     parse_mega_event_from_log,
@@ -1039,6 +1040,68 @@ def _normalize_work_order_requirements(entry: dict[str, Any], current: dict[str,
     return requirements
 
 
+def _ferp_import_warning(raw: dict[str, Any], validation: dict[str, Any]) -> dict[str, Any] | None:
+    warning_messages = [str(value or "").strip() for value in validation.get("warnings", []) if str(value or "").strip()]
+    if not warning_messages and not validation.get("unknown_labels") and not validation.get("missing_required_labels"):
+        return None
+    labels = raw.get("ferp_labels") if isinstance(raw.get("ferp_labels"), dict) else raw.get("ferpLabels")
+    if not isinstance(labels, dict):
+        labels = {}
+    return {
+        "source": "ferp_labels",
+        "order_id": _text_or_default(
+            labels.get("lblMMFB0_NUMBER")
+            or raw.get("order_id")
+            or raw.get("orderId")
+            or raw.get("lblMMFB0_NUMBER")
+        ),
+        "ferp_object": _text_or_default(raw.get("ferp_object") or raw.get("ferpObject")),
+        "valid": bool(validation.get("valid")),
+        "known_labels": list(validation.get("known_labels") or []),
+        "unknown_labels": list(validation.get("unknown_labels") or []),
+        "missing_required_labels": list(validation.get("missing_required_labels") or []),
+        "warnings": warning_messages,
+    }
+
+
+def _prepare_work_order_import_row(raw: Any) -> tuple[Any, list[dict[str, Any]]]:
+    if not isinstance(raw, dict):
+        return raw, []
+
+    labels = raw.get("ferp_labels") if isinstance(raw.get("ferp_labels"), dict) else raw.get("ferpLabels")
+    if not isinstance(labels, dict):
+        return raw, []
+
+    prepared = {
+        key: value
+        for key, value in raw.items()
+        if key not in {"ferp_labels", "ferpLabels"}
+    }
+    prepared.update(labels)
+    prepared["ferp_labels"] = dict(labels)
+    prepared["ferp_object"] = _text_or_default(raw.get("ferp_object") or raw.get("ferpObject"))
+    prepared["ferp_screen"] = _text_or_default(raw.get("ferp_screen") or raw.get("ferpScreen"))
+    if prepared["ferp_screen"] and not _text_or_default(prepared.get("erp_type") or prepared.get("erpType")):
+        prepared["erp_type"] = prepared["ferp_screen"]
+
+    warnings: list[dict[str, Any]] = []
+    try:
+        validation = validate_label_payload(prepared["ferp_object"], labels)
+    except FerpLabelRegistryError as exc:
+        validation = {
+            "valid": False,
+            "known_labels": [],
+            "unknown_labels": sorted(str(key) for key in labels),
+            "missing_required_labels": [],
+            "warnings": [str(exc)],
+        }
+    prepared["_ferp_validation"] = validation
+    warning = _ferp_import_warning(raw, validation)
+    if warning is not None:
+        warnings.append(warning)
+    return prepared, warnings
+
+
 def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = None, queued_at: str = "") -> dict[str, Any]:
     entry = raw if isinstance(raw, dict) else {}
     current = existing if isinstance(existing, dict) else {}
@@ -1135,6 +1198,10 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
     order = {
         "orderId": order_id,
         "erpType": _text_or_default(entry.get("erp_type") or entry.get("erpType") or entry.get("tip") or current.get("erpType"), "Is Emirleri"),
+        "ferpObject": _text_or_default(entry.get("ferp_object") or entry.get("ferpObject") or current.get("ferpObject")),
+        "ferpScreen": _text_or_default(entry.get("ferp_screen") or entry.get("ferpScreen") or current.get("ferpScreen")),
+        "ferpLabels": dict(entry.get("ferp_labels") if isinstance(entry.get("ferp_labels"), dict) else current.get("ferpLabels") if isinstance(current.get("ferpLabels"), dict) else {}),
+        "ferpWarnings": list((entry.get("_ferp_validation") or {}).get("warnings") or current.get("ferpWarnings") or []),
         "date": _text_or_default(entry.get("date") or entry.get("tarih") or entry.get("lblMMFB0_DATE") or current.get("date")),
         "systemNo": _text_or_default(entry.get("system_no") or entry.get("systemNo") or entry.get("sistem_no") or entry.get("sistemNo") or entry.get("lblMMFB0_NUMBER") or current.get("systemNo")),
         "sequenceNo": max(0, round(_numeric(entry.get("sequence_no") or entry.get("sequenceNo") or entry.get("sira") or entry.get("sıra") or entry.get("lblMMFB0_PRNT_ORDER") or current.get("sequenceNo")))),
@@ -3675,13 +3742,16 @@ class OeeRuntimeStateManager:
         queued_at = _pseudo_iso_text(stamp)
         next_orders: dict[str, dict[str, Any]] = {} if replace_existing else dict(existing_orders)
         incoming_ids: list[str] = []
+        import_warnings: list[dict[str, Any]] = []
         for raw_order in raw_orders:
-            normalized = _normalize_work_order_row(raw_order, queued_at=queued_at)
+            prepared_order, row_warnings = _prepare_work_order_import_row(raw_order)
+            import_warnings.extend(row_warnings)
+            normalized = _normalize_work_order_row(prepared_order, queued_at=queued_at)
             order_id = str(normalized.get("orderId") or "").strip()
             if not order_id:
                 raise ValueError("WORK_ORDER_ID_REQUIRED")
             merged = _normalize_work_order_row(
-                raw_order,
+                prepared_order,
                 existing=existing_orders.get(order_id),
                 queued_at=str((existing_orders.get(order_id) or {}).get("queuedAt") or queued_at),
             )
@@ -3752,6 +3822,7 @@ class OeeRuntimeStateManager:
             "summary": state["lastEventSummary"],
             "queued_count": queued_count,
             "total_count": len(next_orders),
+            "warnings": import_warnings,
         }
 
     @_state_locked

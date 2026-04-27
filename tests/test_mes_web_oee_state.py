@@ -748,6 +748,105 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertIn("Plansiz Durus=", state["workOrders"]["transitionLog"][0]["note"])
             self.assertEqual(state["workOrders"]["activeOrderId"], "WO-RED-001")
 
+    def test_import_work_orders_accepts_ferp_production_label_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+
+            manager.import_work_orders(
+                [
+                    {
+                        "erp_type": "Is Emirleri",
+                        "lblMMFB0_DATE": "2026-04-27",
+                        "lblMMFB0_NUMBER": "41040001",
+                        "lblMMFB0_PRNT_ORDER": 10,
+                        "lblPRNT_ORDER_UPD": "e",
+                        "lblMTMT0_CODE": "Mamul",
+                        "lblMTM00_CODE": "BOX-RED",
+                        "lblMUNT0_CODE": "ADET",
+                        "lblMTM00_NAME": "Kirmizi Kutu",
+                        "lblMTMM0_CODE": "STD-RED",
+                        "lblMMFB0_QTY": 2,
+                        "lblFPJ00_ID": "PRJ-RED-01",
+                        "lblMMFB0_DESC": "FERP label test",
+                        "lblMFW00_CODE": "KNV-01",
+                        "lblMFW01_CODE": "IST-01",
+                        "lblMFWO0_CODE": "SORT",
+                        "lblMMFB4_SETUP_TIME": 30,
+                        "lblMMFB4_WORKER_COUNT": 1,
+                        "lblMMFB4_TIME": 15,
+                        "lblMMFB4_SHIFT_TYPE": "SHIFT-A",
+                        "lblFCR00_ACC_CODE_PR": "OP-ERP",
+                        "lblFCR00_NAME_PR": "Ayse",
+                    }
+                ],
+                now=datetime(2026, 4, 27, 8, 0, 0),
+            )
+
+            state = manager.read_state()
+            order = state["workOrders"]["ordersById"]["41040001"]
+
+            self.assertEqual(order["orderId"], "41040001")
+            self.assertEqual(order["date"], "2026-04-27")
+            self.assertEqual(order["systemNo"], "41040001")
+            self.assertEqual(order["sequenceNo"], 10)
+            self.assertTrue(order["locked"])
+            self.assertEqual(order["stockType"], "Mamul")
+            self.assertEqual(order["stockCode"], "BOX-RED")
+            self.assertEqual(order["stockName"], "Kirmizi Kutu")
+            self.assertEqual(order["unit"], "ADET")
+            self.assertEqual(order["methodCode"], "STD-RED")
+            self.assertEqual(order["quantity"], 2)
+            self.assertEqual(order["projectCode"], "PRJ-RED-01")
+            self.assertEqual(order["description"], "FERP label test")
+            self.assertEqual(order["workCenterCode"], "KNV-01")
+            self.assertEqual(order["workStationCode"], "IST-01")
+            self.assertEqual(order["operationCode"], "SORT")
+            self.assertEqual(order["setupTimeMs"], 30000)
+            self.assertEqual(order["workerCount"], 1)
+            self.assertEqual(order["cycleTimeMs"], 15000)
+            self.assertEqual(order["shiftCode"], "SHIFT-A")
+            self.assertEqual(order["startedBy"], "OP-ERP")
+            self.assertEqual(order["startedByName"], "Ayse")
+
+    def test_sample_work_order_pool_imports_all_variants(self) -> None:
+        sample_path = Path(__file__).resolve().parents[1] / "mes_web" / "work_orders" / "sample_work_orders.json"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+
+            result = manager.import_work_orders_from_file(
+                sample_path,
+                now=datetime(2026, 4, 27, 8, 0, 0),
+            )
+
+            state = manager.read_state()
+            orders = state["workOrders"]["ordersById"]
+            self.assertEqual(result["total_count"], 8)
+            self.assertEqual(result["queued_count"], 8)
+            sample_rows = json.loads(sample_path.read_text(encoding="utf-8"))
+            disallowed_top_level_keys = {
+                "order_id",
+                "date",
+                "system_no",
+                "stock_code",
+                "stock_name",
+                "qty",
+                "cycle_time_sec",
+                "product_code",
+                "product_color",
+            }
+            for row in sample_rows:
+                self.assertFalse(disallowed_top_level_keys.intersection(row))
+                self.assertIn("lblMMFB0_NUMBER", row)
+            self.assertIn("41040002", orders)
+            self.assertIn("41040006", orders)
+            self.assertIn("41040008", orders)
+            self.assertEqual(orders["41040002"]["quantity"], 6)
+            self.assertEqual(len(orders["41040002"]["requirements"]), 3)
+            self.assertEqual(orders["41040005"]["cycleTimeMs"], 0)
+            self.assertEqual(orders["41040006"]["cycleTimeMs"], 15000)
+            self.assertEqual(orders["41040008"]["lotCode"], "LOT-YEL-01")
+            self.assertEqual(orders["41040008"]["partyNo"], "P-20260427-A")
+
     def test_operator_acceptance_closes_pending_work_order_but_metrics_stop_at_auto_complete(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
@@ -830,6 +929,53 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot["performance"], 30.0 / 40.0, places=4)
         self.assertAlmostEqual(snapshot["quality"], 2.0 / 3.0, places=4)
         self.assertAlmostEqual(snapshot["oee"], (40.0 / 60.0) * (30.0 / 40.0) * (2.0 / 3.0), places=4)
+
+    def test_work_order_snapshot_uses_system_cycle_when_order_cycle_is_missing(self) -> None:
+        local_tz = timezone(timedelta(hours=3))
+        snapshot = build_work_order_snapshot(
+            {
+                "idealCycleMs": 15000,
+                "idealCycleSec": 15.0,
+                "itemsById": {},
+                "faultHistory": [],
+            },
+            {
+                "orderId": "WO-OEE-SYSTEM-CYCLE",
+                "quantity": 2,
+                "cycleTimeMs": 0,
+                "cycleTimeSec": 0.0,
+                "startedAt": "2026-04-02T08:00:00+03:00",
+                "status": "active",
+            },
+            now=datetime(2026, 4, 2, 8, 1, 0, tzinfo=local_tz),
+        )
+
+        self.assertEqual(snapshot["idealCycleMs"], 15000)
+        self.assertEqual(snapshot["idealCycleSec"], 15.0)
+        self.assertEqual(snapshot["plannedDurationMs"], 30000)
+
+    def test_work_order_snapshot_prefers_legacy_order_cycle_sec_over_system_cycle(self) -> None:
+        local_tz = timezone(timedelta(hours=3))
+        snapshot = build_work_order_snapshot(
+            {
+                "idealCycleMs": 10000,
+                "idealCycleSec": 10.0,
+                "itemsById": {},
+                "faultHistory": [],
+            },
+            {
+                "orderId": "WO-OEE-ORDER-CYCLE",
+                "quantity": 2,
+                "cycleTimeSec": 15.0,
+                "startedAt": "2026-04-02T08:00:00+03:00",
+                "status": "active",
+            },
+            now=datetime(2026, 4, 2, 8, 1, 0, tzinfo=local_tz),
+        )
+
+        self.assertEqual(snapshot["idealCycleMs"], 15000)
+        self.assertEqual(snapshot["idealCycleSec"], 15.0)
+        self.assertEqual(snapshot["plannedDurationMs"], 30000)
 
     def test_off_order_completion_goes_to_inventory_and_is_consumed_first(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -219,6 +219,16 @@ def _duration_ms(value: Any, *, multiplier: float = 1.0, default: int = 0) -> in
     return max(0, round(_numeric(normalized) * multiplier))
 
 
+def _first_positive_duration_ms(*candidates: tuple[Any, float], default: int = 0) -> int:
+    for value, multiplier in candidates:
+        if value in (None, ""):
+            continue
+        duration_ms = _duration_ms(value, multiplier=multiplier)
+        if duration_ms > 0:
+            return duration_ms
+    return max(0, default)
+
+
 def _seconds_from_ms(value: Any, *, precision: int = 3) -> float:
     return round(max(0.0, _numeric(value)) / 1000.0, precision)
 
@@ -692,7 +702,7 @@ def _text_or_default(value: Any, default: str = "") -> str:
 def _boolish(value: Any) -> bool:
     if isinstance(value, bool):
         return value
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "evet"}
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "evet", "e"}
 
 
 def _normalize_order_color(value: Any, *fallbacks: Any) -> str:
@@ -888,8 +898,8 @@ def _normalize_work_order_requirement(
         or entry.get("product_color")
         or entry.get("productColor")
         or entry.get("renk"),
-        entry.get("stock_code") or entry.get("stockCode") or entry.get("stok_kodu"),
-        entry.get("stock_name") or entry.get("stockName") or entry.get("stok_adi"),
+        entry.get("stock_code") or entry.get("stockCode") or entry.get("stok_kodu") or entry.get("lblMTM00_CODE"),
+        entry.get("stock_name") or entry.get("stockName") or entry.get("stok_adi") or entry.get("lblMTM00_NAME"),
         current.get("color"),
         current.get("stockCode"),
         current.get("stockName"),
@@ -899,18 +909,24 @@ def _normalize_work_order_requirement(
         or entry.get("productCode")
         or entry.get("stock_code")
         or entry.get("stockCode")
+        or entry.get("lblMTM00_CODE")
         or current.get("productCode"),
         fallback_product_code or fallback_stock_code or fallback_line_id,
     )
     stock_code = _text_or_default(
         entry.get("stock_code")
         or entry.get("stockCode")
+        or entry.get("stok_kodu")
+        or entry.get("lblMTM00_CODE")
         or current.get("stockCode"),
         fallback_stock_code or product_code or fallback_line_id,
     )
     stock_name = _text_or_default(
         entry.get("stock_name")
         or entry.get("stockName")
+        or entry.get("stok_adi")
+        or entry.get("stokAdÄ±")
+        or entry.get("lblMTM00_NAME")
         or current.get("stockName"),
         fallback_stock_name or stock_code or product_code or fallback_line_id,
     )
@@ -929,7 +945,7 @@ def _normalize_work_order_requirement(
             entry.get("matchKey") or entry.get("match_key") or current.get("matchKey"),
             color or product_code or stock_code or fallback_line_id,
         ),
-        "quantity": max(0, round(_numeric(entry.get("qty") or entry.get("quantity") or entry.get("miktar") or current.get("quantity") or 0))),
+        "quantity": max(0, round(_numeric(entry.get("qty") or entry.get("quantity") or entry.get("miktar") or entry.get("lblMMFB0_QTY") or current.get("quantity") or 0))),
         "completedQty": max(
             0,
             round(
@@ -979,12 +995,12 @@ def _normalize_work_order_requirements(entry: dict[str, Any], current: dict[str,
         source_rows = [
             {
                 "lineId": _text_or_default(entry.get("lineId") or current.get("lineId"), "line-1"),
-                "productCode": entry.get("product_code") or entry.get("productCode") or current.get("productCode"),
-                "stockCode": entry.get("stock_code") or entry.get("stockCode") or current.get("stockCode"),
-                "stockName": entry.get("stock_name") or entry.get("stockName") or current.get("stockName"),
+                "productCode": entry.get("product_code") or entry.get("productCode") or entry.get("lblMTM00_CODE") or current.get("productCode"),
+                "stockCode": entry.get("stock_code") or entry.get("stockCode") or entry.get("stok_kodu") or entry.get("lblMTM00_CODE") or current.get("stockCode"),
+                "stockName": entry.get("stock_name") or entry.get("stockName") or entry.get("stok_adi") or entry.get("stokAdÄ±") or entry.get("lblMTM00_NAME") or current.get("stockName"),
                 "color": entry.get("product_color") or entry.get("productColor") or entry.get("color") or current.get("productColor"),
                 "matchKey": entry.get("matchKey") or current.get("matchKey"),
-                "qty": entry.get("qty") or entry.get("quantity") or current.get("quantity"),
+                "qty": entry.get("qty") or entry.get("quantity") or entry.get("miktar") or entry.get("lblMMFB0_QTY") or current.get("quantity"),
                 "completedQty": entry.get("completedQty") or current.get("completedQty"),
                 "inventoryConsumedQty": entry.get("inventoryConsumedQty") or current.get("inventoryConsumedQty"),
                 "productionQty": entry.get("productionQty") or current.get("productionQty"),
@@ -997,9 +1013,9 @@ def _normalize_work_order_requirements(entry: dict[str, Any], current: dict[str,
             continue
         current_lookup[_work_order_requirement_key(row, f"line-{index}")] = row
 
-    fallback_product_code = _text_or_default(entry.get("product_code") or entry.get("productCode") or current.get("productCode"))
-    fallback_stock_code = _text_or_default(entry.get("stock_code") or entry.get("stockCode") or current.get("stockCode"))
-    fallback_stock_name = _text_or_default(entry.get("stock_name") or entry.get("stockName") or current.get("stockName"))
+    fallback_product_code = _text_or_default(entry.get("product_code") or entry.get("productCode") or entry.get("lblMTM00_CODE") or current.get("productCode"))
+    fallback_stock_code = _text_or_default(entry.get("stock_code") or entry.get("stockCode") or entry.get("stok_kodu") or entry.get("lblMTM00_CODE") or current.get("stockCode"))
+    fallback_stock_name = _text_or_default(entry.get("stock_name") or entry.get("stockName") or entry.get("stok_adi") or entry.get("stokAdÄ±") or entry.get("lblMTM00_NAME") or current.get("stockName"))
     requirements: list[dict[str, Any]] = []
     for index, raw_row in enumerate(source_rows, start=1):
         if not isinstance(raw_row, dict):
@@ -1036,6 +1052,7 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         or entry.get("systemNo")
         or entry.get("sistem_no")
         or entry.get("sistemNo")
+        or entry.get("lblMMFB0_NUMBER")
         or current.get("orderId")
     )
     color = _normalize_order_color(
@@ -1043,8 +1060,8 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         or entry.get("productColor")
         or entry.get("color")
         or entry.get("renk"),
-        entry.get("stock_code") or entry.get("stockCode") or entry.get("stok_kodu"),
-        entry.get("stock_name") or entry.get("stockName") or entry.get("stok_adi") or entry.get("stokAdı"),
+        entry.get("stock_code") or entry.get("stockCode") or entry.get("stok_kodu") or entry.get("lblMTM00_CODE"),
+        entry.get("stock_name") or entry.get("stockName") or entry.get("stok_adi") or entry.get("stokAdı") or entry.get("lblMTM00_NAME"),
         current.get("productColor"),
     )
     product_code = _text_or_default(
@@ -1054,6 +1071,7 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         or entry.get("stockCode")
         or entry.get("stok_kodu")
         or entry.get("stokKodu")
+        or entry.get("lblMTM00_CODE")
         or current.get("productCode")
     )
     stock_code = _text_or_default(
@@ -1061,6 +1079,7 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         or entry.get("stockCode")
         or entry.get("stok_kodu")
         or entry.get("stokKodu")
+        or entry.get("lblMTM00_CODE")
         or current.get("stockCode")
         or product_code
     )
@@ -1069,6 +1088,7 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         or entry.get("stockName")
         or entry.get("stok_adi")
         or entry.get("stokAdı")
+        or entry.get("lblMTM00_NAME")
         or current.get("stockName"),
         stock_code or order_id,
     )
@@ -1088,6 +1108,7 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
                 entry.get("setupTimeSec"),
                 entry.get("hazirlik_suresi_sec"),
                 entry.get("hazÄ±rlÄ±k_sÃ¼resi_sn"),
+                entry.get("lblMMFB4_SETUP_TIME"),
                 current.get("setupTimeSec"),
             ),
             multiplier=1000.0,
@@ -1105,6 +1126,7 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
                 entry.get("cycleTimeSec"),
                 entry.get("sure_sec"),
                 entry.get("sÃ¼re_saniye"),
+                entry.get("lblMMFB4_TIME"),
                 current.get("cycleTimeSec"),
             ),
             multiplier=1000.0,
@@ -1113,28 +1135,32 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
     order = {
         "orderId": order_id,
         "erpType": _text_or_default(entry.get("erp_type") or entry.get("erpType") or entry.get("tip") or current.get("erpType"), "Is Emirleri"),
-        "date": _text_or_default(entry.get("date") or entry.get("tarih") or current.get("date")),
-        "systemNo": _text_or_default(entry.get("system_no") or entry.get("systemNo") or entry.get("sistem_no") or entry.get("sistemNo") or current.get("systemNo")),
-        "sequenceNo": max(0, round(_numeric(entry.get("sequence_no") or entry.get("sequenceNo") or entry.get("sira") or entry.get("sıra") or current.get("sequenceNo")))),
-        "locked": _boolish(entry.get("locked") if entry.get("locked") is not None else entry.get("kilit") if entry.get("kilit") is not None else current.get("locked")),
-        "stockType": _text_or_default(entry.get("stock_type") or entry.get("stockType") or entry.get("stok_servis") or entry.get("stokServis") or current.get("stockType")),
+        "date": _text_or_default(entry.get("date") or entry.get("tarih") or entry.get("lblMMFB0_DATE") or current.get("date")),
+        "systemNo": _text_or_default(entry.get("system_no") or entry.get("systemNo") or entry.get("sistem_no") or entry.get("sistemNo") or entry.get("lblMMFB0_NUMBER") or current.get("systemNo")),
+        "sequenceNo": max(0, round(_numeric(entry.get("sequence_no") or entry.get("sequenceNo") or entry.get("sira") or entry.get("sıra") or entry.get("lblMMFB0_PRNT_ORDER") or current.get("sequenceNo")))),
+        "locked": _boolish(entry.get("locked") if entry.get("locked") is not None else entry.get("kilit") if entry.get("kilit") is not None else entry.get("lblPRNT_ORDER_UPD") if entry.get("lblPRNT_ORDER_UPD") is not None else current.get("locked")),
+        "stockType": _text_or_default(entry.get("stock_type") or entry.get("stockType") or entry.get("stok_servis") or entry.get("stokServis") or entry.get("lblMTMT0_CODE") or current.get("stockType")),
         "stockCode": stock_code,
         "stockName": stock_name,
-        "unit": _text_or_default(entry.get("unit") or entry.get("birim") or current.get("unit")),
-        "methodCode": _text_or_default(entry.get("method_code") or entry.get("methodCode") or entry.get("metod_kodu") or entry.get("metodKodu") or current.get("methodCode")),
+        "unit": _text_or_default(entry.get("unit") or entry.get("birim") or entry.get("lblMUNT0_CODE") or current.get("unit")),
+        "methodCode": _text_or_default(entry.get("method_code") or entry.get("methodCode") or entry.get("metod_kodu") or entry.get("metodKodu") or entry.get("lblMTMM0_CODE") or current.get("methodCode")),
+        "lotCode": _text_or_default(entry.get("lot_code") or entry.get("lotCode") or entry.get("lot_kodu") or entry.get("lblMTML0_CODE") or current.get("lotCode")),
+        "cutCode": _text_or_default(entry.get("cut_code") or entry.get("cutCode") or entry.get("kesim_kodu") or entry.get("lblFPJ09_CODE") or current.get("cutCode")),
+        "partyNo": _text_or_default(entry.get("party_no") or entry.get("partyNo") or entry.get("parti_no") or entry.get("lblMTML0_PRTY_NO") or current.get("partyNo")),
         "quantity": 0,
-        "projectCode": _text_or_default(entry.get("project_code") or entry.get("projectCode") or entry.get("proje") or current.get("projectCode")),
-        "description": _text_or_default(entry.get("description") or entry.get("aciklama") or entry.get("açıklama") or current.get("description")),
-        "workCenterCode": _text_or_default(entry.get("work_center_code") or entry.get("workCenterCode") or entry.get("is_merkezi") or entry.get("iş_merkezi") or current.get("workCenterCode")),
-        "operationCode": _text_or_default(entry.get("operation_code") or entry.get("operationCode") or entry.get("operasyon") or current.get("operationCode")),
-        "setupTimeSec": max(0.0, _numeric(entry.get("setup_time_sec") or entry.get("setupTimeSec") or entry.get("hazirlik_suresi_sec") or entry.get("hazırlık_süresi_sn") or current.get("setupTimeSec"))),
-        "workerCount": max(0, round(_numeric(entry.get("worker_count") or entry.get("workerCount") or entry.get("isci_sayisi") or entry.get("işçi_sayısı") or current.get("workerCount")))),
-        "cycleTimeSec": max(0.0, _numeric(entry.get("cycle_time_sec") or entry.get("cycleTimeSec") or entry.get("sure_sec") or entry.get("süre_saniye") or current.get("cycleTimeSec"))),
+        "projectCode": _text_or_default(entry.get("project_code") or entry.get("projectCode") or entry.get("proje") or entry.get("lblFPJ00_ID") or current.get("projectCode")),
+        "description": _text_or_default(entry.get("description") or entry.get("aciklama") or entry.get("açıklama") or entry.get("lblMMFB0_DESC") or current.get("description")),
+        "workCenterCode": _text_or_default(entry.get("work_center_code") or entry.get("workCenterCode") or entry.get("is_merkezi") or entry.get("iş_merkezi") or entry.get("lblMFW00_CODE") or current.get("workCenterCode")),
+        "workStationCode": _text_or_default(entry.get("work_station_code") or entry.get("workStationCode") or entry.get("is_istasyonu") or entry.get("iş_istasyonu") or entry.get("lblMFW01_CODE") or current.get("workStationCode")),
+        "operationCode": _text_or_default(entry.get("operation_code") or entry.get("operationCode") or entry.get("operasyon") or entry.get("lblMFWO0_CODE") or current.get("operationCode")),
+        "setupTimeSec": max(0.0, _numeric(entry.get("setup_time_sec") or entry.get("setupTimeSec") or entry.get("hazirlik_suresi_sec") or entry.get("hazırlık_süresi_sn") or entry.get("lblMMFB4_SETUP_TIME") or current.get("setupTimeSec"))),
+        "workerCount": max(0, round(_numeric(entry.get("worker_count") or entry.get("workerCount") or entry.get("isci_sayisi") or entry.get("işçi_sayısı") or entry.get("lblMMFB4_WORKER_COUNT") or current.get("workerCount")))),
+        "cycleTimeSec": max(0.0, _numeric(entry.get("cycle_time_sec") or entry.get("cycleTimeSec") or entry.get("sure_sec") or entry.get("süre_saniye") or entry.get("lblMMFB4_TIME") or current.get("cycleTimeSec"))),
         "setupTimeMs": setup_time_ms,
         "setupTimeSec": _seconds_from_ms(setup_time_ms),
         "cycleTimeMs": cycle_time_ms,
         "cycleTimeSec": _seconds_from_ms(cycle_time_ms),
-        "shiftCode": _text_or_default(entry.get("shift_code") or entry.get("shiftCode") or entry.get("vardiya") or current.get("shiftCode")),
+        "shiftCode": _text_or_default(entry.get("shift_code") or entry.get("shiftCode") or entry.get("vardiya") or entry.get("lblMMFB4_SHIFT_TYPE") or current.get("shiftCode")),
         "productCode": product_code or stock_code or order_id,
         "productColor": color,
         "matchKey": _text_or_default(entry.get("matchKey") or current.get("matchKey"), color or product_code or stock_code or order_id),
@@ -1143,8 +1169,8 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         "startedAt": _text_or_default(entry.get("startedAt") or current.get("startedAt")),
         "autoCompletedAt": _text_or_default(entry.get("autoCompletedAt") or current.get("autoCompletedAt")),
         "completedAt": _text_or_default(entry.get("completedAt") or current.get("completedAt")),
-        "startedBy": _text_or_default(entry.get("startedBy") or current.get("startedBy")),
-        "startedByName": _text_or_default(entry.get("startedByName") or current.get("startedByName")),
+        "startedBy": _text_or_default(entry.get("startedBy") or entry.get("lblFCR00_ACC_CODE_PR") or current.get("startedBy")),
+        "startedByName": _text_or_default(entry.get("startedByName") or entry.get("lblFCR00_NAME_PR") or current.get("startedByName")),
         "transitionReason": _text_or_default(entry.get("transitionReason") or current.get("transitionReason")),
         "inventoryConsumedQty": 0,
         "productionQty": 0,
@@ -2604,14 +2630,11 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
     if remaining_qty is not None:
         fulfilled_candidates.append(target_qty - remaining_qty)
     fulfilled_qty = min(target_qty, max(fulfilled_candidates) if fulfilled_candidates else 0)
-    ideal_cycle_ms = _duration_ms(
-        _first_present(
-            order.get("cycleTimeMs"),
-            state.get("idealCycleMs"),
-            order.get("cycleTimeSec"),
-            state.get("idealCycleSec"),
-        ),
-        multiplier=1000.0 if _first_present(order.get("cycleTimeMs"), state.get("idealCycleMs")) in (None, "") else 1.0,
+    ideal_cycle_ms = _first_positive_duration_ms(
+        (order.get("cycleTimeMs"), 1.0),
+        (order.get("cycleTimeSec"), 1000.0),
+        (state.get("idealCycleMs"), 1.0),
+        (state.get("idealCycleSec"), 1000.0),
         default=10_000,
     )
     if ideal_cycle_ms <= 0:

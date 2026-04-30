@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+                 <?mso-application progid="Excel.Sheet"?>
+  <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+   xmlns:o="urn:schemas-microsoft-com:office:office"
+   xmlns:x="urn:schemas-microsoft-com:office:excel"
+   xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+   xmlns:html="http://www.w3.org/TR/REC-html40">
+   <DocumentProperties xmlns="urn:schemas-microsoft-com:office:office"></DocumentProperties>
+   <ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel"><WindowHeight>12210</WindowHeight><WindowWidth>28800</WindowWidth><WindowTopX>0</WindowTopX><WindowTopY>0</WindowTopY><ProtectStructure>False</ProtectStructure><ProtectWindows>False</ProtectWindows></ExcelWorkbook>
+
+   <Styles>
+     <ss:Style ss:ID="sBold"><ss:Font ss:Bold="1"/></ss:Style>
+     <ss:Style ss:ID="s64"><Alignment ss:Horizontal="Center" ss:Vertical="Bottom" ss:WrapText="1"/><Borders/><Font ss:FontName="Arial" ss:Bold="1"/></ss:Style>
+   </Styles>
+
+    <ss:Worksheet ss:Name="ferpData">
+                          <Table x:FullColumns="1" x:FullRows="1" ss:DefaultRowHeight="3">                        <Row ss:Height="19.5" ss:StyleID="sBold"> <ss:Cell><ss:Data ss:Type="String">Kodu</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Adı</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Depo Kodu</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Lokasyon Kodu</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">AP1</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Abkant pres iş merkezi1</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">AP2</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Abkant pres iş merkezi2</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">BB4</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Boru bükme iş merkezi</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">DT1</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Daire testere</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">DT2</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Daire testere</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">DT4</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Daire testere</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">EM1</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">el matkabı</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">F1</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Freze iş merkezi</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">F2</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Freze iş merkezi</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">LK2</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Lazer kesim iş merkezi</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">Pu4</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Punch iş merkezi</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">RM3</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Radyal matkap</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">SM3</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">sütun matkap</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">SM4</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">sütun matkap</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">ŞT3</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">şerit testere</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">T4</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Torna iş merkezi</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">LAZER İŞ MERKEZİ</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">0001</ss:Data></ss:Cell></Row>
+</Table>
+              </ss:Worksheet>
+             </Workbook>

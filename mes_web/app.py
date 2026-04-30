@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .command_policy import is_local_only_command
 from .config import AppConfig
-from .ferp_export import build_ferp_export_package, write_ferp_export_package
+from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
 from .masterdata import load_kiosk_masterdata
 from .oee_state import WorkOrderTransitionReasonRequired, build_work_order_snapshot
 from .parsers import normalize_color
@@ -680,33 +680,20 @@ def create_app() -> FastAPI:
 
     def _ferp_export_acceptance_result(result: dict[str, Any]) -> dict[str, Any]:
         try:
-            state = result.get("state") if isinstance(result.get("state"), dict) else {}
             order = result.get("order") if isinstance(result.get("order"), dict) else {}
-            items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
-            package = build_ferp_export_package(
-                state,
+            example_files = write_seeded_ferp_examples(config.ferp_xls_dir, config.ferp_export_examples_dir)
+            export = write_work_order_xls_export(
                 order,
-                items,
-                module_id=config.module_id,
-                registry_path=config.ferp_labels_path,
+                source_dir=config.ferp_xls_dir,
+                pending_dir=config.ferp_export_pending_dir,
             )
-            registry_errors = [
-                str(warning)
-                for warning in package.get("warnings", [])
-                if str(warning).startswith(("FERP_LABELS_", "FERP_LABEL_REGISTRY_"))
-            ]
-            if registry_errors:
-                return {
-                    "status": "error",
-                    "message": registry_errors[0],
-                    "warnings": list(package.get("warnings") or []),
-                }
-            export_path = write_ferp_export_package(package, config.ferp_export_pending_dir)
             return {
                 "status": "pending",
-                "export_id": str(package.get("export_id") or ""),
-                "file": str(export_path),
-                "warnings": list(package.get("warnings") or []),
+                "export_id": export.export_id,
+                "directory": str(export.directory),
+                "files": [str(path) for path in export.files],
+                "example_files": [str(path) for path in example_files],
+                "warnings": list(export.warnings),
             }
         except Exception as exc:
             return {

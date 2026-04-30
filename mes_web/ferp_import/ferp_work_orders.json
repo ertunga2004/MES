@@ -1,0 +1,56 @@
+{
+  "source": {
+    "system": "FERP",
+    "note": "Physical field test work orders. MES reload reads this folder by default."
+  },
+  "orders": [
+    {
+      "ferp_object": "mym4004",
+      "ferp_screen": "Is Emirleri",
+      "cycle_time_sec": 15,
+      "ferp_labels": {
+        "lblMMFB0_DATE": "2026-04-28",
+        "lblMMFB0_NUMBER": "TEST-FERP-001",
+        "lblMMFB0_QTY": 1,
+        "lblMTMT0_CODE": "Mamul",
+        "lblMTM00_CODE": "BOX-RED",
+        "lblMTM00_NAME": "Kirmizi Test Kutusu",
+        "lblMUNT0_CODE": "ADET",
+        "lblFPJ00_ID": "FIELD-TEST",
+        "lblMMFB0_DESC": "Fiziksel saha test is emri - GOOD akisi"
+      }
+    },
+    {
+      "ferp_object": "mym4004",
+      "ferp_screen": "Is Emirleri",
+      "cycle_time_sec": 15,
+      "ferp_labels": {
+        "lblMMFB0_DATE": "2026-04-28",
+        "lblMMFB0_NUMBER": "TEST-FERP-REWORK",
+        "lblMMFB0_QTY": 1,
+        "lblMTMT0_CODE": "Mamul",
+        "lblMTM00_CODE": "BOX-YEL",
+        "lblMTM00_NAME": "Sari Test Kutusu",
+        "lblMUNT0_CODE": "ADET",
+        "lblFPJ00_ID": "FIELD-TEST",
+        "lblMMFB0_DESC": "Fiziksel saha test is emri - REWORK akisi"
+      }
+    },
+    {
+      "ferp_object": "mym4004",
+      "ferp_screen": "Is Emirleri",
+      "cycle_time_sec": 15,
+      "ferp_labels": {
+        "lblMMFB0_DATE": "2026-04-28",
+        "lblMMFB0_NUMBER": "TEST-FERP-SCRAP",
+        "lblMMFB0_QTY": 1,
+        "lblMTMT0_CODE": "Mamul",
+        "lblMTM00_CODE": "BOX-BLUE",
+        "lblMTM00_NAME": "Mavi Test Kutusu",
+        "lblMUNT0_CODE": "ADET",
+        "lblFPJ00_ID": "FIELD-TEST",
+        "lblMMFB0_DESC": "Fiziksel saha test is emri - SCRAP akisi"
+      }
+    }
+  ]
+}

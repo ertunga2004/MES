@@ -12,7 +12,7 @@ from unittest.mock import patch
 try:
     from fastapi.testclient import TestClient
     import mes_web.app as app_module
-except ModuleNotFoundError:  # pragma: no cover - optional test dependency
+except (ModuleNotFoundError, RuntimeError):  # pragma: no cover - optional test dependency
     TestClient = None
     app_module = None
 
@@ -22,6 +22,11 @@ from mes_web.ferp_labels import (
     default_ferp_labels_path,
     get_labels_for_object,
     validate_label_payload,
+)
+from mes_web.ferp_xls_export import (
+    read_ferp_xls_rows,
+    write_seeded_ferp_examples,
+    write_work_order_xls_export,
 )
 from mes_web.oee_state import OeeRuntimeStateManager, default_runtime_state
 from mes_web.runtime import SnapshotHub
@@ -110,6 +115,23 @@ class FerpLabelRegistryTests(unittest.TestCase):
 
 
 class FerpImportTests(unittest.TestCase):
+    def test_ferp_import_folder_sample_file_contains_visible_test_order(self) -> None:
+        source_path = Path(__file__).resolve().parents[1] / "mes_web" / "ferp_import" / "ferp_work_orders.json"
+        self.assertTrue(source_path.exists(), f"FERP import sample is missing: {source_path}")
+        with _temporary_directory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+
+            result = manager.import_work_orders_from_file(
+                source_path,
+                now=datetime(2026, 4, 28, 9, 0, tzinfo=timezone.utc),
+            )
+
+            order = result["state"]["workOrders"]["ordersById"]["TEST-FERP-001"]
+            self.assertEqual(order["status"], "queued")
+            self.assertEqual(order["quantity"], 1)
+            self.assertEqual(order["cycleTimeSec"], 15.0)
+            self.assertEqual(order["ferpObject"], "mym4004")
+
     def test_label_first_work_order_import_normalizes_runtime_state(self) -> None:
         with _temporary_directory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
@@ -247,6 +269,35 @@ class FerpExportTests(unittest.TestCase):
         self.assertIn("GOOD", line_classes)
         self.assertIn("REWORK", line_classes)
         self.assertIn("SCRAP", line_classes)
+        movement_codes = {
+            line["ferp_labels"]["lblMTM00_CODE"]
+            for document in package["ferp_documents"]
+            for line in document["lines"]
+        }
+        self.assertEqual(movement_codes, {"FIN-RED"})
+        self.assertFalse(any(warning.startswith("FERP_UNKNOWN_LABELS") for warning in package["warnings"]))
+
+    def test_export_material_lines_use_order_stock_code_instead_of_detected_color(self) -> None:
+        order, items = self._sample_order_and_items()
+        for item in items:
+            item.pop("stock_code", None)
+            item["color"] = "red"
+            item["final_color"] = "red"
+
+        package = build_ferp_export_package(
+            {},
+            order,
+            items,
+            created_at=datetime(2026, 4, 27, 9, 10, tzinfo=timezone.utc),
+        )
+
+        movement_codes = [
+            line["ferp_labels"]["lblMTM00_CODE"]
+            for document in package["ferp_documents"]
+            for line in document["lines"]
+        ]
+        self.assertTrue(movement_codes)
+        self.assertTrue(all(code == "FIN-RED" for code in movement_codes))
 
     def test_export_write_does_not_overwrite_existing_file(self) -> None:
         order, items = self._sample_order_and_items()
@@ -298,6 +349,88 @@ class FerpExportTests(unittest.TestCase):
         self.assertEqual(good_line["qty"], 3)
 
 
+class FerpXlsExportTests(unittest.TestCase):
+    def _ferp_xls_dir(self) -> Path:
+        return Path(__file__).resolve().parents[1] / "FERP_XLS"
+
+    def test_seeded_examples_include_conveyor_master_data_without_touching_sources(self) -> None:
+        source_dir = self._ferp_xls_dir()
+        source_bytes = {path.name: path.read_bytes() for path in source_dir.glob("*.xls")}
+
+        with _temporary_directory() as temp_dir:
+            output_dir = Path(temp_dir) / "examples"
+            files = write_seeded_ferp_examples(source_dir, output_dir)
+
+            self.assertEqual(len(files), 4)
+            stock_rows = read_ferp_xls_rows(output_dir / "FERP_STOK_KARTI.xls")
+            stock_codes = {row[1] for row in stock_rows[1:] if len(row) > 2}
+            stock_names = {row[2] for row in stock_rows[1:] if len(row) > 2}
+            self.assertIn("BOX-RED", stock_codes)
+            self.assertIn("BOX-BLUE", stock_codes)
+            self.assertIn("BOX-YEL", stock_codes)
+            self.assertIn("Kırmızı Kutu", stock_names)
+            self.assertIn("Sarı Kutu", stock_names)
+
+            work_center_file = next(path for path in files if "MERKEZ" in path.name)
+            work_center_rows = read_ferp_xls_rows(work_center_file)
+            self.assertTrue(any(row[:2] == ["KNV-01", "Mini konveyör iş merkezi"] for row in work_center_rows[1:]))
+
+            work_station_file = next(path for path in files if "STASYONU" in path.name)
+            work_station_rows = read_ferp_xls_rows(work_station_file)
+            self.assertTrue(any(row[:3] == ["KNV-01", "SNS-01", "Sensör ölçüm istasyonu"] for row in work_station_rows[1:]))
+            self.assertTrue(any(row[:3] == ["KNV-01", "ROB-01", "Robot kol istasyonu"] for row in work_station_rows[1:]))
+
+            operation_rows = read_ferp_xls_rows(output_dir / "FERP_OPERASYON_TANIMLARI.xls")
+            operation_codes = {row[0] for row in operation_rows[1:] if row}
+            self.assertIn("SNS-MSR", operation_codes)
+            self.assertIn("ROB-MOV", operation_codes)
+
+        for path in source_dir.glob("*.xls"):
+            self.assertEqual(path.read_bytes(), source_bytes[path.name], path.name)
+
+    def test_work_order_xls_export_writes_sensor_and_robot_rows(self) -> None:
+        order = {
+            "orderId": "WO-XLS-001",
+            "date": "2026-04-29",
+            "completedAt": "2026-04-29T10:05:00+03:00",
+            "quantity": 3,
+            "completedQty": 3,
+            "stockCode": "BOX-RED",
+            "stockName": "Kırmızı Kutu",
+            "unit": "ADET",
+            "cycleTimeSec": 15,
+            "description": "Kırmızı kutu test üretimi",
+        }
+
+        with _temporary_directory() as temp_dir:
+            export = write_work_order_xls_export(
+                order,
+                source_dir=self._ferp_xls_dir(),
+                pending_dir=Path(temp_dir) / "pending",
+                created_at=datetime(2026, 4, 29, 7, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertTrue(export.directory.exists())
+            self.assertEqual(len(export.files), 1)
+            rows = read_ferp_xls_rows(export.files[0])
+            headers = rows[0]
+            data_rows = rows[1:]
+            self.assertEqual(len(data_rows), 2)
+            order_no_idx = headers.index("İş Emri No")
+            stock_code_idx = headers.index("Ürün Kodu")
+            station_idx = headers.index("İş İstasyonu")
+            method_idx = headers.index("Metod Kodu")
+            status_idx = headers.index("Statü")
+            completed_idx = headers.index("Kapanan Miktar")
+
+            self.assertEqual([row[order_no_idx] for row in data_rows], ["WO-XLS-001", "WO-XLS-001"])
+            self.assertEqual([row[stock_code_idx] for row in data_rows], ["BOX-RED", "BOX-RED"])
+            self.assertEqual([row[station_idx] for row in data_rows], ["SNS-01", "ROB-01"])
+            self.assertEqual([row[method_idx] for row in data_rows], ["SNS-MSR", "ROB-MOV"])
+            self.assertEqual([row[status_idx] for row in data_rows], ["TAMAMLANDI", "TAMAMLANDI"])
+            self.assertEqual([row[completed_idx] for row in data_rows], ["3", "3"])
+
+
 class FerpAcceptActiveEndpointTests(unittest.TestCase):
     def _build_client(self):
         if TestClient is None or app_module is None:
@@ -313,6 +446,8 @@ class FerpAcceptActiveEndpointTests(unittest.TestCase):
             {
                 "MES_WEB_OEE_RUNTIME_STATE_PATH": str(state_path),
                 "MES_WEB_FERP_EXPORT_PENDING_DIR": str(export_dir),
+                "MES_WEB_FERP_EXPORT_EXAMPLES_DIR": str(Path(temp_dir) / "ferp_exports" / "examples"),
+                "MES_WEB_FERP_XLS_DIR": str(root_dir / "FERP_XLS"),
                 "MES_WEB_FERP_LABELS_PATH": str(default_ferp_labels_path(root_dir)),
                 "MES_WEB_EXCEL_WORKBOOK_PATH": str(Path(temp_dir) / "mes.xlsx"),
             },
@@ -347,10 +482,10 @@ class FerpAcceptActiveEndpointTests(unittest.TestCase):
                 {
                     "order_id": order_id,
                     "qty": 1,
-                    "stock_code": "FIN-RED",
-                    "stock_name": "Finished Red",
+                    "stock_code": "BOX-RED",
+                    "stock_name": "Kırmızı Kutu",
                     "product_color": "red",
-                    "unit": "AD",
+                    "unit": "ADET",
                     "cycleTimeSec": 15,
                 }
             ],
@@ -375,7 +510,12 @@ class FerpAcceptActiveEndpointTests(unittest.TestCase):
         self.assertEqual(payload["status"], "accepted")
         self.assertEqual(payload["order_id"], order_id)
         self.assertEqual(payload["ferp_export"]["status"], "pending")
-        self.assertTrue(Path(payload["ferp_export"]["file"]).exists())
+        self.assertNotIn("file", payload["ferp_export"])
+        export_files = [Path(path) for path in payload["ferp_export"]["files"]]
+        self.assertTrue(export_files)
+        self.assertTrue(all(path.exists() for path in export_files))
+        self.assertTrue(all(path.suffix == ".xls" for path in export_files))
+        self.assertTrue(all(Path(path).exists() for path in payload["ferp_export"]["example_files"]))
 
 
 if __name__ == "__main__":

@@ -115,7 +115,17 @@ class AppConfig:
         raw = os.getenv("MES_WEB_WORK_ORDERS_DIR")
         if raw:
             return Path(raw)
+        ferp_import_dir = self.ferp_import_dir
+        if ferp_import_dir.exists():
+            return ferp_import_dir
         return self.package_dir / "work_orders"
+
+    @property
+    def ferp_import_dir(self) -> Path:
+        raw = os.getenv("MES_WEB_FERP_IMPORT_DIR")
+        if raw:
+            return Path(raw)
+        return self.package_dir / "ferp_import"
 
     @property
     def ferp_labels_path(self) -> Path:
@@ -130,6 +140,20 @@ class AppConfig:
         if raw:
             return Path(raw)
         return self.logs_dir / "ferp_exports" / "pending"
+
+    @property
+    def ferp_export_examples_dir(self) -> Path:
+        raw = os.getenv("MES_WEB_FERP_EXPORT_EXAMPLES_DIR")
+        if raw:
+            return Path(raw)
+        return self.logs_dir / "ferp_exports" / "examples" / "ferp_xls_seeded"
+
+    @property
+    def ferp_xls_dir(self) -> Path:
+        raw = os.getenv("MES_WEB_FERP_XLS_DIR")
+        if raw:
+            return Path(raw)
+        return self.root_dir / "FERP_XLS"
 
     @property
     def excel_workbook_path(self) -> Path:

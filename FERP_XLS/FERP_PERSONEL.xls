@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+                 <?mso-application progid="Excel.Sheet"?>
+  <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+   xmlns:o="urn:schemas-microsoft-com:office:office"
+   xmlns:x="urn:schemas-microsoft-com:office:excel"
+   xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+   xmlns:html="http://www.w3.org/TR/REC-html40">
+   <DocumentProperties xmlns="urn:schemas-microsoft-com:office:office"></DocumentProperties>
+   <ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel"><WindowHeight>12210</WindowHeight><WindowWidth>28800</WindowWidth><WindowTopX>0</WindowTopX><WindowTopY>0</WindowTopY><ProtectStructure>False</ProtectStructure><ProtectWindows>False</ProtectWindows></ExcelWorkbook>
+
+   <Styles>
+     <ss:Style ss:ID="sBold"><ss:Font ss:Bold="1"/></ss:Style>
+     <ss:Style ss:ID="s64"><Alignment ss:Horizontal="Center" ss:Vertical="Bottom" ss:WrapText="1"/><Borders/><Font ss:FontName="Arial" ss:Bold="1"/></ss:Style>
+   </Styles>
+
+    <ss:Worksheet ss:Name="ferpData">
+                          <Table x:FullColumns="1" x:FullRows="1" ss:DefaultRowHeight="3">                        <Row ss:Height="19.5" ss:StyleID="sBold"> <ss:Cell><ss:Data ss:Type="String">ID</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Cari Kodu</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Cari Adi</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Ticari Ünvani</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Statü</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Açıklama</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Döviz Kodu</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Döviz Cinsi</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Cari Bakiye Tipi</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Cari Bakiye</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Muhasebe Bakiye Tipi</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Muhasebe Bakiye</ss:Data></ss:Cell></Row>
+</Table>
+              </ss:Worksheet>
+             </Workbook>

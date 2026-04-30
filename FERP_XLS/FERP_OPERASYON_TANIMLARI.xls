@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+                 <?mso-application progid="Excel.Sheet"?>
+  <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+   xmlns:o="urn:schemas-microsoft-com:office:office"
+   xmlns:x="urn:schemas-microsoft-com:office:excel"
+   xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+   xmlns:html="http://www.w3.org/TR/REC-html40">
+   <DocumentProperties xmlns="urn:schemas-microsoft-com:office:office"></DocumentProperties>
+   <ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel"><WindowHeight>12210</WindowHeight><WindowWidth>28800</WindowWidth><WindowTopX>0</WindowTopX><WindowTopY>0</WindowTopY><ProtectStructure>False</ProtectStructure><ProtectWindows>False</ProtectWindows></ExcelWorkbook>
+
+   <Styles>
+     <ss:Style ss:ID="sBold"><ss:Font ss:Bold="1"/></ss:Style>
+     <ss:Style ss:ID="s64"><Alignment ss:Horizontal="Center" ss:Vertical="Bottom" ss:WrapText="1"/><Borders/><Font ss:FontName="Arial" ss:Bold="1"/></ss:Style>
+   </Styles>
+
+    <ss:Worksheet ss:Name="ferpData">
+                          <Table x:FullColumns="1" x:FullRows="1" ss:DefaultRowHeight="3">                        <Row ss:Height="19.5" ss:StyleID="sBold"> <ss:Cell><ss:Data ss:Type="String">Kodu</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Adı</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Sırası</ss:Data></ss:Cell> <ss:Cell><ss:Data ss:Type="String">Açıklaması</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">LK01</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Lazer kesimle kesme</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">01</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Parçanın lazer kesimle kesilmesi</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">AP02</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Abkant presle bükme</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">02</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Parçanın abkant presle bükülmesi</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">DT03</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Dairre testereyle kesme</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">03</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Parçanın daire testere ile kesilmesi</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">SM04</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Sütun matkap ile delme</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">04</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Parçanın sütun matkap ile delinmesi</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">EM05</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">El matkabı ile delme</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">05</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Parçanın el matkabı ile delinmesi</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">F06</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Freze ile işleme</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">06</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Parçanın freze ile işlenmesi</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">BB07</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Boru büküm ile bükme</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">07</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Parçanın boru bükme ile bükülmesi</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">T09</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Torna ile işleme</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">09</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Parçanın torna ile işlenmesi
+</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">RM10</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Radyal Matkap ile delik del.</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">10</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Parçanın radyal matkap ile delik delinmesi</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">PU11</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Punch ile işlenmesi</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">11</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Parçanın punch ile işlenmesi</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">ST08</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Şerit testere ile kesme</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">8</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">Parçanın şerit testere ile kesilmesi</ss:Data></ss:Cell></Row>
+<Row ss:Height="19.5"><ss:Cell><ss:Data ss:Type="String">O01</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">KESME</ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String"></ss:Data></ss:Cell><ss:Cell><ss:Data ss:Type="String">KESİM OPERASYONU</ss:Data></ss:Cell></Row>
+</Table>
+              </ss:Worksheet>
+             </Workbook>

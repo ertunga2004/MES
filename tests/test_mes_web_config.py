@@ -40,6 +40,17 @@ class AppConfigTests(unittest.TestCase):
         self.assertEqual(path.parent.name, "logs")
         self.assertRegex(path.name, r"^MES_Konveyor_Veritabani_\d{2}-\d{2}-\d{4}\.xlsx$")
 
+    def test_default_work_order_source_prefers_ferp_import_folder(self) -> None:
+        config = AppConfig()
+
+        self.assertEqual(config.ferp_import_dir.name, "ferp_import")
+        self.assertEqual(config.work_orders_dir, config.ferp_import_dir)
+
+    def test_work_order_source_env_override_wins_over_ferp_import_default(self) -> None:
+        with patch.dict(os.environ, {"MES_WEB_WORK_ORDERS_DIR": "C:/tmp/mes-work-orders"}, clear=False):
+            config = AppConfig.from_env()
+            self.assertEqual(str(config.work_orders_dir).replace("\\", "/"), "C:/tmp/mes-work-orders")
+
 
 if __name__ == "__main__":
     unittest.main()

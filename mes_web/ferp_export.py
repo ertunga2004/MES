@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .ferp_labels import validate_label_payload
+from .ferp_labels import REQUIRED_LABELS_BY_OBJECT, validate_label_payload
 
 
 EXPORT_SCHEMA = "ferp_mes_export.v1"
@@ -160,12 +160,9 @@ def _item_id(item: dict[str, Any], fallback_index: int) -> str:
 
 def _material_code(order: dict[str, Any], item: dict[str, Any] | None = None, *, stage: str = "") -> str:
     source = item if isinstance(item, dict) else {}
-    candidate = _first_text(source, "stock_code", "product_code", "final_color", "color")
-    if candidate:
-        return candidate
     order_code = _first_text(order, "stockCode", "productCode", "stock_code", "product_code")
     suffix = stage.upper().replace(" ", "_") if stage else "MAT"
-    return order_code or suffix
+    return _first_text(source, "stock_code", "product_code") or order_code or suffix
 
 
 def _material_name(order: dict[str, Any], item: dict[str, Any] | None = None, *, stage: str = "") -> str:
@@ -301,8 +298,13 @@ def _append_validation_warning(
     payload: dict[str, Any],
     *,
     registry_path: str | Path | None = None,
+    required_only: bool = False,
 ) -> None:
-    validation = validate_label_payload(object_code, payload, registry_path)
+    validation_payload = payload
+    if required_only:
+        required_labels = REQUIRED_LABELS_BY_OBJECT.get(str(object_code or "").strip().lower(), set())
+        validation_payload = {label: payload[label] for label in required_labels if label in payload}
+    validation = validate_label_payload(object_code, validation_payload, registry_path)
     for warning in validation.get("warnings", []):
         warning_text = str(warning or "").strip()
         if warning_text and warning_text not in warnings:
@@ -409,12 +411,13 @@ def build_ferp_documents(
 
     documents = [raw_exit, material_entry, transfer]
     for document in documents:
-        _append_validation_warning(warnings, document["ferp_object"], document["ferp_labels"], registry_path=registry_path)
-        for line in document["lines"]:
-            line_labels = line.get("ferp_labels") if isinstance(line.get("ferp_labels"), dict) else {}
-            combined_labels = dict(document["ferp_labels"])
-            combined_labels.update(line_labels)
-            _append_validation_warning(warnings, document["ferp_object"], combined_labels, registry_path=registry_path)
+        _append_validation_warning(
+            warnings,
+            document["ferp_object"],
+            document["ferp_labels"],
+            registry_path=registry_path,
+            required_only=True,
+        )
 
     if summary["SCRAP"]:
         warnings.append("FERP_SCRAP_EXPORTED_SEPARATELY_FROM_FINISHED_GOOD")
@@ -446,7 +449,7 @@ def build_ferp_export_package(
         items,
         registry_path=registry_path,
     )
-    _append_validation_warning(warnings, object_code, work_order_labels, registry_path=registry_path)
+    _append_validation_warning(warnings, object_code, work_order_labels, registry_path=registry_path, required_only=True)
     export_id = f"FERP_{sanitize_filename_token(order_id)}_{safe_export_timestamp(created_at_text)}"
 
     package: dict[str, Any] = {

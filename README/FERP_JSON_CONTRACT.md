@@ -42,6 +42,14 @@ Kod ici yardimcilar:
 
 Public import JSON FERP label-first payload kabul eder. Bu payload MES runtime state icindeki normalize alanlara cevrilir; runtime tamamen `lbl...` alanlarina tasinmaz.
 
+Varsayilan FERP import klasoru:
+
+```text
+mes_web/ferp_import/
+```
+
+Dashboard reload ve uygulama startup yuklemesi varsayilan olarak bu klasordeki en guncel `.json` dosyasini okur. Gerekirse `MES_WEB_WORK_ORDERS_DIR` veya `MES_WEB_FERP_IMPORT_DIR` ile kaynak klasor override edilebilir.
+
 ```json
 {
   "orders": [

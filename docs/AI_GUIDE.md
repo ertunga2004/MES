@@ -34,6 +34,15 @@ Bu belge, repo uzerinde calisan ekip uyelerinin ChatGPT, Codex veya benzeri arac
 - vision verisi yardimci ve pasif katman olarak ele alinmalidir
 - workbook sheet yapisi entegrasyon siniri oldugu icin keyfi degistirilmemelidir
 
+## NotebookLM Kullanim Kurali
+
+- NotebookLM kullanilacaksa once `docs/notebooklm/NOTEBOOK_INDEX.md` okunmalidir
+- sorunun turune gore ilgili defter secilmelidir: `MES Core / Mimari`, `FERP / Veri Entegrasyonu` veya `MES Literatur ve Tez`
+- NotebookLM proje hafizasi, kaynakli dokuman sentezi ve literatur baglami icin kullanilir; repo dosyalari yerine gecmez
+- kod degisikligi, test veya runtime davranisi icin nihai kaynak repo dosyalari ve testlerdir
+- NotebookLM cevabi kod kararina dayanak yapilacaksa ilgili kaynak dosya repoda ayrica okunmalidir
+- deftere eklenen kaynak dosyalar proje klasorunden kaldirilmamalidir; repo source of truth olarak kalir
+
 ## AI'nin Yapmamasi Gerekenler
 
 - MQTT root'unu degistirmek
@@ -64,5 +73,6 @@ Bir AI aracina repo baglami verilirken su belgeler once okunmalidir:
 1. [README.md](README.md)
 2. [architecture.md](architecture.md)
 3. [data-model.md](data-model.md)
-4. [mes_web/README.md](../mes_web/README.md)
-5. [mqtt-topics.md](mqtt-topics.md)
+4. [notebooklm/NOTEBOOK_INDEX.md](notebooklm/NOTEBOOK_INDEX.md)
+5. [mes_web/README.md](../mes_web/README.md)
+6. [mqtt-topics.md](mqtt-topics.md)

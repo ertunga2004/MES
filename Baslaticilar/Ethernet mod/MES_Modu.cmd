@@ -22,8 +22,10 @@ echo      MES (ATOLYE) MODU AKTIFLESTIRILIYOR
 echo ========================================
 echo.
 
-echo [1/2] Ethernet IP adresi 192.168.137.1 olarak sabitleniyor...
+echo [1/2] Ethernet IP'si sabitleniyor ve Ag Oncelikleri (Metric) ayarlaniyor...
 netsh interface ipv4 set address name="Ethernet" static 192.168.137.1 255.255.255.0
+powershell -NoProfile -Command "Set-NetIPInterface -InterfaceAlias 'Wi-Fi' -InterfaceMetric 10"
+powershell -NoProfile -Command "Set-NetIPInterface -InterfaceAlias 'Ethernet' -InterfaceMetric 100"
 
 echo [2/2] Internet Paylasimi (ICS) aciliyor... (Wi-Fi'dan Ethernet'e)
 powershell -NoProfile -Command "$NetShare = New-Object -ComObject HNetCfg.HNetShare; $Connections = $NetShare.EnumEveryConnection; foreach($conn in $Connections) { $Props = $NetShare.NetConnectionProps.Invoke($conn); $Config = $NetShare.INetSharingConfigurationForINetConnection.Invoke($conn); if ($Props.Name -eq 'Wi-Fi') { $Config.EnableSharing(0) }; if ($Props.Name -eq 'Ethernet') { $Config.EnableSharing(1) } }"

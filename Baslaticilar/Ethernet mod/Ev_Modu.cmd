@@ -22,9 +22,11 @@ echo         EV MODU AKTIFLESTIRILIYOR
 echo ========================================
 echo.
 
-echo [1/2] Ethernet IP adresi otomatiğe (DHCP) aliniyor...
+echo [1/2] Ethernet IP adresi ve Ag Oncelikleri (Metric) otomatige aliniyor...
 netsh interface ipv4 set address name="Ethernet" source=dhcp
 netsh interface ipv4 set dnsservers name="Ethernet" source=dhcp
+powershell -NoProfile -Command "Set-NetIPInterface -InterfaceAlias 'Wi-Fi' -AutomaticMetric Enabled"
+powershell -NoProfile -Command "Set-NetIPInterface -InterfaceAlias 'Ethernet' -AutomaticMetric Enabled"
 
 echo [2/2] Internet Paylasimi (ICS) kapatiliyor...
 powershell -NoProfile -Command "$NetShare = New-Object -ComObject HNetCfg.HNetShare; foreach($conn in $NetShare.EnumEveryConnection) { $config = $NetShare.INetSharingConfigurationForINetConnection.Invoke($conn); if($config.SharingEnabled -eq $True) { $config.DisableSharing() } }"

@@ -1,0 +1,21 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
+ENV MES_WEB_HOST=0.0.0.0
+ENV MES_WEB_PORT=8080
+ENV MES_WEB_DB_ENABLED=false
+
+WORKDIR /app
+
+COPY requirements.mes_web.txt /tmp/requirements.mes_web.txt
+RUN python -m pip install --upgrade pip \
+    && python -m pip install -r /tmp/requirements.mes_web.txt
+
+COPY app_source/ /app/
+RUN test -f /app/mes_web/__main__.py
+
+EXPOSE 8080
+
+CMD ["python", "-m", "mes_web"]

@@ -1,0 +1,17 @@
+.env
+
+# Runtime data, generated workbooks, DB files, and backups stay local.
+data/**
+!data/
+!data/.gitkeep
+
+# Portable mode generated artifacts stay local.
+app_source/**
+!app_source/
+!app_source/.gitkeep
+exports/**
+!exports/
+!exports/.gitkeep
+
+*.log
+*.tmp

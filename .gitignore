@@ -20,3 +20,17 @@ desktop.ini
 logs/
 Node-red/
 *.bak.xlsx
+network_reports/
+network_backups/
+
+# Docker MES local runtime/export artifacts
+docker/mes/.env
+docker/mes/data/
+docker/mes/app_source/
+docker/mes/exports/
+docker/mes/*.tar
+docker/mes/*.sql
+docker/mes/*.log
+docker/mes/*.tmp
+docker/mes/*.bak
+docker/mes/*.bak.xlsx

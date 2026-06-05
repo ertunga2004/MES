@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements.mes_web.txt /tmp/requirements.mes_web.txt
+RUN python -m pip install --upgrade pip \
+    && python -m pip install -r /tmp/requirements.mes_web.txt
+
+EXPOSE 8080
+
+CMD ["python", "-m", "mes_web"]

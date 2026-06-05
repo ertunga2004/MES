@@ -1,0 +1,67 @@
+services:
+  mes_web:
+    image: mes_web_portable:latest
+    container_name: mes_web
+    build:
+      context: .
+      dockerfile: Dockerfile.mes_web.portable
+    environment:
+      MES_WEB_HOST: "0.0.0.0"
+      MES_WEB_PORT: "8080"
+      MES_WEB_DB_ENABLED: "false"
+      MES_WEB_OEE_RUNTIME_STATE_PATH: "/app/logs/oee_runtime_state.json"
+      MES_WEB_FERP_EXPORT_PENDING_DIR: "/app/logs/ferp_exports/pending"
+      MES_WEB_FERP_EXPORT_EXAMPLES_DIR: "/app/logs/ferp_exports/examples/ferp_xls_seeded"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "8080:8080"
+    volumes:
+      - "./data/logs:/app/logs"
+      - "./data/work_orders:/data/work_orders"
+    restart: unless-stopped
+    networks:
+      - mes_net
+
+  mes_postgres:
+    image: postgres:16-alpine
+    container_name: mes_postgres
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-mes}"
+      POSTGRES_USER: "${POSTGRES_USER:-mes}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-change_me_local_only}"
+    ports:
+      - "5433:5432"
+    volumes:
+      - mes_postgres_data:/var/lib/postgresql/data
+      - "./data/db_backups:/backups"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mes_net
+
+  mes_adminer:
+    image: adminer:4
+    container_name: mes_adminer
+    environment:
+      ADMINER_DEFAULT_SERVER: "mes_postgres"
+    ports:
+      - "8082:8080"
+    depends_on:
+      mes_postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - mes_net
+
+networks:
+  mes_net:
+    name: mes_net
+
+volumes:
+  mes_postgres_data:
+    name: mes_postgres_data

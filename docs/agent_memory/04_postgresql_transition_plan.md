@@ -34,6 +34,12 @@ Tamamlanan/geçerli fazlar:
    - `MES_WEB_DB_ENABLED=true` ve `MES_WEB_DB_MIRROR_WORK_ORDERS=true` birlikte true ise `sync_work_order_runtime(state)` sonrası `mes.work_orders` upsert denenir.
    - Default kapalıdır.
    - DB hatası runtime response'unu çökertmez.
+   - **C2 Canlı Docker Doğrulaması (2026-06-08):**
+     - Kiosk register API (`POST /api/modules/konveyor_main/kiosk/register`) tetiklendiğinde idempotent upsert işlemi canlı Docker ortamında başarıyla doğrulanmıştır.
+     - Çift kayıt (duplicate) oluşmamış, var olan 6 kayıt başarıyla güncellenmiştir (`updated_at` zaman damgaları güncellenmiştir).
+     - Test sonrasında flagler kapatılarak default değerlerine (`false`) geri döndürülmüştür.
+     - **Tasarım Sınırı Notu:** Bu bir source-of-truth geçişi değildir; veritabanı okuması (DB read) yapılmamakta ve JSON/Excel/FERP akışı aynen korunmaktadır.
+
 
 Gelecek hedefler:
 

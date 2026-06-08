@@ -56,4 +56,11 @@ C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups
 - `mes_web` 8080 kullanıyorsa Windows üzerinde manuel başlatılmış başka MES Web aynı portu kullanamaz.
 - Compose artık DB flaglerini `.env` üzerinden alabilir.
 - Default `false` olduğu için normal davranış değişmez.
-- C2 runtime hook testi bu plumbing sonrası tekrar yapılmalıdır.
+- C2 Runtime Work Orders Mirror Hook doğrulaması başarıyla yapılmıştır (Test tarihi: 2026-06-08).
+- **Önemli Tasarım Sınırları (Özellikle Açık Not):**
+  - Bu bir source-of-truth geçişi değildir.
+  - Runtime tarafında veritabanı okuması (DB read) yoktur.
+  - JSON/Excel/FERP akışı aynen korunmaktadır.
+  - DB mirror sadece feature flag ile (`MES_WEB_DB_ENABLED=true` ve `MES_WEB_DB_MIRROR_WORK_ORDERS=true`) çalışır.
+  - Test sonunda runtime ortamındaki flagler tekrar `false` yapılmıştır.
+

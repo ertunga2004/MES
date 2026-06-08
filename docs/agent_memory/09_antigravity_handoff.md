@@ -12,28 +12,35 @@ Mevcut çalışma durumu:
 - `mes.work_orders` ilk mirror tablo olarak doğrulandı.
 - Runtime hâlâ JSON/Excel/FERP/MQTT source-of-truth ile çalışıyor.
 - Optional runtime work_orders mirror hook eklendi ama default kapalı.
+- C2 runtime work_orders DB mirror hook passed.
+- C3 physical MQTT/ESP32 connectivity was manually validated by the user.
+- Next safe work: event mirror dry-run planning, not source-of-truth migration.
+
 
 En son tamamlanan faz:
 
-Faz 4J commit hazırlığı ve commit: PostgreSQL mirror foundation ile obsolete `.gsheet` link cleanup branch commit'i oluşturuldu.
+- Aşama C1.5 / C1.6: Docker Compose DB flag plumbing entegrasyonu ve doğrulaması tamamlandı.
+- Aşama C2: Optional runtime work_orders mirror hook canlı Docker doğrulaması başarıyla tamamlandı (2026-06-08).
 
 Bundan sonra yapılacak ilk 5 iş:
 
-1. Local `main` branch'i GitHub'daki güncel duruma göre güncelle.
-2. Docker runtime klasörünü repo içindeki güncel Docker/Faz 4 kaynaklarıyla uyumlu hale getir.
-3. Portable image rebuild/restart yap.
-4. Flagler kapalıyken sistemin kalktığını doğrula.
-5. İki flag true iken work_orders mirror hook'u canlı Docker ortamında kontrollü test et.
+1. `device_sessions` için DB mirror planı çıkar ve uygula.
+2. `vision_events` için DB mirror planı çıkar ve uygula.
+3. `oee_snapshots` için DB mirror planı çıkar ve uygula.
+4. `downtime_events` ve `production_completions` için DB mirror planı çıkar ve uygula.
+5. FERP import/export metadata ve outbox mantığını mirror olarak tasarla.
 
 Sonra yapılacaklar:
 
-- `device_sessions` mirror.
-- `vision_events` mirror.
-- `oee_snapshots` mirror.
-- `downtime_events` ve `production_completions` mirror.
-- FERP import/export outbox metadata.
-- DB read tasarımı.
+- DB read tasarımı ve feature-flagged entegrasyonu.
 - En son source-of-truth migration.
+- **Önemli Sınırlar (Özellikle Açık Not):**
+  - Bu bir source-of-truth geçişi değildir.
+  - Runtime tarafında veritabanı okuması (DB read) yoktur.
+  - JSON/Excel/FERP akışı aynen korunmaktadır.
+  - DB mirror sadece feature flag ile çalışır.
+  - Test sonunda flagler tekrar false yapılmıştır.
+
 
 Kritik sınırlar:
 

@@ -36,7 +36,9 @@ This setup defaults to `MES_WEB_DB_ENABLED=false` via `.env` overrides. No migra
 - Runtime work_orders mirror sadece iki flag (`MES_WEB_DB_ENABLED` ve `MES_WEB_DB_MIRROR_WORK_ORDERS`) `true` ise çalışır.
 - Container içinden DB host `mes_postgres:5432`.
 - Hosttan bağlantı `localhost:5433`.
-- Bu source-of-truth geçişi değildir.
+- Bu source-of-truth geçişi değildir. Runtime DB read yoktur; JSON/Excel/FERP akışı aynen korunmaktadır.
+- C2 Canlı Docker Mirror Hook doğrulaması başarıyla yapılmıştır (2026-06-08).
+
 
 ## Services
 

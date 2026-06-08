@@ -26,6 +26,10 @@ MQTT/ESP32/bridge:
 
 - MQTT runtime bağlantı, heartbeat, bridge status ve ESP32/MEGA eventleri dashboard ve runtime state'i besler.
 - Bu state şu an DB source-of-truth değildir.
+- MQTT/ESP32 fiziksel bağlantısı başarıyla doğrulanmıştır ve çalışmaktadır.
+- MQTT şu an yalnızca runtime dashboard/state akışında kullanılmaktadır.
+- PostgreSQL tarafına MQTT event mirror altyapısı henüz eklenmemiştir; entegrasyon öncesi öncelikle dry-run analiz yapılmalıdır.
+
 
 Optional PostgreSQL mirror:
 

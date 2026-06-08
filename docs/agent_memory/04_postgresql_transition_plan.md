@@ -75,6 +75,12 @@ Tamamlanan/geçerli fazlar:
    - `completionLog` kaynaklı eksik alanlı kayıtlar ve off-order (iş emri atanmamış) üretimler atlanır.
    - Apply işlemi henüz çalıştırılmadı.
 
+11. Production completions read-only verify script (D8 - 2026-06-08)
+   - D8 `production_completions` verify script eklendi (`scripts/verify_production_completions_db_mirror.py`).
+   - Script read-only çalışır.
+   - D7 kontrollü apply sonrasında oluşan 7 JSON `APPLY_SAFE` kayıt ile 7 DB kaydı karşılaştırılır.
+   - Missing/extra/duplicate alanları temiz olmalıdır.
+
 
 Gelecek hedefler:
 

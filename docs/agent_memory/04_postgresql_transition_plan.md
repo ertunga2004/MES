@@ -39,6 +39,11 @@ Tamamlanan/geçerli fazlar:
      - Çift kayıt (duplicate) oluşmamış, var olan 6 kayıt başarıyla güncellenmiştir (`updated_at` zaman damgaları güncellenmiştir).
      - Test sonrasında flagler kapatılarak default değerlerine (`false`) geri döndürülmüştür.
      - **Tasarım Sınırı Notu:** Bu bir source-of-truth geçişi değildir; veritabanı okuması (DB read) yapılmamakta ve JSON/Excel/FERP akışı aynen korunmaktadır.
+8. Device sessions dry-run analyzer
+   - D2 `device_sessions` dry-run scripti eklendi (`scripts/dry_run_device_sessions_mirror.py`).
+   - Script DB'ye bağlanmaz ve yazma yapmaz.
+   - Runtime JSON içindeki deviceSessions verisini mes.device_sessions için mapping adayı olarak raporlar.
+   - Apply/write aşaması henüz yoktur.
 
 
 Gelecek hedefler:

@@ -59,6 +59,14 @@ Tamamlanan/geçerli fazlar:
        2. Ayrı current-state tablo modeli düşünülür, örn. `mes.device_registry` / `mes.active_devices`.
      - Şimdilik PostgreSQL mirror çalışması `production_completions` gibi daha stabil log verilerine kaydırılacaktır.
 
+9. Production completions dry-run analyzer (D3 - 2026-06-08)
+   - `production_completions` dry-run scripti eklendi (`scripts/dry_run_production_completions_mirror.py`).
+   - DB'ye yazma yapmaz.
+   - `completionLog` ve `itemsById` verilerindeki overlap ve dedup riski analiz edilir.
+   - Mevcut runtime JSON’da 8 candidate bulundu.
+   - `order_id` eksikliği varsa apply ertelenmelidir; None/null `order_id` ile DB `external_ref` üretilmeyecektir.
+   - Apply aşaması ancak stable key (order_id + item_id) temiz çıkarsa yapılacaktır.
+
 
 Gelecek hedefler:
 

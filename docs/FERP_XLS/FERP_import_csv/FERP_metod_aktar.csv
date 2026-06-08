@@ -1,0 +1,2 @@
+﻿NMODE;MTM00_CODE(METHOD TANIMLANAN STOK);"MTMM0_CODE ""00"" (Method Kodu)";MTMM0_NAME (Method Adı);"MTMR0_CODE"" 00"" ( reçete)";MTMM0_FF_TYPE;MTMM0_DESC (Açıklama);FCRT0_CODE (Cari Tipi);FCR00_ID (Cari ID);MTMM1_ORDER (sıra);MFW00_CODE (İş Merkezi);MFW01_CODE (İş İstasyonu);MTMM1_WORKER_COUNT (İşçi Sayısı);MTMM1_TIME (Süre);MTMM1_DESC (Açıklama);MTMM1_SETUP_TIME (Hazırlık Süresi);MFWO0_CODE (Operasyo);"IS_SRF_PROCESS ""0"""
+N;ALM_0.80;00;Default Method;00;A;AÇIKLMA;;;1;BK;1;2;4;MTMM1_DESC;6;BK;0

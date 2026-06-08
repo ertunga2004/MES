@@ -1,0 +1,5 @@
+﻿NMODE;MTM00_CODE(REÇETESİ TANIMLANAN STOK);MTMR0_CODE( 00 default reçete);MTMR0_NAME(reçete Adı);MTMR1_ORDER(sıra);MTM00_CODE_R(REÇETEDEKİ STOK);MTMR1_QTY_M(Miktar Çarpan);MTMR1_QTY_D(Miktar Bölen);MTMR1_EFF_DATE(geçerlilik tarihi);MTMR1_EXP_DATE(bitiş tarihi);MTMR1_PHANTOM(hayali ürün mü);MTMR1_QTY_M_2(Miktar Çarpan 2);MTMR1_QTY_D_2(Miktar Bölen 2)
+N;014İ_0001_2500;0;Default reçete;1;014İ_0001;25;1;1.01.2014;;0;;
+N;014İ_0001_2500;0;Default reçete;2;H_0042;1;1;1.01.2014;;0;;
+N;231_0001_2000;0;Default reçete;1;231_0001;20;1;1.01.2014;;0;;
+N;231_0001_2000;0;Default reçete;2;H_0043;1;1;1.01.2014;;0;;

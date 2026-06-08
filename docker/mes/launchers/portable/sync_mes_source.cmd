@@ -1,14 +1,17 @@
 @echo off
 setlocal EnableExtensions
-cd /d "%~dp0"
+
+set "MES_DOCKER_ROOT=%~dp0..\.."
+for %%I in ("%MES_DOCKER_ROOT%") do set "MES_DOCKER_ROOT=%%~fI"
+cd /d "%MES_DOCKER_ROOT%"
 
 if "%MES_SOURCE_ROOT%"=="" set "MES_SOURCE_ROOT=C:\Users\ertun\Documents\.CODE\codex\MES"
 if not "%~1"=="" set "MES_SOURCE_ROOT=%~1"
 
-set "SNAPSHOT_ROOT=%~dp0app_source"
+set "SNAPSHOT_ROOT=%MES_DOCKER_ROOT%\app_source"
 
 for %%I in ("%SNAPSHOT_ROOT%") do set "SNAPSHOT_ROOT=%%~fI"
-for %%I in ("%~dp0app_source") do set "EXPECTED_SNAPSHOT_ROOT=%%~fI"
+for %%I in ("%MES_DOCKER_ROOT%\app_source") do set "EXPECTED_SNAPSHOT_ROOT=%%~fI"
 
 if /I not "%SNAPSHOT_ROOT%"=="%EXPECTED_SNAPSHOT_ROOT%" (
     echo Guvenlik hatasi: snapshot hedefi beklenen klasor degil.

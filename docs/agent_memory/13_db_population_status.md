@@ -14,10 +14,17 @@ Bu doküman, MES PostgreSQL geçişi kapsamında veritabanına aktarılan verile
 
 ### 1. `mes.work_orders`
 * **Kayıt Sayısı:** 6
-* **Durum:** Başarılı (Manuel aktarım ve canlı Docker runtime hook testi yapıldı).
+* **Durum:** Başarılı (E2B kontrollü resync ile status drift temizlendi, verify temiz).
 * **Doğrulama Sonucu:** 
-  * JSON ve DB'deki iş emirlerinin `product_code`, `target_quantity`, `source_file` ve `payload` alanları birebir eşleşmektedir (matched=6).
-  * **Not:** Canlı Docker ortamında `MES_WEB_DB_ENABLED=false` (güvenli/pasif mod) durumunda tutulduğu için, aktarım sonrasında runtime JSON state'inde güncellenen iş emri durumları (`completed`, `active` vb.) DB'ye henüz yansıtılmamıştır (DB'de hepsi `queued` durumundadır). Doğrulama scriptinin `status: changed=5` vermesi bu güvenli pasif tasarımdan kaynaklı beklenen bir durumdur.
+  * `json_work_order_count`: 6
+  * `db_work_order_count`: 6
+  * `matched_external_refs`: 6
+  * `missing_in_db`: 0
+  * `extra_in_db`: 0
+  * `changed_or_suspicious`: 0
+  * `status matched`: 6, `changed`: 0
+  * E2B kontrollü resync öncesindeki 5 kayıttaki status drift tamamen temizlenmiş ve veritabanındaki durumlar güncel runtime JSON state'iyle birebir senkronize edilmiştir.
+
 
 ### 2. `mes.production_completions`
 * **Kayıt Sayısı:** 7

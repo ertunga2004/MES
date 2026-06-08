@@ -47,6 +47,27 @@ mes_postgres
 
 Adminer must use port `8082`. Port `8080` is reserved for `mes_web`; port `8081` is not used.
 
+## Launcher Inventory (.cmd Scripts)
+
+To avoid breaking Docker build contexts and cross-script references, `.cmd` scripts are kept in the `docker/mes` root folder (NO-MOVE strategy).
+
+| Script | Role | Group | Notes |
+|---|---|---|---|
+| `start_mes.cmd` | Start development mode | Development | Uses `compose.yaml` with bind mounts |
+| `stop_mes.cmd` | Stop development mode | Development | |
+| `restart_mes.cmd` | Restart development mode | Development | |
+| `status_mes.cmd` | Show dev container status/logs | Dev Status | |
+| `start_mes_portable.cmd`| Start portable mode | Portable | Uses `compose.portable.yaml` (image based) |
+| `stop_mes_portable.cmd` | Stop portable mode | Portable | |
+| `restart_mes_portable.cmd`| Restart portable mode | Portable | Calls stop then start scripts |
+| `status_mes_portable.cmd`| Show portable status/volumes | Port Status | |
+| `build_mes_portable.cmd`| Build portable Docker image | Port Build | Calls `sync_mes_source.cmd` first |
+| `sync_mes_source.cmd` | Copy MES source to `app_source/`| Internal | **CRITICAL**: Do not move. Required for `Dockerfile.mes_web.portable` context |
+| `backup_mes_db.cmd` | Dump PostgreSQL DB | Backup | Writes to `data/db_backups/` |
+| `export_mes_portable_bundle.cmd`| Create deployment bundle | Export | Calls build and backup scripts, writes to `exports/` |
+
+For detailed documentation, refer to `docs/agent_memory/11_launcher_inventory.md`.
+
 ## Port Warning
 
 Port `8080` belongs to `mes_web`.

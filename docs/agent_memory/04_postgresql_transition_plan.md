@@ -39,20 +39,34 @@ Tamamlanan/geçerli fazlar:
      - Çift kayıt (duplicate) oluşmamış, var olan 6 kayıt başarıyla güncellenmiştir (`updated_at` zaman damgaları güncellenmiştir).
      - Test sonrasında flagler kapatılarak default değerlerine (`false`) geri döndürülmüştür.
      - **Tasarım Sınırı Notu:** Bu bir source-of-truth geçişi değildir; veritabanı okuması (DB read) yapılmamakta ve JSON/Excel/FERP akışı aynen korunmaktadır.
-8. Device sessions dry-run analyzer
+8. Device sessions dry-run analyzer & identity decision (D2/D2.5 - 2026-06-08)
    - D2 `device_sessions` dry-run scripti eklendi (`scripts/dry_run_device_sessions_mirror.py`).
    - Script DB'ye bağlanmaz ve yazma yapmaz.
-   - Runtime JSON içindeki deviceSessions verisini mes.device_sessions için mapping adayı olarak raporlar.
-   - Apply/write aşaması henüz yoktur.
+   - **D2 Device Sessions Dry-Run Result:**
+     - Runtime JSON `deviceSessions` içinde 5 kayıt bulundu.
+     - Bu kayıtlarda `sessionId` yok.
+     - `connectedAt` / `startedAt` yok.
+     - `lastSeenAt` var ama volatile olduğu için natural key üretiminde kullanılmadı.
+     - Tüm kayıtlar `missing_stable_key` olarak değerlendirildi.
+     - DB'ye yazma yapılmadı.
+     - D3 apply script `device_sessions` için iptal/ertelendi.
+   - **D2.5 Device Session Identity Decision:**
+     - `deviceSessions` current-state / registry verisidir.
+     - `mes.device_sessions` session history/log tablosudur.
+     - Bu veri doğrudan `mes.device_sessions` tablosuna yazılmamalıdır.
+     - İleride iki seçenek vardır:
+       1. Runtime tarafında gerçek `sessionId` + `startedAt`/`endedAt` üretimi planlanır.
+       2. Ayrı current-state tablo modeli düşünülür, örn. `mes.device_registry` / `mes.active_devices`.
+     - Şimdilik PostgreSQL mirror çalışması `production_completions` gibi daha stabil log verilerine kaydırılacaktır.
 
 
 Gelecek hedefler:
 
-- `device_sessions` mirror.
+- `production_completions` mirror dry-run ve analizi (Yeni D3 faza geçiş: `completionLog` ve `itemsById` overlap/dedup riski analiz edilmeli, DB'ye yazma yapılmadan önce dry-run mapping scripti yazılmalı).
+- `device_sessions` mirror (gerçek session identity çözümü sonrası tekrar ele alınacak).
 - `vision_events` mirror.
 - `oee_snapshots` mirror.
 - `downtime_events` mirror.
-- `production_completions` mirror.
 - FERP import batch ve export outbox metadata.
 - Feature-flagged DB read tasarımı.
 - En son source-of-truth migration.

@@ -17,6 +17,7 @@ Tamamlanan ana fazlar:
 - `scripts/mirror_work_orders_to_db.py` ile runtime JSON'dan `mes.work_orders` içine 6 mirror kayıt yazıldı.
 - `scripts/verify_work_orders_db_mirror.py` ile JSON/DB mirror doğrulandı.
 - Optional runtime `work_orders` mirror hook eklendi.
+- D2/D2.5: `deviceSessions` stable key / session identity analiz edildi ve `scripts/dry_run_device_sessions_mirror.py` ile dry-run gerçekleştirildi. Runtime JSON'daki session verilerinin sessionId veya startedAt içermediği, lastSeenAt'in ise natural key olarak kullanılmasının volatile olduğu tespit edildi. Bu sebeple `mes.device_sessions` için doğrudan apply (D3) adımı iptal edildi/ertelendi. Mirror çalışması `production_completions` alanına kaydırıldı.
 
 Doğrulanan work orders mirror sonucu (C2 Canlı Docker Doğrulaması - 2026-06-08):
 
@@ -76,7 +77,9 @@ MES_WEB_DB_MIRROR_WORK_ORDERS=false
 
 Kalan işler:
 
-- `device_sessions`, `vision_events`, `oee_snapshots`, `downtime_events`, `production_completions` için mirror planı çıkar.
+- `production_completions` mirror dry-run analizi ve script tasarımı (D3 yeni fazı).
+- `device_sessions` mirror (gerçek session identity/registry çözümü tasarlandıktan sonra).
+- `vision_events`, `oee_snapshots`, `downtime_events` için mirror planı çıkar.
 - FERP import/export metadata ve outbox mantığını mirror olarak tasarla.
 - DB read tasarımı için ayrı plan hazırla.
 - Source-of-truth geçişini ancak mirror doğrulama, backup/replay ve rollback yolları kanıtlandıktan sonra değerlendir.

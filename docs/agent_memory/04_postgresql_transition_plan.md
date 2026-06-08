@@ -67,6 +67,14 @@ Tamamlanan/geçerli fazlar:
    - `order_id` eksikliği varsa apply ertelenmelidir; None/null `order_id` ile DB `external_ref` üretilmeyecektir.
    - Apply aşaması ancak stable key (order_id + item_id) temiz çıkarsa yapılacaktır.
 
+10. Production completions mirror script (D6 - 2026-06-08)
+   - `production_completions` mirror scripti eklendi (`scripts/mirror_production_completions_to_db.py`).
+   - Varsayılan dry-run modundadır.
+   - `--apply` argümanı ve `MES_WEB_DB_ENABLED=true` olmadan DB'ye yazmaz.
+   - Sadece `APPLY_SAFE` (order_id ve completed_at içeren) kayıtları yazar.
+   - `completionLog` kaynaklı eksik alanlı kayıtlar ve off-order (iş emri atanmamış) üretimler atlanır.
+   - Apply işlemi henüz çalıştırılmadı.
+
 
 Gelecek hedefler:
 

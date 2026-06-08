@@ -48,6 +48,12 @@ MQTT mesajlarından veya raw loglardan `mes.vision_events` tablosuna eşlenecek 
 2. **Ham Kaynak Netleştirilecek:** Tablo doldurulmadan önce raw event kaynağının biçimi ve konumu netleştirilecektir.
 3. **MQTT Hook Planlanacak:** Eğer canlı veri yansıtma (live mirror) yapılacaksa, MES Web'in MQTT alım anında (`MQTT receive handler`) çalışacak bir veritabanı hook'u tasarlanacaktır.
 4. **Historical Backfill Stratejisi:** Eğer geçmişe dönük veri doldurma istenecekse, Excel/CSV ham log kaynağı talep edilecektir.
+5. **E5B Excel Backfill Dry-Run:**
+   - E5A analizinde Excel günlük log dosyaları (`MES_Konveyor_Veritabani_*.xlsx`) tespit edilmiştir.
+   - Excel log dosyalarının `6_Vision` sayfasında parse edilmiş eventler, `99_Raw_Logs` sayfasında ham JSON logları mevcuttur.
+   - `scripts/dry_run_vision_events_from_excel.py` ile bu loglardan `mes.vision_events` tablosuna aktarım için mapping yetenekleri değerlendirilmiştir.
+   - **E5B.1 Test Sonucu:** Tüm loglar üzerinde çalıştırılan gelişmiş testte boş satırlar (blank row filter) elenmiş ve `6_Vision` sheet'lerinde geçerli vision event bulunmadığı teyit edilmiştir (apply_safe_count = 0).
+   - Apply script ancak ileride `apply_safe_count > 0` ve duplicate riski temiz bir log elde edildiğinde düşünülecektir. Mevcut durumda apply phase askıya alınmıştır.
 
 ## Güvenlik Sınırları
 * **Source-of-truth Geçişi Değildir:** PostgreSQL sadece pasif bir ayna (mirror) olarak konumlandırılmaya devam edecektir.

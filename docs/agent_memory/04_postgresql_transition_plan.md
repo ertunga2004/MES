@@ -88,9 +88,16 @@ Tamamlanan/geçerli fazlar:
     - Status history/event modeli ileride `mes.work_order_events` ile değerlendirilebilir.
 
 13. Vision events raw source policy (E3/E4 - 2026-06-08)
-    - `vision_events` için JSON tabanlı dry-run/apply ertelendi/iptal edildi.
-    - Gerekçe: `oee_runtime_state.json` dosyasındaki vision verilerinin sadece summary, dedupe listesi ve projection barındırdığı, ham (raw) olay geçmişi taşımadığı tespit edildi.
-    - `mes.vision_events` tablosunun beslenmesi için gerçek kaynak olarak raw MQTT event stream veya Excel/CSV raw log kaynağı gerektiği kararlaştırıldı ve dokümante edildi.
+    - [x] **E4: Define Source Policy for vision_events**
+      - Read-only analysis confirmed `oee_runtime_state.json` is insufficient.
+      - Policy documented in `docs/agent_memory/15_vision_events_source_policy.md`.
+    - [x] **E5A: Vision Raw Log Inventory**
+      - Read-only analysis found Excel raw logs at `data/logs/MES_Konveyor_Veritabani_*.xlsx` which can be used for historical backfill.
+    - [x] **E5B: Excel-based vision events dry-run script eklendi**
+      - `scripts/dry_run_vision_events_from_excel.py` eklendi.
+      - Script DB'ye bağlanmaz ve yazma yapmaz. Boş satır (blank row) filtresi ile sağlamlaştırıldı (E5B.1).
+      - Tüm test workleri üzerinde `apply_safe_count = 0` döndüğü için vision_events apply aşamasına henüz geçilmeyecektir.
+      - Excel dry-run analyzer bir gatekeeper olarak kullanılmaktadır. Mevcut testte güvenli kayıt olmadığı için apply işlemi ertelenmiştir.
 
 
 Gelecek hedefler:

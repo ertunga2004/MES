@@ -27,7 +27,7 @@ Icerik:
 - `docs/tablet_plan.md`
 - `docs/hardware.md`
 - `docs/field-test-plan.md`
-- `docs/roadmap.md`
+- `docs/archive/legacy_plans/roadmap.md` (arşivlendi; aktif referans için `docs/agent_memory/` kullanın)
 - `mes_web/README.md`
 - `raspberry/README.md`
 - `picktolight/README.md`

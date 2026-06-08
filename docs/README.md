@@ -72,3 +72,20 @@ Adresler:
 - [Raspberry](../raspberry/README.md)
 - [Pick To Light](../picktolight/README.md)
 - [AI Guide](AI_GUIDE.md)
+
+## Docs Klasor Yapisi
+
+Bu klasordeki alt dizinler su amaclarla ayrilmistir:
+
+- **`agent_memory/`** — Ana mimari hafiza kaynagi. Yeni ajan veya gelistirici bu klasoru once okumalidur. Docker/PostgreSQL mimari kararlari, calisma sinirlarini ve sonraki adimlari ozetler.
+- **`postgres/`** — Aktif PostgreSQL gecis dokumanlari. Faz 4A plani ve veri grubu envanterleri buradadir.
+- **`db_pre_plan/`** — Veri tabani on analiz kaynakları (.xlsx, .docx). Tarihsel mimari kaynakcadir; silinmemelidir.
+- **`archive/`** — Eski/superseded dokümanlar. Aktif kaynak değildir; tarihsel referans amacli korunur.
+- **`FERP_XLS/`** — FERP sablon ve etiket dosyalari.
+- **`notebooklm/`** — NotebookLM defter indeksi.
+
+> Agent veya gelistirici icin on okuma sirasi:
+> 1. `agent_memory/README.md`
+> 2. `agent_memory/00_masterplan.md`
+> 3. `agent_memory/08_guardrails_and_do_not_touch.md`
+> 4. `agent_memory/09_antigravity_handoff.md`

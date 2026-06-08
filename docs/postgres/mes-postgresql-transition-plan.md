@@ -319,7 +319,7 @@ Rollback is file-level:
 
 - remove `mes_web/db/`
 - remove `db/migrations/001_initial_mes_schema.sql`
-- remove `docs/mes-postgresql-transition-plan.md`
+- remove `docs/postgres/mes-postgresql-transition-plan.md`
 - remove DB fields from `mes_web/config.py`
 - remove `psycopg[binary]<4.0,>=3.2` from requirements files
 

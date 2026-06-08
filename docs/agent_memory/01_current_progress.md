@@ -20,6 +20,8 @@ Tamamlanan ana fazlar:
 - D2/D2.5: `deviceSessions` stable key / session identity analiz edildi ve `scripts/dry_run_device_sessions_mirror.py` ile dry-run gerçekleştirildi. Runtime JSON'daki session verilerinin sessionId veya startedAt içermediği, lastSeenAt'in ise natural key olarak kullanılmasının volatile olduğu tespit edildi. Bu sebeple `mes.device_sessions` için doğrudan apply (D3) adımı iptal edildi/ertelendi. Mirror çalışması `production_completions` alanına kaydırıldı.
 - D3/D4/D5/D6/D7/D8: `production_completions` analizi, kontrollü testi ve veri aktarımı tamamlandı. `scripts/mirror_production_completions_to_db.py` ve `scripts/verify_production_completions_db_mirror.py` scriptleri oluşturuldu. Controlled apply testi ile 7 geçerli üretim kaydı (`APPLY_SAFE`) veritabanına aktarıldı, mükerrer kayıt bulunmamaktadır.
 - E1: Controlled DB Population Status Report hazırlandı (`docs/agent_memory/13_db_population_status.md`).
+- E2/E2A: `work_orders` status drift analizi tamamlandı ve politika kararı dokümante edildi (`docs/agent_memory/14_work_orders_status_policy.md`). `mes.work_orders` MVP için current-state mirror kabul edildi. Oluşan durum uyuşmazlığı (drift) controlled sync ile temizlenecek. Tarihçe takibi (work_order_events) ileride değerlendirilecek.
+
 
 Doğrulanan work orders mirror sonucu (C2 Canlı Docker Doğrulaması - 2026-06-08):
 

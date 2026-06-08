@@ -81,6 +81,12 @@ Tamamlanan/geçerli fazlar:
    - D7 kontrollü apply sonrasında oluşan 7 JSON `APPLY_SAFE` kayıt ile 7 DB kaydı karşılaştırılır.
    - Missing/extra/duplicate alanları temiz olmalıdır.
 
+12. Work orders status drift policy (E2/E2A - 2026-06-08)
+    - E2 status drift analizi sonrasında `mes.work_orders` MVP için current-state mirror olarak kabul edildi.
+    - `status` alanı runtime JSON ile senkron tutulmalıdır.
+    - Drift'in giderilmesi için E2B controlled sync yapılacaktır.
+    - Tarihçe/event modeli (`work_order_events`) ileride değerlendirilecektir.
+
 
 Gelecek hedefler:
 

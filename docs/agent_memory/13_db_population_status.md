@@ -43,7 +43,7 @@ Bu doküman, MES PostgreSQL geçişi kapsamında veritabanına aktarılan verile
 ## Boş / Henüz Doldurulmayan Tablolar (Empty / Not Yet Populated)
 
 * **`mes.device_sessions`:** Apply işlemi ertelendi. Runtime JSON state'indeki `deviceSessions` kaydında benzersiz bir `sessionId`, `connectedAt` veya `startedAt` bilgisi bulunmamaktadır. `lastSeenAt` volatile (oynak) olduğundan natural key olarak kullanılamaz. Gerçek bir session identity çözümü tasarlanana kadar aktarım yapılmayacaktır.
-* **`mes.vision_events`:** Ham (raw) olay verisi ile özet (summary) verisi arasındaki ayrım henüz netleşmediği için analizi beklemektedir.
+* **`mes.vision_events`:** Kayıt sayısı **0** (Bilinçli olarak boş bırakıldı). E3/E4 analizi neticesinde runtime JSON state'in sadece summary, dedupe listesi ve projection barındırdığı, ham (raw) olay geçmişi taşımadığı görülmüştür. Raw event source policy netleşip gerçek bir olay kaynağı (MQTT stream veya Excel/CSV log) entegre edilene kadar veritabanına yazım yapılmayacaktır.
 * **`mes.oee_snapshots`:** Hangi snapshot kaynağının kullanılacağı (dosya bazlı mı yoksa hesaplanmış veri mi) henüz kararlaştırılmamıştır.
 * **`mes.downtime_events`:** Runtime loglarında henüz örnek duruş (downtime) olayı bulunmamaktadır.
 * **`mes.maintenance_records`:** İş analizi henüz tamamlanmamıştır.
@@ -75,5 +75,6 @@ Veritabanının canlı sisteme etkisi tamamen sınırlandırılmış durumdadır
 ---
 
 ## Sonraki Adımlar (Next Recommended Steps)
-1. `vision_events` veya `oee_snapshots` tablolarının veri modellerini ve aktarım planlarını analiz etmek.
-2. Runtime tarafında gerçek `sessionId` üretimi tasarlanana kadar `device_sessions` aktarımını askıda tutmaya devam etmek.
+1. `vision_events` için ham event kaynağının (MQTT veya Excel/CSV log) envanterini çıkarmak veya live MQTT handler hook planlamak.
+2. `oee_snapshots` tablosunun veri modelini ve aktarım planını analiz etmek.
+3. Runtime tarafında gerçek `sessionId` üretimi tasarlanana kadar `device_sessions` aktarımını askıda tutmaya devam etmek.

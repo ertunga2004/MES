@@ -87,13 +87,16 @@ Tamamlanan/geçerli fazlar:
     - E2B controlled resync ile 6 kayıt güncellendi, status drift temizlendi.
     - Status history/event modeli ileride `mes.work_order_events` ile değerlendirilebilir.
 
+13. Vision events raw source policy (E3/E4 - 2026-06-08)
+    - `vision_events` için JSON tabanlı dry-run/apply ertelendi/iptal edildi.
+    - Gerekçe: `oee_runtime_state.json` dosyasındaki vision verilerinin sadece summary, dedupe listesi ve projection barındırdığı, ham (raw) olay geçmişi taşımadığı tespit edildi.
+    - `mes.vision_events` tablosunun beslenmesi için gerçek kaynak olarak raw MQTT event stream veya Excel/CSV raw log kaynağı gerektiği kararlaştırıldı ve dokümante edildi.
 
 
 Gelecek hedefler:
 
-- `production_completions` mirror dry-run ve analizi (Yeni D3 faza geçiş: `completionLog` ve `itemsById` overlap/dedup riski analiz edilmeli, DB'ye yazma yapılmadan önce dry-run mapping scripti yazılmalı).
 - `device_sessions` mirror (gerçek session identity çözümü sonrası tekrar ele alınacak).
-- `vision_events` mirror.
+- MQTT raw stream / event log entegrasyonu (vision_events için).
 - `oee_snapshots` mirror.
 - `downtime_events` mirror.
 - FERP import batch ve export outbox metadata.

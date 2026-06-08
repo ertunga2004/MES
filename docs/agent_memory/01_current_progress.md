@@ -21,7 +21,7 @@ Tamamlanan ana fazlar:
 - D3/D4/D5/D6/D7/D8: `production_completions` analizi, kontrollü testi ve veri aktarımı tamamlandı. `scripts/mirror_production_completions_to_db.py` ve `scripts/verify_production_completions_db_mirror.py` scriptleri oluşturuldu. Controlled apply testi ile 7 geçerli üretim kaydı (`APPLY_SAFE`) veritabanına aktarıldı, mükerrer kayıt bulunmamaktadır.
 - E1: Controlled DB Population Status Report hazırlandı (`docs/agent_memory/13_db_population_status.md`).
 - E2/E2A/E2B/E2C: `work_orders` status drift analizi tamamlandı ve `mes.work_orders` MVP için current-state mirror kabul edildi. E2B kontrollü resync işlemi tamamlandı ve drift temizlendi; veritabanı doğrulama (verify) işlemi temiz döndü. `production_completions` tablosunun verify sonuçları da tamamen temiz kalmaktadır.
-
+- E3/E4: `vision_events` analizi tamamlandı. Runtime JSON'un raw vision event history barındırmadığı, sadece current-state/summary ve dedupe key listesi taşıdığı görüldü. Bu nedenle `vision_events` için JSON tabanlı dry-run/apply veya verify scriptleri yazılmayacaktır. Raw event source policy dokümante edildi. Sonraki adım olarak raw log kaynağı envanteri veya live MQTT hook entegrasyonu planlanmaktadır.
 
 
 Doğrulanan work orders mirror sonucu (C2 Canlı Docker Doğrulaması - 2026-06-08):
@@ -83,7 +83,8 @@ MES_WEB_DB_MIRROR_WORK_ORDERS=false
 Kalan işler:
 
 - `device_sessions` mirror (gerçek session identity/registry çözümü tasarlandıktan sonra).
-- `vision_events`, `oee_snapshots`, `downtime_events` için mirror planı çıkar.
+- `vision_events` mirror (raw log envanteri veya live MQTT hook entegrasyonu sonrası).
+- `oee_snapshots`, `downtime_events` için mirror planı çıkar.
 - FERP import/export metadata ve outbox mantığını mirror olarak tasarla.
 - DB read tasarımı için ayrı plan hazırla.
 - Source-of-truth geçişini ancak mirror doğrulama, backup/replay ve rollback yolları kanıtlandıktan sonra değerlendir.

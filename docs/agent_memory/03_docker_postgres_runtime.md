@@ -54,3 +54,6 @@ C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups
 - `docker compose down -v` açık onay olmadan kullanılmaz; volume siler.
 - PostgreSQL verisi image içinde değildir; volume ve SQL backup ile taşınır.
 - `mes_web` 8080 kullanıyorsa Windows üzerinde manuel başlatılmış başka MES Web aynı portu kullanamaz.
+- Compose artık DB flaglerini `.env` üzerinden alabilir.
+- Default `false` olduğu için normal davranış değişmez.
+- C2 runtime hook testi bu plumbing sonrası tekrar yapılmalıdır.

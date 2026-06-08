@@ -27,9 +27,16 @@ The current MES application does not use PostgreSQL as source-of-truth. These ex
 - FERP import/export files
 - runtime state
 
-This setup keeps `MES_WEB_DB_ENABLED=false`. No migration, SQL table design, MESQL DB, BOM_BOP DB, Redis, RabbitMQ, MinIO, TimescaleDB, pgvector, OpenSearch, or ClickHouse is included.
+This setup defaults to `MES_WEB_DB_ENABLED=false` via `.env` overrides. No migration, SQL table design, MESQL DB, BOM_BOP DB, Redis, RabbitMQ, MinIO, TimescaleDB, pgvector, OpenSearch, or ClickHouse is included.
 
 `mes_web` does not depend on `mes_postgres` for startup in this phase.
+
+**DB Configuration Note:**
+- DB flagleri default `false`.
+- Runtime work_orders mirror sadece iki flag (`MES_WEB_DB_ENABLED` ve `MES_WEB_DB_MIRROR_WORK_ORDERS`) `true` ise çalışır.
+- Container içinden DB host `mes_postgres:5432`.
+- Hosttan bağlantı `localhost:5433`.
+- Bu source-of-truth geçişi değildir.
 
 ## Services
 

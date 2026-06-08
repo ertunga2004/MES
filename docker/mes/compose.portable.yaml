@@ -8,7 +8,13 @@ services:
     environment:
       MES_WEB_HOST: "0.0.0.0"
       MES_WEB_PORT: "8080"
-      MES_WEB_DB_ENABLED: "false"
+      MES_WEB_DB_ENABLED: ${MES_WEB_DB_ENABLED:-false}
+      MES_WEB_DB_MIRROR_WORK_ORDERS: ${MES_WEB_DB_MIRROR_WORK_ORDERS:-false}
+      MES_WEB_DB_HOST: ${MES_WEB_DB_HOST:-mes_postgres}
+      MES_WEB_DB_PORT: ${MES_WEB_DB_PORT:-5432}
+      MES_WEB_DB_NAME: ${MES_WEB_DB_NAME:-mes}
+      MES_WEB_DB_USER: ${MES_WEB_DB_USER:-mes}
+      MES_WEB_DB_PASSWORD: ${MES_WEB_DB_PASSWORD:-change_me_local_only}
       MES_WEB_OEE_RUNTIME_STATE_PATH: "/app/logs/oee_runtime_state.json"
       MES_WEB_FERP_EXPORT_PENDING_DIR: "/app/logs/ferp_exports/pending"
       MES_WEB_FERP_EXPORT_EXAMPLES_DIR: "/app/logs/ferp_exports/examples/ferp_xls_seeded"

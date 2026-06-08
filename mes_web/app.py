@@ -1,5 +1,6 @@
 from __future__ import annotations
 import copy
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .command_policy import is_local_only_command
 from .config import AppConfig
+from .db.work_order_mirror import mirror_work_orders_from_state
 from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
 from .masterdata import load_kiosk_masterdata
 from .oee_state import WorkOrderTransitionReasonRequired, build_work_order_snapshot
@@ -19,6 +21,7 @@ from .store import DashboardStore, parse_iso_text, utc_now_text
 from .windows_asyncio import install_windows_connection_reset_filter
 
 
+logger = logging.getLogger(__name__)
 config = AppConfig.from_env()
 store = DashboardStore(config)
 hub = SnapshotHub(store, coalesce_ms=config.ws_coalesce_ms)
@@ -677,6 +680,13 @@ def create_app() -> FastAPI:
     def sync_work_order_runtime(state: dict[str, Any] | None = None) -> None:
         runtime_state = state if isinstance(state, dict) else oee_state_manager.read_state()
         runtime_service.excel_sink.record_work_order_state(runtime_state, utc_now_text())
+        try:
+            mirror_result = mirror_work_orders_from_state(config, runtime_state)
+        except Exception:
+            logger.exception("Work order DB mirror hook failed unexpectedly")
+            return
+        if mirror_result.status == "error":
+            logger.warning("Work order DB mirror failed: %s", mirror_result.message)
 
     def _ferp_export_acceptance_result(result: dict[str, Any]) -> dict[str, Any]:
         try:

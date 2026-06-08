@@ -77,6 +77,15 @@ class AppConfig:
     excel_enabled: bool = True
     excel_flush_interval_sec: float = 1.0
     excel_batch_size: int = 25
+    db_enabled: bool = False
+    db_host: str = "mes_postgres"
+    db_port: int = 5432
+    db_name: str = "mes"
+    db_user: str = "mes"
+    db_password: str = ""
+    db_sslmode: str = "disable"
+    db_connect_timeout_sec: int = 2
+    db_mirror_work_orders: bool = False
     allowed_presets: tuple[str, ...] = field(default_factory=lambda: ALLOWED_PRESET_COMMANDS)
 
     @property
@@ -223,4 +232,13 @@ class AppConfig:
             excel_enabled=_env_bool("MES_WEB_EXCEL_ENABLED", True),
             excel_flush_interval_sec=float(os.getenv("MES_WEB_EXCEL_FLUSH_INTERVAL_SEC", "1.0")),
             excel_batch_size=int(os.getenv("MES_WEB_EXCEL_BATCH_SIZE", "25")),
+            db_enabled=_env_bool("MES_WEB_DB_ENABLED", False),
+            db_host=os.getenv("MES_WEB_DB_HOST", "mes_postgres"),
+            db_port=int(os.getenv("MES_WEB_DB_PORT", "5432")),
+            db_name=os.getenv("MES_WEB_DB_NAME", "mes"),
+            db_user=os.getenv("MES_WEB_DB_USER", "mes"),
+            db_password=os.getenv("MES_WEB_DB_PASSWORD", ""),
+            db_sslmode=os.getenv("MES_WEB_DB_SSLMODE", "disable"),
+            db_connect_timeout_sec=int(os.getenv("MES_WEB_DB_CONNECT_TIMEOUT_SEC", "2")),
+            db_mirror_work_orders=_env_bool("MES_WEB_DB_MIRROR_WORK_ORDERS", False),
         )

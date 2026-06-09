@@ -96,12 +96,14 @@ Tamamlanan/geçerli fazlar:
     - [x] **E5B: Excel-based vision events dry-run script eklendi**
       - `scripts/dry_run_vision_events_from_excel.py` eklendi.
       - Script DB'ye bağlanmaz ve yazma yapmaz. Boş satır (blank row) filtresi ile sağlamlaştırıldı (E5B.1).
-      - Tüm test workleri üzerinde `apply_safe_count = 0` döndüğü için vision_events apply aşamasına henüz geçilmeyecektir.
-      - Excel dry-run analyzer bir gatekeeper olarak kullanılmaktadır. Mevcut testte güvenli kayıt olmadığı için apply işlemi ertelenmiştir.
+      - **E5B.2: Natural Key Hardening & Live Test (2026-06-09):**
+        - Doğal anahtar kuralı `vision_track_id + event_type + detected_at` olarak değiştirildi.
+        - `08-06-2026.xlsx` üzerindeki 17 live event kaydından `apply_safe_count = 17` üretildi, duplicate/unsafe hataları 0'a indirildi. Dry-run sonucu apply script yazımı için kararlı hale geldi.
 
 
 Gelecek hedefler:
 
+- `vision_events` apply script yazımı ve veritabanı yansıması (historical backfill).
 - `device_sessions` mirror (gerçek session identity çözümü sonrası tekrar ele alınacak).
 - MQTT raw stream / event log entegrasyonu (vision_events için).
 - `oee_snapshots` mirror.

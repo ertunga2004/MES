@@ -53,13 +53,20 @@ MQTT mesajlarından veya raw loglardan `mes.vision_events` tablosuna eşlenecek 
    - Excel log dosyalarının `6_Vision` sayfasında parse edilmiş eventler, `99_Raw_Logs` sayfasında ham JSON logları mevcuttur.
    - `scripts/dry_run_vision_events_from_excel.py` ile bu loglardan `mes.vision_events` tablosuna aktarım için mapping yetenekleri değerlendirilmiştir.
    - **E5B.1 Test Sonucu:** Tüm loglar üzerinde çalıştırılan gelişmiş testte boş satırlar (blank row filter) elenmiş ve `6_Vision` sheet'lerinde geçerli vision event bulunmadığı teyit edilmiştir (apply_safe_count = 0).
-   - Apply script ancak ileride `apply_safe_count > 0` ve duplicate riski temiz bir log elde edildiğinde düşünülecektir. Mevcut durumda apply phase askıya alınmıştır.
+   - **E5B.2 Natural Key Hardening & Live Test Sonucu (2026-06-09):**
+     - Fiziksel görüntü işleme sistemi tekrar çalıştırılarak `MES_Konveyor_Veritabani_08-06-2026.xlsx` içinde 17 yeni vision event kaydı oluşturuldu.
+     - İlk testte `vision_track_id` tekil natural key olarak kullanıldığından 9 adet mükerrer (duplicate) hata oluştu (`apply_safe_count = 8`, `apply_unsafe_count = 9`).
+     - `vision_track_id` alanının tek başına event-level anahtar olamayacağı, çünkü aynı track_id altında birden fazla event_type (box_confirmed, line_crossed, box_lost) bulunabildiği anlaşıldı.
+     - Doğal anahtar kuralı `external_ref = f"{vision_track_id}_{event_type}_{detected_at}"` şeklinde revize edildi.
+     - Sonuçlar: `candidate_event_count = 17`, `apply_safe_count = 17`, `apply_unsafe_count = 0`, `duplicate_external_ref_count = 0`.
+     - 7 adet track'in birden fazla event_type barındırdığı başarıyla tespit edildi (örn: track 2 -> box_confirmed, box_lost, line_crossed).
+     - Apply script yazımı için dry-run verisi artık yeterli ve kararlıdır.
 
 ## Güvenlik Sınırları
 * **Source-of-truth Geçişi Değildir:** PostgreSQL sadece pasif bir ayna (mirror) olarak konumlandırılmaya devam edecektir.
 * **Runtime DB Read Yoktur:** Uygulama çalışma zamanında veritabanından vision event okuması yapmayacaktır.
 * **Mevcut Akış Korunur:** JSON/Excel/FERP/MQTT akışlarının işleyişi korunacaktır.
-* **Apply Script Yoktur:** `vision_events` tablosu için şu aşamada herhangi bir yazma/güncelleme scripti oluşturulmamıştır.
+* **Apply Script Aşaması:** `vision_events` tablosu için artık dry-run kararlı olduğundan bir sonraki fazda apply script yazımı düşünülecektir.
 
 ## Sonraki Önerilen Faz
 * **E5A:** Vision raw log kaynağı var mı envanter çalışması.

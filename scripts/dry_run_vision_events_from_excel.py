@@ -86,6 +86,7 @@ def main():
         "missing_detected_at_count": 0,
         "missing_event_type_count": 0,
         "duplicate_external_ref_count": 0,
+        "track_with_multiple_event_types_count": 0,
         "payload_missing_count": 0,
         "db_writes": False
     }
@@ -93,6 +94,7 @@ def main():
     seen_external_refs = set()
     duplicate_external_refs = set()
     item_id_counts = defaultdict(int)
+    track_event_types = defaultdict(set)
 
     sample_safe = []
     sample_unsafe = []
@@ -123,24 +125,20 @@ def main():
             stats["skipped_blank_row_count"] += 1
             continue
 
-        # Natural key logic
+        # Natural key logic (Event-level)
         external_ref = ""
         is_fallback_key = False
+        
         if event_key:
             external_ref = event_key
-        elif vision_track_id:
-            external_ref = vision_track_id
-        else:
-            if event_type and detected_at and item_id:
-                external_ref = f"{event_type}_{detected_at}_{item_id}"
-                is_fallback_key = True
+        elif vision_track_id and event_type and detected_at:
+            external_ref = f"{vision_track_id}_{event_type}_{detected_at}"
+            is_fallback_key = True
 
         unsafe_reasons = []
         if not external_ref:
             unsafe_reasons.append("missing_stable_key")
             stats["missing_event_key_count"] += 1
-        elif is_fallback_key:
-            unsafe_reasons.append("fallback_key_used")
             
         if not event_type:
             unsafe_reasons.append("missing_event_type")
@@ -160,6 +158,9 @@ def main():
                 unsafe_reasons.append("duplicate_external_ref")
                 stats["duplicate_external_ref_count"] += 1
             seen_external_refs.add(external_ref)
+            
+        if vision_track_id and event_type:
+            track_event_types[vision_track_id].add(event_type)
             
         if item_id:
             item_id_counts[item_id] += 1
@@ -194,6 +195,9 @@ def main():
             if len(sample_unsafe) < 5:
                 sample_unsafe.append(mapping)
 
+    # Calculate tracks with multiple event types
+    stats["track_with_multiple_event_types_count"] = sum(1 for v in track_event_types.values() if len(v) > 1)
+
     wb.close()
 
     print("\n" + "="*50)
@@ -202,10 +206,10 @@ def main():
     for k, v in stats.items():
         print(f"  {k}: {v}")
 
-    print("\n--- Items with multiple events (Top 5) ---")
-    multiple_items = {k: v for k, v in item_id_counts.items() if v > 1}
-    for i, (k, v) in enumerate(list(multiple_items.items())[:5]):
-        print(f"  item_id: {k} -> {v} events")
+    print("\n--- Track Event Type Distribution (Tracks with >1 type) ---")
+    multi_tracks = {k: v for k, v in track_event_types.items() if len(v) > 1}
+    for i, (k, v) in enumerate(list(multi_tracks.items())[:5]):
+        print(f"  track_id: {k} -> {v}")
 
     print("\n--- First 5 APPLY_SAFE Candidates ---")
     for i, s in enumerate(sample_safe, 1):

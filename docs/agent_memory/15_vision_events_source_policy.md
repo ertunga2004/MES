@@ -67,7 +67,8 @@ MQTT mesajlarından veya raw loglardan `mes.vision_events` tablosuna eşlenecek 
 * **Runtime DB Read Yoktur:** Uygulama çalışma zamanında veritabanından vision event okuması yapmayacaktır.
 * **Mevcut Akış Korunur:** JSON/Excel/FERP/MQTT akışlarının işleyişi korunacaktır.
 * **Apply Script Aşaması (E5C):** `scripts/mirror_vision_events_from_excel.py` scripti tamamlanmış ve `08-06-2026.xlsx` için dry-run başarıyla test edilmiştir. (Not: Gelecek tarihli timestamp koruması test esnasında başarıyla uyarı üretmiştir).
-* **Gerçek Apply (E5D):** Gerçek veritabanı yansıtma işlemi bir sonraki kontrollü faz olan E5D'de yapılacaktır.
+* **Gerçek Apply (E5D):** Gerçek veritabanı yansıtma işlemi E5D aşamasında başarıyla yapılmış ve 43 kayıt DB'ye aktarılmıştır.
+* **Verify Aşaması (E5E):** `scripts/verify_vision_events_db_mirror.py` eklendi. vision_events Excel backfill artık verify edilebilir hale geldi. Script sonucu missing/extra/duplicate temiz olarak kaydedildi.
 
 ## Sonraki Önerilen Faz
 * **E5A:** Vision raw log kaynağı var mı envanter çalışması.

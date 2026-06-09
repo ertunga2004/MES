@@ -106,6 +106,14 @@ Tamamlanan/geçerli fazlar:
       - E5B.2 ile doğrulanan event-level `external_ref` kuralını kullanır.
       - Gelecek tarihli (`future_detected_at`) olaylar için timestamp koruması (APPLY_UNSAFE) içerir.
       - Apply henüz çalıştırılmadı.
+    - [x] **E5D: Controlled DB Apply (2026-06-09)**
+      - 09-06-2026.xlsx Excel backfill ile 43 vision_events kaydı başarıyla DB'ye aktarıldı.
+      - İkinci run'da idempotency kanıtlandı (0 insert, 43 update).
+    - [x] **E5E: Vision events read-only verify script (2026-06-09)**
+      - `scripts/verify_vision_events_db_mirror.py` eklendi.
+      - Script read-only çalışır.
+      - E5D apply sonrası 43 Excel APPLY_SAFE kayıt ile 43 DB kaydını karşılaştırır.
+      - Missing/extra/duplicate/changed temiz olmalıdır.
 
 
 Gelecek hedefler:

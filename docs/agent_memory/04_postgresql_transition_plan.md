@@ -99,6 +99,13 @@ Tamamlanan/geçerli fazlar:
       - **E5B.2: Natural Key Hardening & Live Test (2026-06-09):**
         - Doğal anahtar kuralı `vision_track_id + event_type + detected_at` olarak değiştirildi.
         - `08-06-2026.xlsx` üzerindeki 17 live event kaydından `apply_safe_count = 17` üretildi, duplicate/unsafe hataları 0'a indirildi. Dry-run sonucu apply script yazımı için kararlı hale geldi.
+    - [x] **E5C: Excel tabanlı vision_events mirror apply script hazırlığı**
+      - `scripts/mirror_vision_events_from_excel.py` eklendi.
+      - Varsayılan olarak dry-run modunda çalışır.
+      - `--apply` ve `MES_WEB_DB_ENABLED=true` olmadan DB'ye yazmaz.
+      - E5B.2 ile doğrulanan event-level `external_ref` kuralını kullanır.
+      - Gelecek tarihli (`future_detected_at`) olaylar için timestamp koruması (APPLY_UNSAFE) içerir.
+      - Apply henüz çalıştırılmadı.
 
 
 Gelecek hedefler:

@@ -66,7 +66,8 @@ MQTT mesajlarından veya raw loglardan `mes.vision_events` tablosuna eşlenecek 
 * **Source-of-truth Geçişi Değildir:** PostgreSQL sadece pasif bir ayna (mirror) olarak konumlandırılmaya devam edecektir.
 * **Runtime DB Read Yoktur:** Uygulama çalışma zamanında veritabanından vision event okuması yapmayacaktır.
 * **Mevcut Akış Korunur:** JSON/Excel/FERP/MQTT akışlarının işleyişi korunacaktır.
-* **Apply Script Aşaması:** `vision_events` tablosu için artık dry-run kararlı olduğundan bir sonraki fazda apply script yazımı düşünülecektir.
+* **Apply Script Aşaması (E5C):** `scripts/mirror_vision_events_from_excel.py` scripti tamamlanmış ve `08-06-2026.xlsx` için dry-run başarıyla test edilmiştir. (Not: Gelecek tarihli timestamp koruması test esnasında başarıyla uyarı üretmiştir).
+* **Gerçek Apply (E5D):** Gerçek veritabanı yansıtma işlemi bir sonraki kontrollü faz olan E5D'de yapılacaktır.
 
 ## Sonraki Önerilen Faz
 * **E5A:** Vision raw log kaynağı var mı envanter çalışması.

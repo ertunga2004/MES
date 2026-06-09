@@ -53,5 +53,8 @@ Bir sonraki canlı hook fazı (F2C) için ön koşullar:
 - `db_enabled=false` iken log üretmekten kaçınılmıştır.
 - Exception durumları ana `_complete_runtime_item` akışını kesinlikle bloklamayacaktır (try/except wrapper mevcuttur).
 
-## 11. Next Recommended Step
-Bu dokümanın oluşturulması ve oee_state.py üzerindeki değişikliğin kaydedilmesi sonrası, **F2B commit/push** işlemi yapılıp F2C öncesi hazırlık kapatılmalıdır.
+## 11. Compose File Mapping (F1B-COMPOSE)
+Dry-run diagnostic logların ve live hook flaglerinin Docker container'ı içerisinde okunabilmesi için `MES_WEB_DB_HOOK_PRODUCTION_COMPLETIONS_DRY_RUN` dahil olmak üzere tüm SQL transition flaglerinin explicit olarak `compose.yaml` ve `compose.portable.yaml` dosyalarındaki `mes_web.environment` sekmesinde (`${FLAG:-false}`) olarak tanımlanması gerekmektedir. F2B-RUNOBS blocker'ı bu plumbing eksikliği nedeniyle F1B-COMPOSE fazıyla giderilmiştir.
+
+## 12. Next Recommended Step
+Bu dokümanın güncellenmesi ve compose dosyalarındaki ortam değişkenlerinin haritalandırılması sonrası, **F1B-COMPOSE commit/push** işlemi yapılıp F2B-RUNOBS (Gözlem) testleri tekrarlanmalıdır.

@@ -2857,6 +2857,47 @@ def _stop_shift_runtime(state: dict[str, Any], *, stamp: datetime) -> tuple[str,
     return state["lastEventSummary"], system_line
 
 
+def _dry_run_production_completion_hook(item: dict[str, Any]) -> None:
+    try:
+        from .config import AppConfig
+        config = AppConfig.from_env()
+        
+        if not config.db_enabled:
+            return
+            
+        if config.db_hook_production_completions:
+            print("[DRY_RUN:production_completions] WARNING: Live flag is True, but this is F2B dry-run hook. No DB write will occur.")
+            return
+
+        if not config.db_hook_production_completions_dry_run:
+            return
+
+        item_id = str(item.get("item_id") or "")
+        order_id = str(item.get("work_order_id") or "")
+        completed_at = str(item.get("completed_at") or "")
+        classification = str(item.get("classification") or "")
+        inventory_action = str(item.get("inventoryAction") or "")
+        work_order_match_key = str(item.get("work_order_match_key") or "")
+        
+        if not order_id:
+            status = "OFF_ORDER"
+            natural_key = "N/A"
+        elif not item_id:
+            status = "SKIPPED_MISSING_ITEM_ID"
+            natural_key = "N/A"
+        elif not completed_at:
+            status = "SKIPPED_MISSING_COMPLETED_AT"
+            natural_key = f"{order_id}_{item_id}"
+        else:
+            status = "APPLY_SAFE"
+            natural_key = f"{order_id}_{item_id}"
+            
+        print(f"[DRY_RUN:production_completions] status={status} item_id={item_id} order_id={order_id} external_ref={natural_key} classification={classification} completed_at={completed_at} inventoryAction={inventory_action} work_order_match_key={work_order_match_key}")
+
+    except Exception as exc:
+        print(f"[DRY_RUN:production_completions] WARNING: Exception in dry-run hook: {exc}")
+
+
 def _complete_runtime_item(
     state: dict[str, Any],
     items: dict[str, dict[str, Any]],
@@ -2919,6 +2960,7 @@ def _complete_runtime_item(
         received_at=received_at,
         now=now,
     )
+    _dry_run_production_completion_hook(item)
     return True
 
 

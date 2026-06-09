@@ -742,6 +742,24 @@ async function handleBigAction() {
         method: "POST",
         body: JSON.stringify({}),
       });
+    } else if (action === "package_start") {
+      const payload = (snapshot.big_action || {}).payload || {};
+      await fetchJson(`/api/modules/${state.moduleId}/kiosk/package/start`, {
+        method: "POST",
+        body: JSON.stringify({
+          ...currentActorPayload(),
+          package_order_id: payload.package_order_id,
+        }),
+      });
+    } else if (action === "package_finish") {
+      const payload = (snapshot.big_action || {}).payload || {};
+      await fetchJson(`/api/modules/${state.moduleId}/kiosk/package/finish`, {
+        method: "POST",
+        body: JSON.stringify({
+          ...currentActorPayload(),
+          session_id: payload.session_id,
+        }),
+      });
     }
     await loadBootstrap();
   });

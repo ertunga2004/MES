@@ -327,6 +327,7 @@ def _kiosk_big_action(
     queue_orders: list[dict[str, Any]],
     opening_session: dict[str, Any] | None,
     closing_session: dict[str, Any] | None,
+    packaging: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if operational_state == "opening_checklist":
         return {
@@ -364,6 +365,35 @@ def _kiosk_big_action(
             "phase": "",
         }
     if isinstance(active_order, dict) and str(active_order.get("status") or "") == "active":
+        if _is_kiosk_package_order(str(active_order.get("order_id") or ""), active_order):
+            active_sessions = packaging.get("active_sessions", []) if isinstance(packaging, dict) else []
+            my_session = next((s for s in active_sessions if str(s.get("package_order_id") or "") == str(active_order.get("order_id") or "")), None)
+            if my_session:
+                return {
+                    "action": "package_finish",
+                    "label": "Paketlemeyi Bitir",
+                    "enabled": True,
+                    "phase": "",
+                    "payload": {"session_id": str(my_session.get("session_id") or "")}
+                }
+            else:
+                available_count = (packaging.get("buffer", {}) if isinstance(packaging, dict) else {}).get("available_count", 0)
+                if available_count > 0:
+                    return {
+                        "action": "package_start",
+                        "label": "Paketlemeyi Baslat",
+                        "enabled": True,
+                        "phase": "",
+                        "payload": {"package_order_id": str(active_order.get("order_id") or "")}
+                    }
+                else:
+                    return {
+                        "action": "wait",
+                        "label": "Uygun GOOD kutu yok",
+                        "enabled": False,
+                        "phase": "",
+                    }
+
         return {
             "action": "wait",
             "label": "Aktif Is Emri Calisiyor",
@@ -465,6 +495,7 @@ def _build_kiosk_snapshot(module_id: str, device_id: str) -> dict[str, Any]:
         recent_items.append(projected)
     operational_state = str(state.get("operationalState") or "idle_ready")
     permissions = store.command_permissions()
+    packaging_state = _project_kiosk_packaging(state, ordered_orders)
     return {
         "device": {
             "device_id": device_id,
@@ -499,7 +530,7 @@ def _build_kiosk_snapshot(module_id: str, device_id: str) -> dict[str, Any]:
             "ordered": copy.deepcopy(ordered_orders),
             "queue": copy.deepcopy(queue_orders),
         },
-        "packaging": _project_kiosk_packaging(state, ordered_orders),
+        "packaging": packaging_state,
         "recent_items": recent_items,
         "quality_options": ["GOOD", "REWORK", "SCRAP"],
         "operational_state": operational_state,
@@ -521,6 +552,7 @@ def _build_kiosk_snapshot(module_id: str, device_id: str) -> dict[str, Any]:
             queue_orders=queue_orders,
             opening_session=opening_session if isinstance(opening_session, dict) else None,
             closing_session=closing_session if isinstance(closing_session, dict) else None,
+            packaging=packaging_state,
         ),
         "timestamps": {
             "snapshot_at": utc_now_text(),

@@ -22,6 +22,7 @@ Tamamlanan ana fazlar:
 - E1: Controlled DB Population Status Report hazırlandı (`docs/agent_memory/13_db_population_status.md`).
 - E2/E2A/E2B/E2C: `work_orders` status drift analizi tamamlandı ve `mes.work_orders` MVP için current-state mirror kabul edildi. E2B kontrollü resync işlemi tamamlandı ve drift temizlendi; veritabanı doğrulama (verify) işlemi temiz döndü. `production_completions` tablosunun verify sonuçları da tamamen temiz kalmaktadır.
 - E3/E4: `vision_events` analizi tamamlandı. Runtime JSON'un raw vision event history barındırmadığı, sadece current-state/summary ve dedupe key listesi taşıdığı görüldü. Bu nedenle `vision_events` için JSON tabanlı dry-run/apply veya verify scriptleri yazılmayacaktır. Raw event source policy dokümante edildi. Sonraki adım olarak raw log kaynağı envanteri veya live MQTT hook entegrasyonu planlanmaktadır.
+- E5F: Validated DB population checkpoint tamamlandı. `work_orders` (6), `production_completions` (8) ve `vision_events` (43) tabloları doğrulandı. `mes` DB artık 3 veri grubunda kontrollü populate edilmiş durumda. `device_sessions` ve diğer event tabloları ertelendi / analiz bekliyor.
 
 
 Doğrulanan work orders mirror sonucu (C2 Canlı Docker Doğrulaması - 2026-06-08):

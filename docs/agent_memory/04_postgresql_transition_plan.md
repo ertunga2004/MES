@@ -114,7 +114,9 @@ Tamamlanan/geçerli fazlar:
       - Script read-only çalışır.
       - E5D apply sonrası 43 Excel APPLY_SAFE kayıt ile 43 DB kaydını karşılaştırır.
       - Missing/extra/duplicate/changed temiz olmalıdır.
-
+    - [x] **E5F: Validated DB Population Checkpoint (2026-06-09)**
+      - 3 tablo (work_orders, production_completions, vision_events) verify clean.
+      - Sıradaki teknik karar: Yeni tablo analizine mi geçilecek, yoksa mevcut tablolar için runtime hook / read transition (okuma geçişi) mi yapılacak?
 
 Gelecek hedefler:
 

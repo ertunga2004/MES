@@ -2861,16 +2861,15 @@ def _dry_run_production_completion_hook(item: dict[str, Any]) -> None:
     try:
         from .config import AppConfig
         config = AppConfig.from_env()
-        
+
         if not config.db_enabled:
-            return
-            
-        if config.db_hook_production_completions:
-            print("[DRY_RUN:production_completions] WARNING: Live flag is True, but this is F2B dry-run hook. No DB write will occur.")
             return
 
         if not config.db_hook_production_completions_dry_run:
             return
+
+        if config.db_hook_production_completions:
+            print("[DRY_RUN:production_completions] WARNING: Dry-run flag is True while live flag is True. Dry-run wins; no DB write will occur.")
 
         item_id = str(item.get("item_id") or "")
         order_id = str(item.get("work_order_id") or "")
@@ -2896,6 +2895,31 @@ def _dry_run_production_completion_hook(item: dict[str, Any]) -> None:
 
     except Exception as exc:
         print(f"[DRY_RUN:production_completions] WARNING: Exception in dry-run hook: {exc}")
+
+
+def _live_production_completion_hook(item: dict[str, Any]) -> None:
+    try:
+        from .config import AppConfig
+        from .db.production_completion_writer import mirror_production_completion_from_item
+
+        config = AppConfig.from_env()
+        if not config.db_enabled:
+            return
+
+        if config.db_hook_production_completions_dry_run:
+            if config.db_hook_production_completions:
+                print("[LIVE:production_completions] WARNING: Dry-run flag is True while live flag is True. Live DB write skipped.")
+            return
+
+        if not config.db_hook_production_completions:
+            return
+
+        result = mirror_production_completion_from_item(config, item)
+        if result.reason in {"written", "error_fail_open"} or result.skipped:
+            print(f"[LIVE:production_completions] reason={result.reason} attempted={result.attempted} success={result.success} skipped={result.skipped}")
+
+    except Exception as exc:
+        print(f"[LIVE:production_completions] WARNING: Exception in live hook: {exc}")
 
 
 def _complete_runtime_item(
@@ -2961,6 +2985,7 @@ def _complete_runtime_item(
         now=now,
     )
     _dry_run_production_completion_hook(item)
+    _live_production_completion_hook(item)
     return True
 
 

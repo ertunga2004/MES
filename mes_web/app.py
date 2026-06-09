@@ -223,6 +223,75 @@ def _project_kiosk_work_order(order_id: str, order: dict[str, Any], state: dict[
     }
 
 
+def _is_kiosk_package_order(order_id: str, order: dict[str, Any]) -> bool:
+    if str(order_id or "").strip().upper().startswith("WO-PKT-"):
+        return True
+    marker_text = " ".join(
+        str(value or "").strip().upper()
+        for value in (
+            order.get("erpType"),
+            order.get("ferpScreen"),
+            order.get("stockCode"),
+            order.get("stockName"),
+            order.get("productCode"),
+        )
+    )
+    return "PAKET" in marker_text or "PACKAGE" in marker_text
+
+
+def _project_kiosk_packaging(state: dict[str, Any], ordered_orders: list[dict[str, Any]]) -> dict[str, Any]:
+    work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
+    buffer = work_orders.get("packagingBuffer") if isinstance(work_orders.get("packagingBuffer"), dict) else {}
+    buffer_items = buffer.get("itemsById") if isinstance(buffer.get("itemsById"), dict) else {}
+    available_ids = [str(value or "").strip() for value in (buffer.get("availableItemIds") if isinstance(buffer.get("availableItemIds"), list) else [])]
+    counts_by_color = {"red": 0, "blue": 0, "yellow": 0}
+    projected_items: list[dict[str, Any]] = []
+    for item_id, row in buffer_items.items():
+        if not isinstance(row, dict):
+            continue
+        color = _display_color_code(row.get("color"), row.get("product_code"))
+        status = str(row.get("status") or "").strip().lower()
+        if status == "available" and color in counts_by_color:
+            counts_by_color[color] += 1
+        projected_items.append(
+            {
+                "item_id": str(row.get("item_id") or item_id),
+                "upstream_order_id": str(row.get("upstream_order_id") or ""),
+                "upstream_external_ref": str(row.get("upstream_external_ref") or ""),
+                "classification": str(row.get("classification") or ""),
+                "product_code": str(row.get("product_code") or ""),
+                "color": color,
+                "color_label": _display_color_label(color),
+                "completed_at": str(row.get("completed_at") or ""),
+                "status": status or "available",
+                "reserved_by_order_id": str(row.get("reserved_by_order_id") or ""),
+                "reserved_by_session_id": str(row.get("reserved_by_session_id") or ""),
+            }
+        )
+    raw_orders = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+    package_orders = [
+        copy.deepcopy(row)
+        for row in ordered_orders
+        if _is_kiosk_package_order(str(row.get("order_id") or ""), raw_orders.get(str(row.get("order_id") or "")) if isinstance(raw_orders.get(str(row.get("order_id") or "")), dict) else {})
+    ]
+    sessions = work_orders.get("packagingSessions") if isinstance(work_orders.get("packagingSessions"), dict) else {}
+    active_sessions = [
+        copy.deepcopy(row)
+        for row in sessions.values()
+        if isinstance(row, dict) and str(row.get("status") or "").strip().lower() == "reserved"
+    ]
+    return {
+        "buffer": {
+            "available_item_ids": available_ids,
+            "available_count": len(available_ids),
+            "counts_by_color": counts_by_color,
+            "items": projected_items,
+        },
+        "package_orders": package_orders,
+        "active_sessions": active_sessions,
+    }
+
+
 def _checklist_ready(session: dict[str, Any] | None) -> bool:
     if not isinstance(session, dict):
         return False
@@ -430,6 +499,7 @@ def _build_kiosk_snapshot(module_id: str, device_id: str) -> dict[str, Any]:
             "ordered": copy.deepcopy(ordered_orders),
             "queue": copy.deepcopy(queue_orders),
         },
+        "packaging": _project_kiosk_packaging(state, ordered_orders),
         "recent_items": recent_items,
         "quality_options": ["GOOD", "REWORK", "SCRAP"],
         "operational_state": operational_state,
@@ -757,6 +827,32 @@ def create_app() -> FastAPI:
             "operator_id": str((operator or {}).get("operator_id") or ""),
             "operator_code": str((operator or {}).get("operator_code") or ""),
             "operator_name": str((operator or {}).get("operator_name") or ""),
+        }
+
+    def _optional_kiosk_actor(payload: dict[str, Any]) -> dict[str, str]:
+        has_actor_context = any(
+            str(payload.get(key) or "").strip()
+            for key in (
+                "device_id",
+                "deviceId",
+                "operator_id",
+                "operatorId",
+                "operator_code",
+                "operatorCode",
+                "bound_station_id",
+                "boundStationId",
+            )
+        )
+        if has_actor_context:
+            return _resolve_kiosk_actor(payload)
+        return {
+            "device_id": "",
+            "device_name": "",
+            "device_role": "operator_kiosk",
+            "bound_station_id": "",
+            "operator_id": "",
+            "operator_code": "",
+            "operator_name": "",
         }
 
     def _station_context_for_actor(actor: dict[str, str]) -> dict[str, str]:
@@ -1462,6 +1558,84 @@ def create_app() -> FastAPI:
             "summary": str(result.get("summary") or ""),
             "order_id": str(order.get("orderId") or ""),
             "ferp_export": ferp_export,
+        }
+
+    @app.post("/api/modules/{module_id}/kiosk/package/start")
+    async def kiosk_package_start(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        _ensure_module(module_id)
+        actor = _optional_kiosk_actor(payload)
+        package_order_id = str(payload.get("package_order_id") or payload.get("packageOrderId") or "").strip()
+        if not package_order_id:
+            raise HTTPException(status_code=400, detail="PACKAGE_ORDER_ID_REQUIRED")
+        try:
+            result = oee_state_manager.start_package_flow(
+                package_order_id,
+                item_id=str(payload.get("item_id") or payload.get("itemId") or ""),
+                operator_code=actor["operator_code"],
+                operator_name=actor["operator_name"],
+                device_id=actor["device_id"],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        stamp = utc_now_text()
+        updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
+        _refresh_after_kiosk_write(module_id, updated_state)
+        session = result.get("session") if isinstance(result.get("session"), dict) else {}
+        buffer_item = result.get("buffer_item") if isinstance(result.get("buffer_item"), dict) else {}
+        store.append_system_log(
+            module_id,
+            f"SYSTEM|KIOSK|PACKAGE_START|ORDER={package_order_id}|ITEM={str(buffer_item.get('item_id') or '')}|SESSION={str(session.get('session_id') or '')}",
+            topic="local/kiosk",
+            received_at=stamp,
+        )
+        return {
+            "status": "accepted",
+            "summary": str(result.get("summary") or ""),
+            "session_id": str(session.get("session_id") or ""),
+            "package_order_id": str(session.get("package_order_id") or package_order_id),
+            "buffer_item_id": str(session.get("buffer_item_id") or ""),
+            "color": str(session.get("color") or ""),
+        }
+
+    @app.post("/api/modules/{module_id}/kiosk/package/finish")
+    async def kiosk_package_finish(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        _ensure_module(module_id)
+        actor = _optional_kiosk_actor(payload)
+        session_id = str(payload.get("session_id") or payload.get("sessionId") or "").strip()
+        if not session_id:
+            raise HTTPException(status_code=400, detail="PACKAGE_SESSION_ID_REQUIRED")
+        try:
+            result = oee_state_manager.finish_package_flow(
+                session_id,
+                operator_code=actor["operator_code"],
+                operator_name=actor["operator_name"],
+                device_id=actor["device_id"],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        stamp = utc_now_text()
+        updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
+        _refresh_after_kiosk_write(module_id, updated_state)
+        session = result.get("session") if isinstance(result.get("session"), dict) else {}
+        package_item = result.get("package_item") if isinstance(result.get("package_item"), dict) else {}
+        store.append_system_log(
+            module_id,
+            f"SYSTEM|KIOSK|PACKAGE_FINISH|ORDER={str(session.get('package_order_id') or '')}|PACKAGE_ITEM={str(package_item.get('item_id') or '')}|SESSION={session_id}",
+            topic="local/kiosk",
+            received_at=stamp,
+        )
+        return {
+            "status": "accepted",
+            "summary": str(result.get("summary") or ""),
+            "session_id": str(session.get("session_id") or session_id),
+            "package_order_id": str(session.get("package_order_id") or ""),
+            "buffer_item_id": str(session.get("buffer_item_id") or ""),
+            "package_item_id": str(package_item.get("item_id") or ""),
+            "work_order_id": str(package_item.get("work_order_id") or ""),
         }
 
     @app.post("/api/modules/{module_id}/kiosk/quality/override")

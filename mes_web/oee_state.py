@@ -31,6 +31,8 @@ SHIFT_PRESETS: dict[str, dict[str, str]] = {
 
 WORK_ORDER_STATUSES = {"queued", "active", "pending_approval", "completed"}
 WORK_ORDER_BLOCKING_STATUSES = {"active", "pending_approval"}
+PACKAGE_ORDER_PREFIX = "WO-PKT-"
+PACKAGE_BUFFER_STATUSES = {"available", "reserved", "consumed"}
 OEE_TREND_INTERVAL_SEC = 30
 OEE_TREND_HISTORY_LIMIT = 120
 OPERATIONAL_STATES = {
@@ -67,6 +69,11 @@ def default_work_order_state() -> dict[str, Any]:
         "lastCompletedOrderId": "",
         "lastCompletedAt": "",
         "inventoryByProduct": {},
+        "packagingBuffer": {
+            "itemsById": {},
+            "availableItemIds": [],
+        },
+        "packagingSessions": {},
         "transitionLog": [],
         "completionLog": [],
         "source": {
@@ -800,6 +807,224 @@ def _inventory_take_item_ids(entry: dict[str, Any], take_qty: int) -> list[str]:
     return taken
 
 
+def _is_package_work_order(order_id: Any, order: dict[str, Any] | None = None) -> bool:
+    normalized_order_id = str(order_id or "").strip().upper()
+    if normalized_order_id.startswith(PACKAGE_ORDER_PREFIX):
+        return True
+    if not isinstance(order, dict):
+        return False
+    markers = (
+        order.get("erpType"),
+        order.get("ferpScreen"),
+        order.get("stockCode"),
+        order.get("stockName"),
+        order.get("productCode"),
+    )
+    marker_text = " ".join(str(value or "").strip().upper() for value in markers)
+    return "PAKET" in marker_text or "PACKAGE" in marker_text
+
+
+def _infer_color_from_order_or_product(*values: Any) -> str:
+    return _normalize_order_color(*values)
+
+
+def _packaging_buffer_state(state: dict[str, Any]) -> dict[str, Any]:
+    work_orders = _work_orders_state(state)
+    buffer = work_orders.get("packagingBuffer")
+    if not isinstance(buffer, dict):
+        buffer = {"itemsById": {}, "availableItemIds": []}
+        work_orders["packagingBuffer"] = buffer
+    if not isinstance(buffer.get("itemsById"), dict):
+        buffer["itemsById"] = {}
+    if not isinstance(buffer.get("availableItemIds"), list):
+        buffer["availableItemIds"] = []
+    return buffer
+
+
+def _packaging_sessions_state(state: dict[str, Any]) -> dict[str, Any]:
+    work_orders = _work_orders_state(state)
+    sessions = work_orders.get("packagingSessions")
+    if not isinstance(sessions, dict):
+        sessions = {}
+        work_orders["packagingSessions"] = sessions
+    return sessions
+
+
+def _normalize_packaging_buffer(raw: Any) -> dict[str, Any]:
+    source = raw if isinstance(raw, dict) else {}
+    raw_items = source.get("itemsById") if isinstance(source.get("itemsById"), dict) else {}
+    items: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_row in raw_items.items():
+        if not isinstance(raw_row, dict):
+            continue
+        item_id = str(raw_row.get("item_id") or raw_row.get("itemId") or raw_key or "").strip()
+        if not item_id:
+            continue
+        status = str(raw_row.get("status") or "available").strip().lower()
+        if status not in PACKAGE_BUFFER_STATUSES:
+            status = "available"
+        color = _infer_color_from_order_or_product(
+            raw_row.get("color"),
+            raw_row.get("product_code"),
+            raw_row.get("productCode"),
+            raw_row.get("stock_code"),
+            raw_row.get("stockCode"),
+        )
+        row = {
+            "item_id": item_id,
+            "item_key": str(raw_row.get("item_key") or raw_row.get("itemKey") or item_id),
+            "upstream_order_id": str(raw_row.get("upstream_order_id") or raw_row.get("upstreamOrderId") or ""),
+            "upstream_external_ref": str(raw_row.get("upstream_external_ref") or raw_row.get("upstreamExternalRef") or ""),
+            "classification": str(raw_row.get("classification") or "").strip().upper(),
+            "product_code": str(raw_row.get("product_code") or raw_row.get("productCode") or ""),
+            "color": color,
+            "completed_at": str(raw_row.get("completed_at") or raw_row.get("completedAt") or ""),
+            "status": status,
+            "reserved_by_order_id": str(raw_row.get("reserved_by_order_id") or raw_row.get("reservedByOrderId") or ""),
+            "reserved_by_session_id": str(raw_row.get("reserved_by_session_id") or raw_row.get("reservedBySessionId") or ""),
+            "reserved_at": str(raw_row.get("reserved_at") or raw_row.get("reservedAt") or ""),
+            "consumed_by_item_id": str(raw_row.get("consumed_by_item_id") or raw_row.get("consumedByItemId") or ""),
+            "consumed_at": str(raw_row.get("consumed_at") or raw_row.get("consumedAt") or ""),
+            "quality_locked_at": str(raw_row.get("quality_locked_at") or raw_row.get("qualityLockedAt") or ""),
+        }
+        items[item_id] = row
+    raw_available = source.get("availableItemIds") if isinstance(source.get("availableItemIds"), list) else []
+    available: list[str] = []
+    for raw_item_id in raw_available:
+        item_id = str(raw_item_id or "").strip()
+        if item_id and item_id in items and items[item_id]["status"] == "available" and item_id not in available:
+            available.append(item_id)
+    for item_id, row in items.items():
+        if row["status"] == "available" and item_id not in available:
+            available.append(item_id)
+    return {"itemsById": items, "availableItemIds": available}
+
+
+def _normalize_packaging_sessions(raw: Any) -> dict[str, dict[str, Any]]:
+    source = raw if isinstance(raw, dict) else {}
+    sessions: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_row in source.items():
+        if not isinstance(raw_row, dict):
+            continue
+        session_id = str(raw_row.get("session_id") or raw_row.get("sessionId") or raw_key or "").strip()
+        if not session_id:
+            continue
+        status = str(raw_row.get("status") or "reserved").strip().lower()
+        if status not in {"reserved", "finished", "cancelled"}:
+            status = "reserved"
+        sessions[session_id] = {
+            "session_id": session_id,
+            "package_order_id": str(raw_row.get("package_order_id") or raw_row.get("packageOrderId") or ""),
+            "buffer_item_id": str(raw_row.get("buffer_item_id") or raw_row.get("bufferItemId") or raw_row.get("item_id") or ""),
+            "consumed_item_id": str(raw_row.get("consumed_item_id") or raw_row.get("consumedItemId") or ""),
+            "package_item_id": str(raw_row.get("package_item_id") or raw_row.get("packageItemId") or ""),
+            "color": str(raw_row.get("color") or ""),
+            "status": status,
+            "started_at": str(raw_row.get("started_at") or raw_row.get("startedAt") or ""),
+            "finished_at": str(raw_row.get("finished_at") or raw_row.get("finishedAt") or ""),
+            "operator_code": str(raw_row.get("operator_code") or raw_row.get("operatorCode") or ""),
+            "operator_name": str(raw_row.get("operator_name") or raw_row.get("operatorName") or ""),
+            "device_id": str(raw_row.get("device_id") or raw_row.get("deviceId") or ""),
+        }
+    return sessions
+
+
+def _packaging_item_classification(item: dict[str, Any]) -> str:
+    return str(item.get("classification") or "").strip().upper()
+
+
+def _is_packaging_buffer_eligible(item: dict[str, Any]) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if not str(item.get("item_id") or "").strip() or not str(item.get("completed_at") or "").strip():
+        return False
+    if _packaging_item_classification(item) != "GOOD":
+        return False
+    order_id = str(item.get("work_order_id") or item.get("order_id") or "").strip()
+    if _is_package_work_order(order_id):
+        return False
+    if bool(item.get("package_flow")) or bool(item.get("quality_locked")):
+        return False
+    if str(item.get("packaging_status") or "").strip().lower() in {"reserved", "consumed"}:
+        return False
+    if str(item.get("packaged_at") or "").strip() or str(item.get("packaging_order_id") or "").strip():
+        return False
+    return True
+
+
+def _package_buffer_row_from_item(item_key: str, item: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    current = existing if isinstance(existing, dict) else {}
+    item_id = str(item.get("item_id") or item_key).strip()
+    upstream_order_id = str(item.get("work_order_id") or item.get("order_id") or "").strip()
+    color = _infer_color_from_order_or_product(
+        item.get("final_color"),
+        item.get("color"),
+        item.get("sensor_color"),
+        item.get("product_code"),
+        item.get("stock_code"),
+        item.get("stock_name"),
+    )
+    product_code = str(item.get("product_code") or item.get("stock_code") or color.upper() or "").strip()
+    status = str(current.get("status") or "available").strip().lower()
+    if status not in PACKAGE_BUFFER_STATUSES:
+        status = "available"
+    return {
+        "item_id": item_id,
+        "item_key": str(item_key or item_id),
+        "upstream_order_id": upstream_order_id,
+        "upstream_external_ref": f"{upstream_order_id}_{item_id}" if upstream_order_id and item_id else "",
+        "classification": _packaging_item_classification(item),
+        "product_code": product_code,
+        "color": color,
+        "completed_at": str(item.get("completed_at") or ""),
+        "status": status,
+        "reserved_by_order_id": str(current.get("reserved_by_order_id") or ""),
+        "reserved_by_session_id": str(current.get("reserved_by_session_id") or ""),
+        "reserved_at": str(current.get("reserved_at") or ""),
+        "consumed_by_item_id": str(current.get("consumed_by_item_id") or ""),
+        "consumed_at": str(current.get("consumed_at") or ""),
+        "quality_locked_at": str(current.get("quality_locked_at") or ""),
+    }
+
+
+def _sync_packaging_buffer_for_item(state: dict[str, Any], item_key: str, item: dict[str, Any]) -> None:
+    item_id = str(item.get("item_id") or item_key or "").strip()
+    if not item_id:
+        return
+    buffer = _packaging_buffer_state(state)
+    items = buffer["itemsById"]
+    current = items.get(item_id) if isinstance(items.get(item_id), dict) else None
+    if _is_packaging_buffer_eligible(item):
+        if isinstance(current, dict) and current.get("status") == "consumed":
+            return
+        items[item_id] = _package_buffer_row_from_item(item_key, item, current)
+    elif isinstance(current, dict) and current.get("status") in {"reserved", "consumed"}:
+        return
+    elif isinstance(current, dict):
+        items.pop(item_id, None)
+    _rebuild_packaging_available_ids(buffer)
+
+
+def _refresh_packaging_buffer(state: dict[str, Any]) -> None:
+    items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
+    for item_key, item in items.items():
+        if isinstance(item, dict):
+            _sync_packaging_buffer_for_item(state, str(item_key), item)
+    _rebuild_packaging_available_ids(_packaging_buffer_state(state))
+
+
+def _rebuild_packaging_available_ids(buffer: dict[str, Any]) -> None:
+    items = buffer.get("itemsById") if isinstance(buffer.get("itemsById"), dict) else {}
+    available: list[str] = []
+    for item_id, row in items.items():
+        normalized_item_id = str(item_id or "").strip()
+        if not normalized_item_id or not isinstance(row, dict):
+            continue
+        if str(row.get("status") or "").strip().lower() == "available" and normalized_item_id not in available:
+            available.append(normalized_item_id)
+    buffer["availableItemIds"] = available
+
+
 def _work_order_requirement_key(raw: Any, fallback: str = "") -> str:
     entry = raw if isinstance(raw, dict) else {}
     return _text_or_default(
@@ -1374,6 +1599,12 @@ def _sanitize_reused_items_after_load(state: dict[str, Any]) -> None:
             "work_order_match_key",
             "inventory_match_key",
             "inventoryAction",
+            "packaging_status",
+            "packaging_order_id",
+            "packaging_session_id",
+            "packaged_at",
+            "quality_locked",
+            "quality_locked_at",
         ):
             item[field] = ""
         item["queue_status"] = str(item.get("queue_status") or "waiting_travel")
@@ -1511,8 +1742,11 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
         for key, value in inventory.items()
         if str(key or "").strip()
     }
+    base["workOrders"]["packagingBuffer"] = _normalize_packaging_buffer(work_orders.get("packagingBuffer"))
+    base["workOrders"]["packagingSessions"] = _normalize_packaging_sessions(work_orders.get("packagingSessions"))
     _sanitize_reused_items_after_load(base)
     _backfill_completed_item_inventory(base)
+    _refresh_packaging_buffer(base)
     base["workOrders"]["transitionLog"] = work_orders.get("transitionLog") if isinstance(work_orders.get("transitionLog"), list) else []
     base["workOrders"]["completionLog"] = work_orders.get("completionLog") if isinstance(work_orders.get("completionLog"), list) else []
     source = work_orders.get("source") if isinstance(work_orders.get("source"), dict) else {}
@@ -1657,6 +1891,10 @@ def _work_orders_state(state: dict[str, Any]) -> dict[str, Any]:
         work_orders["orderSequence"] = []
     if not isinstance(work_orders.get("inventoryByProduct"), dict):
         work_orders["inventoryByProduct"] = {}
+    if not isinstance(work_orders.get("packagingBuffer"), dict):
+        work_orders["packagingBuffer"] = {"itemsById": {}, "availableItemIds": []}
+    if not isinstance(work_orders.get("packagingSessions"), dict):
+        work_orders["packagingSessions"] = {}
     if not isinstance(work_orders.get("transitionLog"), list):
         work_orders["transitionLog"] = []
     if not isinstance(work_orders.get("completionLog"), list):
@@ -1711,6 +1949,29 @@ def _find_matching_requirement(order: dict[str, Any], match_key: str) -> dict[st
         if _work_order_requirement_match_key(requirement).lower() == normalized_match:
             return requirement
     return None
+
+
+def _package_order_match_color(order: dict[str, Any]) -> str:
+    requirements = _work_order_requirements(order)
+    if requirements:
+        requirement = requirements[0]
+        return _infer_color_from_order_or_product(
+            requirement.get("color"),
+            requirement.get("matchKey"),
+            requirement.get("stockCode"),
+            requirement.get("stockName"),
+            order.get("productColor"),
+            order.get("matchKey"),
+            order.get("stockCode"),
+            order.get("stockName"),
+        )
+    return _infer_color_from_order_or_product(
+        order.get("productColor"),
+        order.get("matchKey"),
+        order.get("stockCode"),
+        order.get("stockName"),
+        order.get("productCode"),
+    )
 
 
 def _work_order_log_row(order: dict[str, Any], *, event_type: str, stamp: str, note: str = "") -> dict[str, Any]:
@@ -2984,6 +3245,7 @@ def _complete_runtime_item(
         received_at=received_at,
         now=now,
     )
+    _sync_packaging_buffer_for_item(state, resolved_key, item)
     _dry_run_production_completion_hook(item)
     _live_production_completion_hook(item)
     return True
@@ -4054,6 +4316,292 @@ class OeeRuntimeStateManager:
         }
 
     @_state_locked
+    def start_package_flow(
+        self,
+        package_order_id: str,
+        *,
+        item_id: str = "",
+        operator_code: str = "",
+        operator_name: str = "",
+        device_id: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        started_at = _pseudo_iso_text(stamp)
+        state = self.read_state()
+        _refresh_packaging_buffer(state)
+        work_orders = _work_orders_state(state)
+        orders = _work_order_orders(state)
+        normalized_order_id = str(package_order_id or "").strip()
+        order = orders.get(normalized_order_id)
+        if not normalized_order_id or not isinstance(order, dict):
+            raise ValueError("PACKAGE_ORDER_NOT_FOUND")
+        if not _is_package_work_order(normalized_order_id, order):
+            raise ValueError("PACKAGE_ORDER_REQUIRED")
+        if str(order.get("status") or "") == "completed":
+            raise ValueError("PACKAGE_ORDER_ALREADY_COMPLETED")
+
+        package_color = _package_order_match_color(order)
+        if not package_color:
+            raise ValueError("PACKAGE_ORDER_COLOR_REQUIRED")
+
+        buffer = _packaging_buffer_state(state)
+        buffer_items = buffer["itemsById"]
+        requested_item_id = str(item_id or "").strip()
+        selected_item_id = ""
+        selected_row: dict[str, Any] | None = None
+        candidate_ids = [requested_item_id] if requested_item_id else list(buffer.get("availableItemIds") or [])
+        for candidate_id in candidate_ids:
+            row = buffer_items.get(str(candidate_id or "").strip())
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("status") or "").strip().lower() != "available":
+                continue
+            if _infer_color_from_order_or_product(row.get("color"), row.get("product_code")) != package_color:
+                continue
+            selected_item_id = str(row.get("item_id") or candidate_id).strip()
+            selected_row = row
+            break
+        if requested_item_id and selected_row is None:
+            raise ValueError("PACKAGE_BUFFER_ITEM_NOT_AVAILABLE")
+        if selected_row is None:
+            raise ValueError("PACKAGE_BUFFER_EMPTY_FOR_ORDER")
+
+        session_id = uuid.uuid4().hex
+        selected_row["status"] = "reserved"
+        selected_row["reserved_by_order_id"] = normalized_order_id
+        selected_row["reserved_by_session_id"] = session_id
+        selected_row["reserved_at"] = started_at
+        _rebuild_packaging_available_ids(buffer)
+
+        items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
+        source_item_key = str(selected_row.get("item_key") or selected_item_id)
+        source_item = items.get(source_item_key)
+        if not isinstance(source_item, dict):
+            source_item_key = _resolve_item_lookup_key(items, selected_item_id, completed_only=True)
+            source_item = items.get(source_item_key)
+        if isinstance(source_item, dict):
+            source_item["packaging_status"] = "reserved"
+            source_item["packaging_order_id"] = normalized_order_id
+            source_item["packaging_session_id"] = session_id
+            source_item["packaging_reserved_at"] = started_at
+            source_item["updated_at"] = started_at
+            selected_row["item_key"] = source_item_key
+
+        if str(order.get("status") or "") == "queued":
+            order["status"] = "active"
+            order["startedAt"] = started_at
+            order["startedBy"] = str(operator_code or "").strip() or "KIOSK"
+            order["startedByName"] = str(operator_name or "").strip()
+            order["transitionReason"] = "package_flow"
+            if not str(work_orders.get("activeOrderId") or "").strip():
+                work_orders["activeOrderId"] = normalized_order_id
+        _sync_work_order_row(order)
+
+        session = {
+            "session_id": session_id,
+            "package_order_id": normalized_order_id,
+            "buffer_item_id": selected_item_id,
+            "consumed_item_id": "",
+            "package_item_id": "",
+            "color": package_color,
+            "status": "reserved",
+            "started_at": started_at,
+            "finished_at": "",
+            "operator_code": str(operator_code or "").strip(),
+            "operator_name": str(operator_name or "").strip(),
+            "device_id": str(device_id or "").strip(),
+        }
+        _packaging_sessions_state(state)[session_id] = session
+        work_orders["transitionLog"] = _prepend_capped(
+            work_orders["transitionLog"],
+            _work_order_log_row(
+                order,
+                event_type="package_started",
+                stamp=started_at,
+                note=f"Paketleme buffer item {selected_item_id} rezerve edildi.",
+            ),
+        )
+        _set_summary(state, f"{normalized_order_id} paketleme oturumu basladi. Buffer item {selected_item_id} rezerve edildi.", now=stamp)
+        self.write_state(state)
+        return {
+            "state": state,
+            "summary": state["lastEventSummary"],
+            "session": session,
+            "buffer_item": selected_row,
+            "order": order,
+        }
+
+    @_state_locked
+    def finish_package_flow(
+        self,
+        session_id: str,
+        *,
+        operator_code: str = "",
+        operator_name: str = "",
+        device_id: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        finished_at = _pseudo_iso_text(stamp)
+        state = self.read_state()
+        work_orders = _work_orders_state(state)
+        orders = _work_order_orders(state)
+        sessions = _packaging_sessions_state(state)
+        normalized_session_id = str(session_id or "").strip()
+        session = sessions.get(normalized_session_id)
+        if not normalized_session_id or not isinstance(session, dict):
+            raise ValueError("PACKAGE_SESSION_NOT_FOUND")
+        if str(session.get("status") or "").strip().lower() != "reserved":
+            raise ValueError("PACKAGE_SESSION_NOT_ACTIVE")
+
+        package_order_id = str(session.get("package_order_id") or "").strip()
+        order = orders.get(package_order_id)
+        if not isinstance(order, dict):
+            raise ValueError("PACKAGE_ORDER_NOT_FOUND")
+        if not _is_package_work_order(package_order_id, order):
+            raise ValueError("PACKAGE_ORDER_REQUIRED")
+        if str(order.get("status") or "") == "completed":
+            raise ValueError("PACKAGE_ORDER_ALREADY_COMPLETED")
+
+        buffer = _packaging_buffer_state(state)
+        buffer_items = buffer["itemsById"]
+        buffer_item_id = str(session.get("buffer_item_id") or "").strip()
+        buffer_row = buffer_items.get(buffer_item_id)
+        if not isinstance(buffer_row, dict) or str(buffer_row.get("status") or "").strip().lower() != "reserved":
+            raise ValueError("PACKAGE_BUFFER_ITEM_NOT_RESERVED")
+        if str(buffer_row.get("reserved_by_session_id") or "").strip() != normalized_session_id:
+            raise ValueError("PACKAGE_BUFFER_SESSION_MISMATCH")
+
+        items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
+        source_item_key = str(buffer_row.get("item_key") or buffer_item_id)
+        source_item = items.get(source_item_key)
+        if not isinstance(source_item, dict):
+            source_item_key = _resolve_item_lookup_key(items, buffer_item_id, completed_only=True)
+            source_item = items.get(source_item_key)
+        if not isinstance(source_item, dict) or not source_item.get("completed_at"):
+            raise ValueError("PACKAGE_SOURCE_ITEM_NOT_FOUND")
+        if _packaging_item_classification(source_item) != "GOOD":
+            raise ValueError("PACKAGE_SOURCE_ITEM_NOT_GOOD")
+
+        package_color = str(session.get("color") or _package_order_match_color(order) or "").strip()
+        package_item_id = f"PKG-{buffer_item_id}-{uuid.uuid4().hex[:8]}"
+        package_item_key = package_item_id
+        index = 1
+        while package_item_key in items:
+            package_item_key = f"{package_item_id}-{index}"
+            index += 1
+
+        upstream_order_id = str(buffer_row.get("upstream_order_id") or source_item.get("work_order_id") or "")
+        upstream_external_ref = str(buffer_row.get("upstream_external_ref") or (f"{upstream_order_id}_{buffer_item_id}" if upstream_order_id else ""))
+        default_product_code = f"PKT-{package_color.upper()}" if package_color else ""
+        product_code = str(order.get("productCode") or order.get("stockCode") or default_product_code).strip()
+        package_item = {
+            "item_id": package_item_id,
+            "measure_id": "",
+            "color": package_color,
+            "final_color": package_color,
+            "product_code": product_code,
+            "stock_code": str(order.get("stockCode") or product_code),
+            "stock_name": str(order.get("stockName") or product_code),
+            "completed_at": finished_at,
+            "released_at": finished_at,
+            "updated_at": finished_at,
+            "classification": "GOOD",
+            "queue_status": "completed",
+            "count_in_oee": False,
+            "work_order_id": package_order_id,
+            "work_order_match_key": package_color,
+            "inventory_match_key": "",
+            "inventoryAction": "package_completion",
+            "package_flow": True,
+            "package_order_id": package_order_id,
+            "package_session_id": normalized_session_id,
+            "consumed_item_id": buffer_item_id,
+            "upstream_order_id": upstream_order_id,
+            "upstream_external_ref": upstream_external_ref,
+            "quality_locked": True,
+            "quality_locked_at": finished_at,
+            "final_color_frozen_at": finished_at,
+        }
+        items[package_item_key] = package_item
+
+        source_item["packaging_status"] = "consumed"
+        source_item["packaging_order_id"] = package_order_id
+        source_item["packaging_session_id"] = normalized_session_id
+        source_item["packaged_at"] = finished_at
+        source_item["consumed_package_item_id"] = package_item_id
+        source_item["quality_locked"] = True
+        source_item["quality_locked_at"] = finished_at
+        source_item["updated_at"] = finished_at
+
+        buffer_row["status"] = "consumed"
+        buffer_row["consumed_by_item_id"] = package_item_id
+        buffer_row["consumed_at"] = finished_at
+        buffer_row["quality_locked_at"] = finished_at
+        _rebuild_packaging_available_ids(buffer)
+
+        requirement = _find_matching_requirement(order, package_color)
+        requirements = _work_order_requirements(order)
+        if requirement is None and requirements:
+            requirement = requirements[0]
+        if isinstance(requirement, dict):
+            requirement["completedQty"] = max(0, round(_numeric(requirement.get("completedQty")))) + 1
+            requirement["inventoryConsumedQty"] = max(0, round(_numeric(requirement.get("inventoryConsumedQty")))) + 1
+            requirement["productionQty"] = max(0, round(_numeric(requirement.get("productionQty")))) + 1
+            _sync_work_order_requirement(requirement)
+        else:
+            order["completedQty"] = max(0, round(_numeric(order.get("completedQty")))) + 1
+            order["inventoryConsumedQty"] = max(0, round(_numeric(order.get("inventoryConsumedQty")))) + 1
+            order["productionQty"] = max(0, round(_numeric(order.get("productionQty")))) + 1
+        order["lastAllocationAt"] = finished_at
+        if str(order.get("status") or "") == "queued":
+            order["status"] = "active"
+            order["startedAt"] = finished_at
+        _sync_work_order_row(order)
+        _persist_work_order_metrics(state, order, now=stamp)
+        _mark_work_order_pending_approval_if_ready(state, order, now=stamp, completed_at=finished_at)
+
+        session["status"] = "finished"
+        session["finished_at"] = finished_at
+        session["consumed_item_id"] = buffer_item_id
+        session["package_item_id"] = package_item_id
+        if operator_code:
+            session["operator_code"] = str(operator_code or "").strip()
+        if operator_name:
+            session["operator_name"] = str(operator_name or "").strip()
+        if device_id:
+            session["device_id"] = str(device_id or "").strip()
+
+        _append_recent_id(state, package_item_key)
+        _recompute_item_counts(state)
+        work_orders["completionLog"] = _prepend_capped(
+            work_orders["completionLog"],
+            _work_order_log_row(
+                order,
+                event_type="package_finished",
+                stamp=finished_at,
+                note=f"{buffer_item_id} upstream item tuketildi, {package_item_id} paket completion olustu.",
+            ),
+        )
+        _set_summary(state, f"{package_order_id} paketleme tamamlandi. Yeni paket item {package_item_id}.", now=stamp)
+        _dry_run_production_completion_hook(package_item)
+        _live_production_completion_hook(package_item)
+        self.write_state(state)
+        return {
+            "state": state,
+            "summary": state["lastEventSummary"],
+            "session": session,
+            "buffer_item": buffer_row,
+            "package_item": package_item,
+            "order": order,
+        }
+
+    @_state_locked
     def accept_active_work_order(self, *, now: datetime | None = None) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
         if stamp.tzinfo is None:
@@ -4614,6 +5162,13 @@ class OeeRuntimeStateManager:
             raise ValueError("ITEM_NOT_FOUND")
         if not item.get("completed_at"):
             raise ValueError("ITEM_NOT_COMPLETED")
+        if (
+            bool(item.get("quality_locked"))
+            or str(item.get("packaging_status") or "").strip().lower() in {"reserved", "consumed"}
+            or str(item.get("packaging_order_id") or "").strip()
+            or str(item.get("packaged_at") or "").strip()
+        ):
+            raise ValueError("ITEM_QUALITY_LOCKED_BY_PACKAGING")
 
         next_classification = _normalize_classification(classification)
         previous_classification = _normalize_classification(item.get("classification"))
@@ -4637,6 +5192,7 @@ class OeeRuntimeStateManager:
             received_at=item["updated_at"],
             source="quality_override_inventory",
         )
+        _sync_packaging_buffer_for_item(state, item_key, item)
         _recompute_item_counts(state)
         work_order_note = ""
         work_order_id = str(item.get("work_order_id") or "").strip()

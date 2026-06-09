@@ -86,6 +86,22 @@ class AppConfig:
     db_sslmode: str = "disable"
     db_connect_timeout_sec: int = 2
     db_mirror_work_orders: bool = False
+    db_fail_open: bool = False
+    db_log_failures: bool = False
+    db_hook_production_completions: bool = False
+    db_hook_vision_events: bool = False
+    db_hook_oee_snapshots: bool = False
+    db_hook_downtime_events: bool = False
+    db_hook_maintenance_records: bool = False
+    db_hook_quality_overrides: bool = False
+    db_hook_production_completions_dry_run: bool = False
+    db_hook_vision_events_dry_run: bool = False
+    db_hook_oee_snapshots_dry_run: bool = False
+    db_shadow_read_work_orders: bool = False
+    db_read_work_orders: bool = False
+    db_shadow_read_dashboard: bool = False
+    db_read_dashboard: bool = False
+    db_strict_timestamp_guard: bool = False
     allowed_presets: tuple[str, ...] = field(default_factory=lambda: ALLOWED_PRESET_COMMANDS)
 
     @property
@@ -241,4 +257,20 @@ class AppConfig:
             db_sslmode=os.getenv("MES_WEB_DB_SSLMODE", "disable"),
             db_connect_timeout_sec=int(os.getenv("MES_WEB_DB_CONNECT_TIMEOUT_SEC", "2")),
             db_mirror_work_orders=_env_bool("MES_WEB_DB_MIRROR_WORK_ORDERS", False),
+            db_fail_open=_env_bool("MES_WEB_DB_FAIL_OPEN", False),
+            db_log_failures=_env_bool("MES_WEB_DB_LOG_FAILURES", False),
+            db_hook_production_completions=_env_bool("MES_WEB_DB_HOOK_PRODUCTION_COMPLETIONS", False),
+            db_hook_vision_events=_env_bool("MES_WEB_DB_HOOK_VISION_EVENTS", False),
+            db_hook_oee_snapshots=_env_bool("MES_WEB_DB_HOOK_OEE_SNAPSHOTS", False),
+            db_hook_downtime_events=_env_bool("MES_WEB_DB_HOOK_DOWNTIME_EVENTS", False),
+            db_hook_maintenance_records=_env_bool("MES_WEB_DB_HOOK_MAINTENANCE_RECORDS", False),
+            db_hook_quality_overrides=_env_bool("MES_WEB_DB_HOOK_QUALITY_OVERRIDES", False),
+            db_hook_production_completions_dry_run=_env_bool("MES_WEB_DB_HOOK_PRODUCTION_COMPLETIONS_DRY_RUN", False),
+            db_hook_vision_events_dry_run=_env_bool("MES_WEB_DB_HOOK_VISION_EVENTS_DRY_RUN", False),
+            db_hook_oee_snapshots_dry_run=_env_bool("MES_WEB_DB_HOOK_OEE_SNAPSHOTS_DRY_RUN", False),
+            db_shadow_read_work_orders=_env_bool("MES_WEB_DB_SHADOW_READ_WORK_ORDERS", False),
+            db_read_work_orders=_env_bool("MES_WEB_DB_READ_WORK_ORDERS", False),
+            db_shadow_read_dashboard=_env_bool("MES_WEB_DB_SHADOW_READ_DASHBOARD", False),
+            db_read_dashboard=_env_bool("MES_WEB_DB_READ_DASHBOARD", False),
+            db_strict_timestamp_guard=_env_bool("MES_WEB_DB_STRICT_TIMESTAMP_GUARD", False),
         )

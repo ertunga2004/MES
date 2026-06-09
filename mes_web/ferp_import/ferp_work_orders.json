@@ -51,6 +51,60 @@
         "lblFPJ00_ID": "FIELD-TEST",
         "lblMMFB0_DESC": "Fiziksel saha test is emri - SCRAP akisi"
       }
+    },
+    {
+      "ferp_object": "mym4004",
+      "ferp_screen": "Paketleme Is Emirleri",
+      "cycle_time_sec": 45.0,
+      "ferp_labels": {
+        "lblMMFB0_DATE": "2026-04-28",
+        "lblMMFB0_NUMBER": "WO-PKT-BLUE-001",
+        "lblMMFB0_QTY": 3,
+        "lblMTMT0_CODE": "Mamul",
+        "lblMTM00_CODE": "PKT-BLUE",
+        "lblMTM00_NAME": "Mavi Paket",
+        "lblMUNT0_CODE": "ADET",
+        "lblFPJ00_ID": "FIELD-TEST",
+        "lblMMFB0_DESC": "Mavi paket demo is emri",
+        "lblMMFB4_SETUP_TIME": 0.0,
+        "lblMMFB4_WORKER_COUNT": 0
+      }
+    },
+    {
+      "ferp_object": "mym4004",
+      "ferp_screen": "Paketleme Is Emirleri",
+      "cycle_time_sec": 45.0,
+      "ferp_labels": {
+        "lblMMFB0_DATE": "2026-04-28",
+        "lblMMFB0_NUMBER": "WO-PKT-RED-001",
+        "lblMMFB0_QTY": 1,
+        "lblMTMT0_CODE": "Mamul",
+        "lblMTM00_CODE": "PKT-RED",
+        "lblMTM00_NAME": "Kirmizi Paket",
+        "lblMUNT0_CODE": "ADET",
+        "lblFPJ00_ID": "FIELD-TEST",
+        "lblMMFB0_DESC": "Kirmizi paket demo is emri",
+        "lblMMFB4_SETUP_TIME": 0.0,
+        "lblMMFB4_WORKER_COUNT": 0
+      }
+    },
+    {
+      "ferp_object": "mym4004",
+      "ferp_screen": "Paketleme Is Emirleri",
+      "cycle_time_sec": 45.0,
+      "ferp_labels": {
+        "lblMMFB0_DATE": "2026-04-28",
+        "lblMMFB0_NUMBER": "WO-PKT-YELLOW-001",
+        "lblMMFB0_QTY": 1,
+        "lblMTMT0_CODE": "Mamul",
+        "lblMTM00_CODE": "PKT-YELLOW",
+        "lblMTM00_NAME": "Sari Paket",
+        "lblMUNT0_CODE": "ADET",
+        "lblFPJ00_ID": "FIELD-TEST",
+        "lblMMFB0_DESC": "Sari paket demo is emri",
+        "lblMMFB4_SETUP_TIME": 0.0,
+        "lblMMFB4_WORKER_COUNT": 0
+      }
     }
   ]
 }

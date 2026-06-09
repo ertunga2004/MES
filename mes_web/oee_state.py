@@ -4524,11 +4524,18 @@ class OeeRuntimeStateManager:
             "consumed_item_id": buffer_item_id,
             "upstream_order_id": upstream_order_id,
             "upstream_external_ref": upstream_external_ref,
+            "station_code": "PACKAGING_01",
+            "station_name": "İstasyon 2 - Paketleme",
+            "upstream_station_code": "ASSEMBLY_01",
+            "upstream_station_name": "İstasyon 1 - Montaj",
             "quality_locked": True,
             "quality_locked_at": finished_at,
             "final_color_frozen_at": finished_at,
         }
         items[package_item_key] = package_item
+
+        _dry_run_production_completion_hook(package_item)
+        _live_production_completion_hook(package_item)
 
         source_item["packaging_status"] = "consumed"
         source_item["packaging_order_id"] = package_order_id
@@ -4589,8 +4596,6 @@ class OeeRuntimeStateManager:
             ),
         )
         _set_summary(state, f"{package_order_id} paketleme tamamlandi. Yeni paket item {package_item_id}.", now=stamp)
-        _dry_run_production_completion_hook(package_item)
-        _live_production_completion_hook(package_item)
         self.write_state(state)
         return {
             "state": state,

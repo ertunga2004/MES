@@ -3183,6 +3183,46 @@ def _live_production_completion_hook(item: dict[str, Any]) -> None:
         print(f"[LIVE:production_completions] WARNING: Exception in live hook: {exc}")
 
 
+def _station_event_hooks(rows: list[Any]) -> None:
+    if not rows:
+        return
+    try:
+        from .config import AppConfig
+        from .db.station_event_writer import format_station_event_dry_run, mirror_station_events_from_rows
+
+        config = AppConfig.from_env()
+        if not config.db_enabled:
+            return
+
+        if config.db_hook_station_events_dry_run:
+            if config.db_hook_station_events:
+                print("[DRY_RUN:station_events] WARNING: Dry-run flag is True while live flag is True. Dry-run wins; no DB write will occur.")
+            for row in rows:
+                print(format_station_event_dry_run(row))
+            return
+
+        if not config.db_hook_station_events:
+            return
+
+        result = mirror_station_events_from_rows(config, rows)
+        if result.skipped or result.reason in {"live_hook_not_implemented", "error_fail_open"}:
+            print(f"[LIVE:station_events] reason={result.reason} attempted={result.attempted} success={result.success} skipped={result.skipped}")
+
+    except Exception as exc:
+        print(f"[LIVE:station_events] WARNING: Exception in station event hook: {exc}")
+
+
+def _station_event_hooks_enabled() -> bool:
+    try:
+        from .config import AppConfig
+
+        config = AppConfig.from_env()
+        return bool(config.db_enabled and (config.db_hook_station_events or config.db_hook_station_events_dry_run))
+    except Exception as exc:
+        print(f"[DRY_RUN:station_events] WARNING: Exception while checking station event flags: {exc}")
+        return False
+
+
 def _complete_runtime_item(
     state: dict[str, Any],
     items: dict[str, dict[str, Any]],
@@ -3246,6 +3286,18 @@ def _complete_runtime_item(
         now=now,
     )
     _sync_packaging_buffer_for_item(state, resolved_key, item)
+    if _station_event_hooks_enabled():
+        try:
+            from .db.station_event_writer import build_buffer_in_station_events, build_completion_station_events
+
+            station_event_rows = build_completion_station_events(item)
+            item_id_for_buffer = str(item.get("item_id") or resolved_key or "").strip()
+            buffer_row = _packaging_buffer_state(state)["itemsById"].get(item_id_for_buffer)
+            if isinstance(buffer_row, dict) and str(buffer_row.get("status") or "").strip().lower() == "available":
+                station_event_rows.extend(build_buffer_in_station_events(buffer_row))
+            _station_event_hooks(station_event_rows)
+        except Exception as exc:
+            print(f"[DRY_RUN:station_events] WARNING: Exception while building completion station events: {exc}")
     _dry_run_production_completion_hook(item)
     _live_production_completion_hook(item)
     return True
@@ -4425,6 +4477,13 @@ class OeeRuntimeStateManager:
             ),
         )
         _set_summary(state, f"{normalized_order_id} paketleme oturumu basladi. Buffer item {selected_item_id} rezerve edildi.", now=stamp)
+        if _station_event_hooks_enabled():
+            try:
+                from .db.station_event_writer import build_package_start_station_events
+
+                _station_event_hooks(build_package_start_station_events(session, selected_row))
+            except Exception as exc:
+                print(f"[DRY_RUN:station_events] WARNING: Exception while building package start station events: {exc}")
         self.write_state(state)
         return {
             "state": state,
@@ -4551,6 +4610,20 @@ class OeeRuntimeStateManager:
         buffer_row["consumed_at"] = finished_at
         buffer_row["quality_locked_at"] = finished_at
         _rebuild_packaging_available_ids(buffer)
+        if _station_event_hooks_enabled():
+            try:
+                from .db.station_event_writer import build_package_finish_station_events
+
+                _station_event_hooks(
+                    build_package_finish_station_events(
+                        package_item,
+                        session=session,
+                        source_item=source_item,
+                        buffer_row=buffer_row,
+                    )
+                )
+            except Exception as exc:
+                print(f"[DRY_RUN:station_events] WARNING: Exception while building package finish station events: {exc}")
 
         requirement = _find_matching_requirement(order, package_color)
         requirements = _work_order_requirements(order)

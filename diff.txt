@@ -1,0 +1,186 @@
+diff --git a/docker/mes/compose.portable.yaml b/docker/mes/compose.portable.yaml
+index 88df8ee..91fb093 100644
+--- a/docker/mes/compose.portable.yaml
++++ b/docker/mes/compose.portable.yaml
+@@ -23,9 +23,11 @@ services:
+       MES_WEB_DB_HOOK_DOWNTIME_EVENTS: ${MES_WEB_DB_HOOK_DOWNTIME_EVENTS:-false}
+       MES_WEB_DB_HOOK_MAINTENANCE_RECORDS: ${MES_WEB_DB_HOOK_MAINTENANCE_RECORDS:-false}
+       MES_WEB_DB_HOOK_QUALITY_OVERRIDES: ${MES_WEB_DB_HOOK_QUALITY_OVERRIDES:-false}
++      MES_WEB_DB_HOOK_STATION_EVENTS: ${MES_WEB_DB_HOOK_STATION_EVENTS:-false}
+       MES_WEB_DB_HOOK_PRODUCTION_COMPLETIONS_DRY_RUN: ${MES_WEB_DB_HOOK_PRODUCTION_COMPLETIONS_DRY_RUN:-false}
+       MES_WEB_DB_HOOK_VISION_EVENTS_DRY_RUN: ${MES_WEB_DB_HOOK_VISION_EVENTS_DRY_RUN:-false}
+       MES_WEB_DB_HOOK_OEE_SNAPSHOTS_DRY_RUN: ${MES_WEB_DB_HOOK_OEE_SNAPSHOTS_DRY_RUN:-false}
++      MES_WEB_DB_HOOK_STATION_EVENTS_DRY_RUN: ${MES_WEB_DB_HOOK_STATION_EVENTS_DRY_RUN:-false}
+       MES_WEB_DB_SHADOW_READ_WORK_ORDERS: ${MES_WEB_DB_SHADOW_READ_WORK_ORDERS:-false}
+       MES_WEB_DB_READ_WORK_ORDERS: ${MES_WEB_DB_READ_WORK_ORDERS:-false}
+       MES_WEB_DB_SHADOW_READ_DASHBOARD: ${MES_WEB_DB_SHADOW_READ_DASHBOARD:-false}
+diff --git a/docker/mes/compose.yaml b/docker/mes/compose.yaml
+index e7ed3a6..609e0d5 100644
+--- a/docker/mes/compose.yaml
++++ b/docker/mes/compose.yaml
+@@ -22,9 +22,11 @@ services:
+       MES_WEB_DB_HOOK_DOWNTIME_EVENTS: ${MES_WEB_DB_HOOK_DOWNTIME_EVENTS:-false}
+       MES_WEB_DB_HOOK_MAINTENANCE_RECORDS: ${MES_WEB_DB_HOOK_MAINTENANCE_RECORDS:-false}
+       MES_WEB_DB_HOOK_QUALITY_OVERRIDES: ${MES_WEB_DB_HOOK_QUALITY_OVERRIDES:-false}
++      MES_WEB_DB_HOOK_STATION_EVENTS: ${MES_WEB_DB_HOOK_STATION_EVENTS:-false}
+       MES_WEB_DB_HOOK_PRODUCTION_COMPLETIONS_DRY_RUN: ${MES_WEB_DB_HOOK_PRODUCTION_COMPLETIONS_DRY_RUN:-false}
+       MES_WEB_DB_HOOK_VISION_EVENTS_DRY_RUN: ${MES_WEB_DB_HOOK_VISION_EVENTS_DRY_RUN:-false}
+       MES_WEB_DB_HOOK_OEE_SNAPSHOTS_DRY_RUN: ${MES_WEB_DB_HOOK_OEE_SNAPSHOTS_DRY_RUN:-false}
++      MES_WEB_DB_HOOK_STATION_EVENTS_DRY_RUN: ${MES_WEB_DB_HOOK_STATION_EVENTS_DRY_RUN:-false}
+       MES_WEB_DB_SHADOW_READ_WORK_ORDERS: ${MES_WEB_DB_SHADOW_READ_WORK_ORDERS:-false}
+       MES_WEB_DB_READ_WORK_ORDERS: ${MES_WEB_DB_READ_WORK_ORDERS:-false}
+       MES_WEB_DB_SHADOW_READ_DASHBOARD: ${MES_WEB_DB_SHADOW_READ_DASHBOARD:-false}
+diff --git a/mes_web/config.py b/mes_web/config.py
+index 9e358d2..88ac211 100644
+--- a/mes_web/config.py
++++ b/mes_web/config.py
+@@ -94,9 +94,11 @@ class AppConfig:
+     db_hook_downtime_events: bool = False
+     db_hook_maintenance_records: bool = False
+     db_hook_quality_overrides: bool = False
++    db_hook_station_events: bool = False
+     db_hook_production_completions_dry_run: bool = False
+     db_hook_vision_events_dry_run: bool = False
+     db_hook_oee_snapshots_dry_run: bool = False
++    db_hook_station_events_dry_run: bool = False
+     db_shadow_read_work_orders: bool = False
+     db_read_work_orders: bool = False
+     db_shadow_read_dashboard: bool = False
+@@ -265,9 +267,11 @@ class AppConfig:
+             db_hook_downtime_events=_env_bool("MES_WEB_DB_HOOK_DOWNTIME_EVENTS", False),
+             db_hook_maintenance_records=_env_bool("MES_WEB_DB_HOOK_MAINTENANCE_RECORDS", False),
+             db_hook_quality_overrides=_env_bool("MES_WEB_DB_HOOK_QUALITY_OVERRIDES", False),
++            db_hook_station_events=_env_bool("MES_WEB_DB_HOOK_STATION_EVENTS", False),
+             db_hook_production_completions_dry_run=_env_bool("MES_WEB_DB_HOOK_PRODUCTION_COMPLETIONS_DRY_RUN", False),
+             db_hook_vision_events_dry_run=_env_bool("MES_WEB_DB_HOOK_VISION_EVENTS_DRY_RUN", False),
+             db_hook_oee_snapshots_dry_run=_env_bool("MES_WEB_DB_HOOK_OEE_SNAPSHOTS_DRY_RUN", False),
++            db_hook_station_events_dry_run=_env_bool("MES_WEB_DB_HOOK_STATION_EVENTS_DRY_RUN", False),
+             db_shadow_read_work_orders=_env_bool("MES_WEB_DB_SHADOW_READ_WORK_ORDERS", False),
+             db_read_work_orders=_env_bool("MES_WEB_DB_READ_WORK_ORDERS", False),
+             db_shadow_read_dashboard=_env_bool("MES_WEB_DB_SHADOW_READ_DASHBOARD", False),
+diff --git a/mes_web/db/__init__.py b/mes_web/db/__init__.py
+index ec30bcb..4f953f9 100644
+--- a/mes_web/db/__init__.py
++++ b/mes_web/db/__init__.py
+@@ -4,6 +4,7 @@ from .config import DatabaseConfig, build_database_config
+ from .health import check_database_health
+ from .production_completion_writer import build_production_completion_row, mirror_production_completion_from_item
+ from .safe_write import DatabaseWriteResult, safe_db_write
++from .station_event_writer import StationEventRow, build_station_event_row
+ 
+ __all__ = [
+     "DatabaseConfig",
+@@ -11,6 +12,8 @@ __all__ = [
+     "check_database_health",
+     "build_production_completion_row",
+     "mirror_production_completion_from_item",
++    "StationEventRow",
++    "build_station_event_row",
+     "DatabaseWriteResult",
+     "safe_db_write",
+ ]
+diff --git a/mes_web/oee_state.py b/mes_web/oee_state.py
+index 3b05b01..3cb6492 100644
+--- a/mes_web/oee_state.py
++++ b/mes_web/oee_state.py
+@@ -3183,6 +3183,46 @@ def _live_production_completion_hook(item: dict[str, Any]) -> None:
+         print(f"[LIVE:production_completions] WARNING: Exception in live hook: {exc}")
+ 
+ 
++def _station_event_hooks(rows: list[Any]) -> None:
++    if not rows:
++        return
++    try:
++        from .config import AppConfig
++        from .db.station_event_writer import format_station_event_dry_run, mirror_station_events_from_rows
++
++        config = AppConfig.from_env()
++        if not config.db_enabled:
++            return
++
++        if config.db_hook_station_events_dry_run:
++            if config.db_hook_station_events:
++                print("[DRY_RUN:station_events] WARNING: Dry-run flag is True while live flag is True. Dry-run wins; no DB write will occur.")
++            for row in rows:
++                print(format_station_event_dry_run(row))
++            return
++
++        if not config.db_hook_station_events:
++            return
++
++        result = mirror_station_events_from_rows(config, rows)
++        if result.skipped or result.reason in {"live_hook_not_implemented", "error_fail_open"}:
++            print(f"[LIVE:station_events] reason={result.reason} attempted={result.attempted} success={result.success} skipped={result.skipped}")
++
++    except Exception as exc:
++        print(f"[LIVE:station_events] WARNING: Exception in station event hook: {exc}")
++
++
++def _station_event_hooks_enabled() -> bool:
++    try:
++        from .config import AppConfig
++
++        config = AppConfig.from_env()
++        return bool(config.db_enabled and (config.db_hook_station_events or config.db_hook_station_events_dry_run))
++    except Exception as exc:
++        print(f"[DRY_RUN:station_events] WARNING: Exception while checking station event flags: {exc}")
++        return False
++
++
+ def _complete_runtime_item(
+     state: dict[str, Any],
+     items: dict[str, dict[str, Any]],
+@@ -3246,6 +3286,18 @@ def _complete_runtime_item(
+         now=now,
+     )
+     _sync_packaging_buffer_for_item(state, resolved_key, item)
++    if _station_event_hooks_enabled():
++        try:
++            from .db.station_event_writer import build_buffer_in_station_events, build_completion_station_events
++
++            station_event_rows = build_completion_station_events(item)
++            item_id_for_buffer = str(item.get("item_id") or resolved_key or "").strip()
++            buffer_row = _packaging_buffer_state(state)["itemsById"].get(item_id_for_buffer)
++            if isinstance(buffer_row, dict) and str(buffer_row.get("status") or "").strip().lower() == "available":
++                station_event_rows.extend(build_buffer_in_station_events(buffer_row))
++            _station_event_hooks(station_event_rows)
++        except Exception as exc:
++            print(f"[DRY_RUN:station_events] WARNING: Exception while building completion station events: {exc}")
+     _dry_run_production_completion_hook(item)
+     _live_production_completion_hook(item)
+     return True
+@@ -4425,6 +4477,13 @@ class OeeRuntimeStateManager:
+             ),
+         )
+         _set_summary(state, f"{normalized_order_id} paketleme oturumu basladi. Buffer item {selected_item_id} rezerve edildi.", now=stamp)
++        if _station_event_hooks_enabled():
++            try:
++                from .db.station_event_writer import build_package_start_station_events
++
++                _station_event_hooks(build_package_start_station_events(session, selected_row))
++            except Exception as exc:
++                print(f"[DRY_RUN:station_events] WARNING: Exception while building package start station events: {exc}")
+         self.write_state(state)
+         return {
+             "state": state,
+@@ -4551,6 +4610,20 @@ class OeeRuntimeStateManager:
+         buffer_row["consumed_at"] = finished_at
+         buffer_row["quality_locked_at"] = finished_at
+         _rebuild_packaging_available_ids(buffer)
++        if _station_event_hooks_enabled():
++            try:
++                from .db.station_event_writer import build_package_finish_station_events
++
++                _station_event_hooks(
++                    build_package_finish_station_events(
++                        package_item,
++                        session=session,
++                        source_item=source_item,
++                        buffer_row=buffer_row,
++                    )
++                )
++            except Exception as exc:
++                print(f"[DRY_RUN:station_events] WARNING: Exception while building package finish station events: {exc}")
+ 
+         requirement = _find_matching_requirement(order, package_color)
+         requirements = _work_order_requirements(order)

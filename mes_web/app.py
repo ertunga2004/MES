@@ -174,15 +174,31 @@ def _project_kiosk_requirements(order: dict[str, Any]) -> tuple[list[dict[str, A
     return projected, content_counts, content_summary
 
 
-def _queued_order_ids(raw_orders: dict[str, Any], sequence: list[Any]) -> list[str]:
+def _queued_order_ids(raw_orders: dict[str, Any], sequence: list[Any], station_code: str = "") -> list[str]:
     queued: list[str] = []
     seen: set[str] = set()
+    
+    def _matches_station(order_id: str, order: dict[str, Any]) -> bool:
+        if not station_code:
+            return True
+        explicit_station = str(order.get("stationCode") or "").strip()
+        if station_code == "PACKAGING_01":
+            is_pkg = _is_kiosk_package_order(order_id, order)
+            return explicit_station == "PACKAGING_01" or (not explicit_station and is_pkg)
+        elif station_code == "ASSEMBLY_01":
+            is_pkg = _is_kiosk_package_order(order_id, order)
+            return explicit_station == "ASSEMBLY_01" or (not explicit_station and not is_pkg)
+        else:
+            return explicit_station == station_code
+
     for raw_order_id in sequence:
         order_id = str(raw_order_id or "").strip()
         order = raw_orders.get(order_id)
         if not order_id or order_id in seen or not isinstance(order, dict):
             continue
         if str(order.get("status") or "").strip() != "queued":
+            continue
+        if not _matches_station(order_id, order):
             continue
         queued.append(order_id)
         seen.add(order_id)
@@ -191,6 +207,8 @@ def _queued_order_ids(raw_orders: dict[str, Any], sequence: list[Any]) -> list[s
         if not order_id or order_id in seen or not isinstance(order, dict):
             continue
         if str(order.get("status") or "").strip() != "queued":
+            continue
+        if not _matches_station(order_id, order):
             continue
         queued.append(order_id)
         seen.add(order_id)
@@ -454,7 +472,7 @@ def _build_kiosk_snapshot(module_id: str, device_id: str, station_code: str = ""
     work_orders_payload = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
     raw_orders = work_orders_payload.get("ordersById") if isinstance(work_orders_payload.get("ordersById"), dict) else {}
     sequence = work_orders_payload.get("orderSequence") if isinstance(work_orders_payload.get("orderSequence"), list) else []
-    queued_order_ids = _queued_order_ids(raw_orders, sequence)
+    queued_order_ids = _queued_order_ids(raw_orders, sequence, station_code=station_code)
     ordered_orders: list[dict[str, Any]] = []
     seen_order_ids: set[str] = set()
     for raw_order_id in sequence:
@@ -1619,9 +1637,11 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="KIOSK_WORK_ORDER_START_BLOCKED")
         work_orders = current_state.get("workOrders") if isinstance(current_state.get("workOrders"), dict) else {}
         orders_by_id = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+        station_code = str(payload.get("station_code") or "").strip()
         queued_order_ids = _queued_order_ids(
             orders_by_id,
             work_orders.get("orderSequence") if isinstance(work_orders.get("orderSequence"), list) else [],
+            station_code=station_code,
         )
         top_queue_order_id = queued_order_ids[0] if queued_order_ids else ""
         order_id = str(payload.get("order_id") or payload.get("orderId") or "").strip()
@@ -2244,7 +2264,7 @@ def create_app() -> FastAPI:
         }
 
     @app.websocket("/ws/modules/{module_id}/kiosk/{device_id}")
-    async def kiosk_stream(websocket: WebSocket, module_id: str, device_id: str) -> None:
+    async def kiosk_stream(websocket: WebSocket, module_id: str, device_id: str, station_code: str = "") -> None:
         if module_id != config.module_id or not str(device_id or "").strip():
             await websocket.close(code=4404)
             return
@@ -2261,7 +2281,7 @@ def create_app() -> FastAPI:
                     "type": "kiosk_snapshot",
                     "module_id": module_id,
                     "device_id": str(device_id).strip(),
-                    "data": _build_kiosk_snapshot(module_id, str(device_id).strip()),
+                    "data": _build_kiosk_snapshot(module_id, str(device_id).strip(), station_code=station_code),
                 }
             )
             while True:
@@ -2271,7 +2291,7 @@ def create_app() -> FastAPI:
                         "type": "kiosk_snapshot",
                         "module_id": module_id,
                         "device_id": str(device_id).strip(),
-                        "data": _build_kiosk_snapshot(module_id, str(device_id).strip()),
+                        "data": _build_kiosk_snapshot(module_id, str(device_id).strip(), station_code=station_code),
                     }
                 )
         except WebSocketDisconnect:

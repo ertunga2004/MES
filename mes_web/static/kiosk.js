@@ -1,4 +1,4 @@
-﻿const state = {
+const state = {
   moduleId: "",
   deviceId: "",
   snapshot: null,
@@ -60,7 +60,12 @@ function writeStoredOperatorId(value) {
 }
 
 function readStoredStationId() {
-  return window.localStorage.getItem(deviceStorageKey("station_id")) || "";
+  const value = window.localStorage.getItem(deviceStorageKey("station_id")) || "";
+  if (value === "ASSEMBLY_01" || value === "PACKAGING_01") {
+    window.localStorage.removeItem(deviceStorageKey("station_id"));
+    return "";
+  }
+  return value;
 }
 
 function writeStoredStationId(value) {
@@ -184,13 +189,14 @@ function currentActorPayload() {
   const snapshot = state.snapshot || {};
   const device = snapshot.device || {};
   const selectedOperatorId = els.operatorSelect.value || readStoredOperatorId() || device.last_operator_id || "";
-  const boundStationId = state.stationCode || readStoredStationId() || device.bound_station_id || "";
+  const boundStationId = readStoredStationId() || device.bound_station_id || "";
   const deviceName = readStoredDeviceName() || device.device_name || state.deviceId;
   return {
     device_id: state.deviceId,
     device_name: deviceName,
     bound_station_id: boundStationId,
     operator_id: selectedOperatorId,
+    station_code: state.stationCode || "",
   };
 }
 
@@ -226,7 +232,13 @@ async function resolveModuleId() {
 }
 
 async function loadBootstrap() {
-  const url = `/api/modules/${state.moduleId}/kiosk/bootstrap?device_id=${encodeURIComponent(state.deviceId)}&station_code=${encodeURIComponent(state.stationCode || "")}`;
+  const params = new URLSearchParams();
+  params.set("device_id", state.deviceId);
+  if (state.stationCode) {
+    params.set("station_code", state.stationCode);
+  }
+
+  const url = `/api/modules/${state.moduleId}/kiosk/bootstrap?${params.toString()}`;
   const bootstrap = await fetchJson(url);
   state.snapshot = bootstrap;
   const visibleItemIds = new Set(((bootstrap.recent_items || []).map((item) => String((item || {}).item_id || "").trim())).filter(Boolean));
@@ -323,7 +335,14 @@ function checklistProgress(steps) {
 function renderOperatorSelect() {
   const snapshot = state.snapshot || {};
   const operators = Array.isArray(snapshot.operators) ? snapshot.operators : [];
-  const currentValue = readStoredOperatorId() || (snapshot.operator || {}).operator_id || (snapshot.device || {}).last_operator_id || "";
+  let currentValue = readStoredOperatorId() || (snapshot.operator || {}).operator_id || (snapshot.device || {}).last_operator_id || "";
+
+  const validOperatorIds = new Set(operators.map((operator) => String(operator.operator_id || "")));
+  if (!validOperatorIds.has(currentValue)) {
+    currentValue = operators.length > 0 ? String(operators[0].operator_id || "") : "";
+    writeStoredOperatorId(currentValue);
+  }
+
   els.operatorSelect.innerHTML = "";
   for (const operator of operators) {
     const option = document.createElement("option");
@@ -334,6 +353,7 @@ function renderOperatorSelect() {
     }
     els.operatorSelect.appendChild(option);
   }
+
   if (!els.operatorSelect.value && operators.length > 0) {
     els.operatorSelect.value = String(operators[0].operator_id || "");
     writeStoredOperatorId(els.operatorSelect.value);
@@ -915,16 +935,26 @@ function connectSocket() {
 async function init() {
   const parts = window.location.pathname.split("/").filter(Boolean);
   const lastPart = decodeURIComponent(parts[parts.length - 1] || "");
-  state.deviceId = lastPart;
-  if (parts.length >= 3 && parts[parts.length - 2] === "station") {
+
+  const knownStationCodes = new Set(["ASSEMBLY_01", "PACKAGING_01"]);
+  const stationDeviceMap = {
+    ASSEMBLY_01: "kiosk-assembly-01",
+    PACKAGING_01: "kiosk-packaging-01",
+  };
+
+  if (knownStationCodes.has(lastPart) || (parts.length >= 3 && parts[parts.length - 2] === "station")) {
     state.stationCode = lastPart;
+    state.deviceId = stationDeviceMap[state.stationCode] || "kiosk-1";
   } else {
+    state.deviceId = lastPart || "kiosk-1";
     state.stationCode = "";
   }
+
   if (!state.deviceId) {
     window.alert("DEVICE_ID_REQUIRED");
     return;
   }
+
   try {
     setConnectionState("Hazirlaniyor");
     state.moduleId = await resolveModuleId();

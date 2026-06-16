@@ -10,10 +10,12 @@ from mes_web.config import AppConfig
 from mes_web.db.station_event_writer import (
     ASSEMBLY_STATION_CODE,
     PACKAGING_STATION_CODE,
+    UPSERT_STATION_EVENT_SQL,
     build_buffer_in_station_events,
     build_completion_station_events,
     build_package_finish_station_events,
     build_package_start_station_events,
+    build_station_event_row,
     format_station_event_dry_run,
     mirror_station_events_from_rows,
 )
@@ -131,7 +133,7 @@ class StationEventHookTests(unittest.TestCase):
         )
         self.assertTrue(all(row.apply_safe for row in start_rows + finish_rows))
 
-    def test_dry_run_format_and_live_writer_are_no_write(self) -> None:
+    def test_dry_run_format_and_live_writer_upserts_apply_safe_rows(self) -> None:
         row = build_completion_station_events(
             {
                 "item_id": "42",
@@ -142,13 +144,61 @@ class StationEventHookTests(unittest.TestCase):
         )[0]
         formatted = format_station_event_dry_run(row)
         config = AppConfig(db_enabled=True, db_hook_station_events=True)
-        result = mirror_station_events_from_rows(config, [row])
+        with patch("mes_web.db.station_event_writer._upsert_station_event_rows") as upsert:
+            result = mirror_station_events_from_rows(config, [row])
 
         self.assertIn("[DRY_RUN:station_events]", formatted)
         self.assertIn("event_type=COMPLETE", formatted)
-        self.assertEqual(result.reason, "live_hook_not_implemented")
+        self.assertEqual(result.reason, "success")
+        self.assertTrue(result.attempted)
+        self.assertTrue(result.success)
+        self.assertFalse(result.skipped)
+        upsert.assert_called_once()
+        self.assertEqual(upsert.call_args.args[1], [row])
+
+    def test_live_writer_filters_unsafe_rows_and_uses_idempotent_key(self) -> None:
+        safe_row = build_completion_station_events(
+            {
+                "item_id": "42",
+                "work_order_id": "WO-RED-001",
+                "classification": "GOOD",
+                "completed_at": "2026-06-12T10:00:00+00:00",
+            }
+        )[0]
+        unsafe_row = build_station_event_row(
+            event_type="UNKNOWN",
+            station_code=ASSEMBLY_STATION_CODE,
+            event_time="2026-06-12T10:00:00+00:00",
+            source="mes_web_runtime",
+            external_ref="unsafe",
+        )
+        config = AppConfig(db_enabled=True, db_hook_station_events=True)
+
+        with patch("mes_web.db.station_event_writer._upsert_station_event_rows") as upsert:
+            result = mirror_station_events_from_rows(config, [unsafe_row, safe_row])
+
+        self.assertEqual(result.reason, "success")
+        self.assertTrue(result.success)
+        self.assertEqual(upsert.call_args.args[1], [safe_row])
+        self.assertIn("ON CONFLICT (source, external_ref) DO UPDATE", UPSERT_STATION_EVENT_SQL)
+
+    def test_live_writer_skips_when_no_apply_safe_rows(self) -> None:
+        unsafe_row = build_station_event_row(
+            event_type="UNKNOWN",
+            station_code=ASSEMBLY_STATION_CODE,
+            event_time="2026-06-12T10:00:00+00:00",
+            source="mes_web_runtime",
+            external_ref="unsafe",
+        )
+        config = AppConfig(db_enabled=True, db_hook_station_events=True)
+
+        with patch("mes_web.db.station_event_writer._upsert_station_event_rows") as upsert:
+            result = mirror_station_events_from_rows(config, [unsafe_row])
+
+        self.assertEqual(result.reason, "no_apply_safe_rows")
         self.assertFalse(result.attempted)
         self.assertTrue(result.skipped)
+        upsert.assert_not_called()
 
     def test_station_event_hook_is_silent_by_default_and_logs_in_dry_run(self) -> None:
         row = build_completion_station_events(

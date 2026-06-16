@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from mes_web.config import AppConfig
@@ -48,6 +49,49 @@ class RuntimeServiceTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertIsInstance(calls[0][0], dict)
             self.assertTrue(calls[0][1])
+
+    def test_read_work_orders_flag_does_not_trigger_startup_mirror(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "oee_runtime_state.json"
+            work_orders_dir = Path(temp_dir) / "work_orders"
+            state_path.write_text("{}", encoding="utf-8")
+            work_orders_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "MES_WEB_OEE_RUNTIME_STATE_PATH": str(state_path),
+                    "MES_WEB_WORK_ORDERS_DIR": str(work_orders_dir),
+                    "MES_WEB_DB_ENABLED": "true",
+                    "MES_WEB_DB_READ_WORK_ORDERS": "true",
+                    "MES_WEB_DB_MIRROR_WORK_ORDERS": "false",
+                },
+                clear=False,
+            ), patch(
+                "mes_web.store.state_with_db_work_orders",
+                side_effect=lambda _config, state, **_kwargs: SimpleNamespace(state=state),
+            ):
+                config = AppConfig.from_env()
+                store = DashboardStore(config)
+                hub = SnapshotHub(store, coalesce_ms=config.ws_coalesce_ms)
+                service = RuntimeService(config, store, hub)
+                service.excel_sink.start = lambda: None
+                service.excel_sink.stop = lambda: None
+                service.excel_sink.record_work_order_state = lambda _state, _stamp: None
+                service.mqtt_client.start = lambda: True
+                service.mqtt_client.stop = lambda: None
+
+                with patch.object(
+                    service,
+                    "_mirror_work_orders",
+                    side_effect=AssertionError("READ_WORK_ORDERS must not trigger startup mirror"),
+                ):
+
+                    async def run() -> None:
+                        await service.start()
+                        await service.stop()
+
+                    asyncio.run(run())
 
 
 if __name__ == "__main__":

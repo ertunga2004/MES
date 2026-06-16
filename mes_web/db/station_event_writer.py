@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..config import AppConfig
-from .safe_write import DatabaseWriteResult
+from .connection import database_connection
+from .safe_write import DatabaseWriteResult, safe_db_write
 
 
 JsonObject = dict[str, Any]
@@ -28,6 +29,44 @@ ALLOWED_EVENT_TYPES = {
     "PACKAGE_FINISH",
     "QUALITY_LOCK",
 }
+
+UPSERT_STATION_EVENT_SQL = """
+INSERT INTO mes.item_station_events (
+    event_type,
+    station_code,
+    work_order_no,
+    package_id,
+    serial_no,
+    event_time,
+    source,
+    source_file,
+    external_ref,
+    payload,
+    metadata
+) VALUES (
+    %(event_type)s,
+    %(station_code)s,
+    %(work_order_no)s,
+    %(package_id)s,
+    %(serial_no)s,
+    %(event_time)s,
+    %(source)s,
+    %(source_file)s,
+    %(external_ref)s,
+    %(payload)s,
+    %(metadata)s
+)
+ON CONFLICT (source, external_ref) DO UPDATE SET
+    event_type = EXCLUDED.event_type,
+    station_code = EXCLUDED.station_code,
+    work_order_no = EXCLUDED.work_order_no,
+    package_id = EXCLUDED.package_id,
+    serial_no = EXCLUDED.serial_no,
+    event_time = EXCLUDED.event_time,
+    source_file = EXCLUDED.source_file,
+    payload = EXCLUDED.payload,
+    metadata = EXCLUDED.metadata
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,6 +380,42 @@ def format_station_event_dry_run(row: StationEventRow) -> str:
     )
 
 
+def _jsonb(value: Any) -> Any:
+    try:
+        from psycopg.types.json import Jsonb
+    except ModuleNotFoundError:
+        return value
+    return Jsonb(value)
+
+
+def _row_params(row: StationEventRow) -> JsonObject:
+    return {
+        "event_type": row.event_type,
+        "station_code": row.station_code,
+        "work_order_no": row.work_order_no,
+        "package_id": row.package_id,
+        "serial_no": row.serial_no,
+        "event_time": row.event_time,
+        "source": row.source,
+        "source_file": row.source_file,
+        "external_ref": row.external_ref,
+        "payload": _jsonb(row.payload),
+        "metadata": _jsonb(row.metadata),
+    }
+
+
+def _upsert_station_event_rows(config: AppConfig, rows: list[StationEventRow]) -> None:
+    with database_connection(config) as connection:
+        if connection is None:
+            return
+        with connection.cursor() as cursor:
+            for row in rows:
+                cursor.execute(UPSERT_STATION_EVENT_SQL, _row_params(row))
+        commit = getattr(connection, "commit", None)
+        if callable(commit):
+            commit()
+
+
 def mirror_station_events_from_rows(
     config: AppConfig,
     rows: list[StationEventRow],
@@ -353,4 +428,14 @@ def mirror_station_events_from_rows(
         return DatabaseWriteResult(False, False, True, "live_hook_disabled", OPERATION)
     if not rows:
         return DatabaseWriteResult(False, False, True, "empty", OPERATION)
-    return DatabaseWriteResult(False, False, True, "live_hook_not_implemented", OPERATION)
+    safe_rows = [row for row in rows if row.apply_safe]
+    if not safe_rows:
+        return DatabaseWriteResult(False, False, True, "no_apply_safe_rows", OPERATION)
+
+    return safe_db_write(
+        config,
+        OPERATION,
+        lambda: _upsert_station_event_rows(config, safe_rows),
+        dry_run=False,
+        fail_open=True,
+    )

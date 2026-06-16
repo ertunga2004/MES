@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import threading
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
 from .config import AppConfig
+from .db.work_order_mirror import mirror_work_orders_from_state
 from .excel_runtime import ExcelRuntimeSink
 from .mqtt_runtime import MqttIngestClient
 from .oee_state import OeeRuntimeStateManager
 from .store import DashboardStore, utc_now_text
+
+
+logger = logging.getLogger(__name__)
 
 
 class SnapshotHub:
@@ -113,8 +118,21 @@ class RuntimeService:
         self.store.refresh_oee_runtime_state(self.config.module_id, force=True)
         self.excel_sink.start()
         self.excel_sink.record_work_order_state(current_state, utc_now_text())
+        if self.config.db_mirror_work_orders:
+            self._mirror_work_orders(current_state)
         self.mqtt_client.start()
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+
+    def _mirror_work_orders(self, state: dict[str, Any]) -> None:
+        if not self.config.db_mirror_work_orders:
+            return
+        try:
+            result = mirror_work_orders_from_state(self.config, state)
+        except Exception:
+            logger.exception("Work order DB mirror hook failed unexpectedly")
+            return
+        if result.status == "error":
+            logger.warning("Work order DB mirror failed: %s", result.message)
 
     async def stop(self) -> None:
         if self._watchdog_task is not None:

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import AppConfig
+from .db.work_order_read import state_with_db_work_orders
 from .oee_state import build_live_snapshot, build_work_order_snapshot, read_runtime_state_file, shift_options
 from .parsers import (
     parse_bridge_status_line,
@@ -566,6 +567,7 @@ class DashboardStore:
         payload = read_runtime_state_file(Path(path))
         if payload is None:
             return False
+        payload = state_with_db_work_orders(self.config, payload).state
 
         with self._lock:
             module = self._module(module_id)

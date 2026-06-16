@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from .command_policy import is_local_only_command
 from .config import AppConfig
 from .db.work_order_mirror import mirror_work_orders_from_state
+from .db.work_order_read import state_with_db_work_orders
 from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
 from .masterdata import load_kiosk_masterdata
 from .oee_state import WorkOrderTransitionReasonRequired, build_work_order_snapshot
@@ -417,7 +418,7 @@ def _kiosk_big_action(
 
 def _build_kiosk_snapshot(module_id: str, device_id: str) -> dict[str, Any]:
     dashboard = store.get_dashboard_snapshot(module_id)
-    state = oee_state_manager.read_state()
+    state = state_with_db_work_orders(config, oee_state_manager.read_state(), logger=logger).state
     catalog = load_kiosk_masterdata(config)
     device_registry = state.get("deviceRegistry") if isinstance(state.get("deviceRegistry"), dict) else {}
     device_sessions = state.get("deviceSessions") if isinstance(state.get("deviceSessions"), dict) else {}

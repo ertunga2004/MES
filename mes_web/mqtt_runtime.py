@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .config import AppConfig
+from .db.work_order_transition_writer import mirror_work_order_transition_from_state
 from .oee_state import OeeRuntimeStateManager
 from .store import DashboardStore, utc_now_text
 
@@ -27,10 +28,17 @@ class MqttIngestClient:
         self.client: Any | None = None
         self.connected = False
 
-    def _record_work_order_state(self, received_at: str) -> None:
-        if self.excel_sink is None or self.oee_state_manager is None:
+    def _record_work_order_state(self, received_at: str, *, event_type: str = "runtime_state_changed") -> None:
+        if self.oee_state_manager is None:
             return
-        self.excel_sink.record_work_order_state(self.oee_state_manager.read_state(), received_at)
+        state = self.oee_state_manager.read_state()
+        try:
+            mirror_work_order_transition_from_state(self.config, state, event_type=event_type)
+        except Exception as exc:
+            if self.config.db_log_failures:
+                print(f"[LIVE:work_order_transitions] WARNING: Exception in MQTT work order transition hook: {exc}")
+        if self.excel_sink is not None:
+            self.excel_sink.record_work_order_state(state, received_at)
 
     def start(self) -> bool:
         try:
@@ -112,8 +120,8 @@ class MqttIngestClient:
             if self.excel_sink is not None:
                 self.excel_sink.record_mega_log(payload, stamp)
             if self.oee_state_manager is not None and self.oee_state_manager.apply_mega_log(payload, stamp):
-                self.store.refresh_oee_runtime_state(module_id, force=True)
                 self._record_work_order_state(stamp)
+                self.store.refresh_oee_runtime_state(module_id, force=True)
             return
         if topic == topics["heartbeat"]:
             self.store.apply_heartbeat(module_id, received_at=stamp)
@@ -123,8 +131,8 @@ class MqttIngestClient:
             return
         if topic == topics["tablet_log"]:
             if self.oee_state_manager is not None and self.oee_state_manager.apply_tablet_fault_log(payload, stamp):
+                self._record_work_order_state(stamp, event_type="tablet_fault_state_changed")
                 self.store.refresh_oee_runtime_state(module_id, force=True)
-                self._record_work_order_state(stamp)
             self.store.apply_tablet_log(module_id, payload, received_at=stamp)
             if self.excel_sink is not None:
                 self.excel_sink.record_tablet_log(payload, stamp)

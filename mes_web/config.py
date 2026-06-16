@@ -95,10 +95,12 @@ class AppConfig:
     db_hook_maintenance_records: bool = False
     db_hook_quality_overrides: bool = False
     db_hook_station_events: bool = False
+    db_hook_work_order_transitions: bool = False
     db_hook_production_completions_dry_run: bool = False
     db_hook_vision_events_dry_run: bool = False
     db_hook_oee_snapshots_dry_run: bool = False
     db_hook_station_events_dry_run: bool = False
+    db_hook_work_order_transitions_dry_run: bool = False
     db_shadow_read_work_orders: bool = False
     db_read_work_orders: bool = False
     db_shadow_read_dashboard: bool = False
@@ -268,10 +270,12 @@ class AppConfig:
             db_hook_maintenance_records=_env_bool("MES_WEB_DB_HOOK_MAINTENANCE_RECORDS", False),
             db_hook_quality_overrides=_env_bool("MES_WEB_DB_HOOK_QUALITY_OVERRIDES", False),
             db_hook_station_events=_env_bool("MES_WEB_DB_HOOK_STATION_EVENTS", False),
+            db_hook_work_order_transitions=_env_bool("MES_WEB_DB_HOOK_WORK_ORDER_TRANSITIONS", False),
             db_hook_production_completions_dry_run=_env_bool("MES_WEB_DB_HOOK_PRODUCTION_COMPLETIONS_DRY_RUN", False),
             db_hook_vision_events_dry_run=_env_bool("MES_WEB_DB_HOOK_VISION_EVENTS_DRY_RUN", False),
             db_hook_oee_snapshots_dry_run=_env_bool("MES_WEB_DB_HOOK_OEE_SNAPSHOTS_DRY_RUN", False),
             db_hook_station_events_dry_run=_env_bool("MES_WEB_DB_HOOK_STATION_EVENTS_DRY_RUN", False),
+            db_hook_work_order_transitions_dry_run=_env_bool("MES_WEB_DB_HOOK_WORK_ORDER_TRANSITIONS_DRY_RUN", False),
             db_shadow_read_work_orders=_env_bool("MES_WEB_DB_SHADOW_READ_WORK_ORDERS", False),
             db_read_work_orders=_env_bool("MES_WEB_DB_READ_WORK_ORDERS", False),
             db_shadow_read_dashboard=_env_bool("MES_WEB_DB_SHADOW_READ_DASHBOARD", False),

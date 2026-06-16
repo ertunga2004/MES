@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .config import AppConfig
+from .db.work_order_transition_writer import mirror_work_order_transition_from_state
 from .db.work_order_mirror import mirror_work_orders_from_state
 from .excel_runtime import ExcelRuntimeSink
 from .mqtt_runtime import MqttIngestClient
@@ -107,6 +108,7 @@ class RuntimeService:
         if self.oee_manager.deactivate_active_shift_on_startup():
             self.store.refresh_oee_runtime_state(self.config.module_id, force=True)
         current_state = self.oee_manager.read_state()
+        bootstrap_imported = False
         current_orders = ((current_state.get("workOrders") or {}) if isinstance(current_state.get("workOrders"), dict) else {}).get("ordersById")
         if not isinstance(current_orders, dict) or not current_orders:
             candidates = sorted(self.config.work_orders_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
@@ -115,9 +117,12 @@ class RuntimeService:
                     self.oee_manager.import_work_orders_from_file(candidates[0], replace_existing=True)
                     self.store.refresh_oee_runtime_state(self.config.module_id, force=True)
                     current_state = self.oee_manager.read_state()
+                    bootstrap_imported = True
         self.store.refresh_oee_runtime_state(self.config.module_id, force=True)
         self.excel_sink.start()
         self.excel_sink.record_work_order_state(current_state, utc_now_text())
+        if bootstrap_imported:
+            self._sync_work_order_transition(current_state, event_type="bootstrap_import", replace_current=True)
         if self.config.db_mirror_work_orders:
             self._mirror_work_orders(current_state)
         self.mqtt_client.start()
@@ -133,6 +138,20 @@ class RuntimeService:
             return
         if result.status == "error":
             logger.warning("Work order DB mirror failed: %s", result.message)
+
+    def _sync_work_order_transition(self, state: dict[str, Any], *, event_type: str, replace_current: bool = False) -> None:
+        try:
+            result = mirror_work_order_transition_from_state(
+                self.config,
+                state,
+                event_type=event_type,
+                replace_current=replace_current,
+            )
+        except Exception:
+            logger.exception("Work order DB transition hook failed unexpectedly")
+            return
+        if result.reason == "error_fail_open":
+            logger.warning("Work order DB transition hook failed open: %s", result.error_type)
 
     async def stop(self) -> None:
         if self._watchdog_task is not None:

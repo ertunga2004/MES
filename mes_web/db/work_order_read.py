@@ -201,6 +201,44 @@ def _active_order_id(fallback_work_orders: JsonObject, orders_by_id: JsonObject,
     return ""
 
 
+def _runtime_active_order_id(fallback_state: JsonObject) -> str:
+    work_orders = fallback_state.get("workOrders") if isinstance(fallback_state.get("workOrders"), dict) else {}
+    orders_by_id = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+    fallback_active_id = _text(work_orders.get("activeOrderId"))
+    fallback_active_order = orders_by_id.get(fallback_active_id)
+    if isinstance(fallback_active_order, dict) and _text(fallback_active_order.get("status")) in ACTIVE_STATUSES:
+        return fallback_active_id
+    for order_id, order in orders_by_id.items():
+        if isinstance(order, dict) and _text(order.get("status")) in ACTIVE_STATUSES:
+            return _text(order_id)
+    return ""
+
+
+def _has_db_active_or_pending(state: JsonObject) -> bool:
+    work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
+    active_order_id = _text(work_orders.get("activeOrderId"))
+    if active_order_id:
+        return True
+    orders_by_id = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+    return any(isinstance(order, dict) and _text(order.get("status")) in ACTIVE_STATUSES for order in orders_by_id.values())
+
+
+def _state_with_drift_metadata(fallback_state: JsonObject, *, active_order_id: str, row_count: int) -> JsonObject:
+    state = copy.deepcopy(fallback_state)
+    work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
+    source = copy.deepcopy(work_orders.get("source")) if isinstance(work_orders.get("source"), dict) else {}
+    source["work_order_db_drift"] = {
+        "detected": True,
+        "reason": "db_missing_active_or_pending_runtime_has_active",
+        "runtime_active_order_id": active_order_id,
+        "db_row_count": row_count,
+        "fallback": "runtime_json",
+    }
+    work_orders["source"] = source
+    state["workOrders"] = work_orders
+    return state
+
+
 def _overlay_work_orders(fallback_state: JsonObject, rows: list[JsonObject]) -> JsonObject:
     state = copy.deepcopy(fallback_state)
     fallback_work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
@@ -288,4 +326,19 @@ def state_with_db_work_orders(
     orders_by_id = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
     if not orders_by_id:
         return WorkOrderDbReadResult("fallback_empty", True, len(rows), "runtime", fallback_state, "No usable DB work orders")
+    runtime_active_order_id = _runtime_active_order_id(fallback_state)
+    if runtime_active_order_id and not _has_db_active_or_pending(state):
+        if config.db_log_failures and logger is not None:
+            logger.warning(
+                "Work order DB read drift detected; using runtime fallback for active order %s",
+                runtime_active_order_id,
+            )
+        return WorkOrderDbReadResult(
+            "fallback_drift",
+            True,
+            len(rows),
+            "runtime",
+            _state_with_drift_metadata(fallback_state, active_order_id=runtime_active_order_id, row_count=len(rows)),
+            "DB has no active/pending work order while runtime does",
+        )
     return WorkOrderDbReadResult("ok", True, len(rows), WORK_ORDER_READ_SOURCE, state)

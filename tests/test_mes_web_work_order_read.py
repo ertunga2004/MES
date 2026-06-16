@@ -32,6 +32,14 @@ def _fallback_state() -> dict:
     }
 
 
+def _fallback_active_state() -> dict:
+    state = _fallback_state()
+    state["workOrders"]["ordersById"]["WO-RUNTIME"]["status"] = "pending_approval"
+    state["workOrders"]["ordersById"]["WO-RUNTIME"]["startedAt"] = "2026-06-16T09:01:00+00:00"
+    state["workOrders"]["ordersById"]["WO-RUNTIME"]["autoCompletedAt"] = "2026-06-16T09:05:00+00:00"
+    return state
+
+
 class _Cursor:
     def __init__(self, rows: list[dict]) -> None:
         self.rows = rows
@@ -158,6 +166,47 @@ class WorkOrderReadTests(unittest.TestCase):
         self.assertEqual(result.source, "runtime")
         self.assertIs(result.state, fallback)
         self.assertEqual(result.error_type, "RuntimeError")
+
+    def test_db_read_falls_back_when_db_has_no_active_but_runtime_does(self) -> None:
+        rows = [
+            {
+                "order_id": "WO-RUNTIME",
+                "erp_type": "FERP",
+                "status": "queued",
+                "product_code": "PKT-RED",
+                "target_quantity": 1,
+                "started_at": None,
+                "completed_at": None,
+                "source_system": "mes_web",
+                "source_file": "ferp_work_orders.json",
+                "external_ref": "WO-RUNTIME",
+                "payload": {
+                    "orderId": "WO-RUNTIME",
+                    "status": "queued",
+                    "stockCode": "PKT-RED",
+                },
+                "metadata": {},
+                "created_at": "2026-06-16T09:00:00+00:00",
+                "updated_at": "2026-06-16T09:00:00+00:00",
+            }
+        ]
+        connection = _Connection(rows)
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        fallback = _fallback_active_state()
+        with patch.object(work_order_read, "database_connection", fake_connection):
+            result = state_with_db_work_orders(AppConfig(db_enabled=True, db_read_work_orders=True), fallback)
+
+        self.assertEqual(result.status, "fallback_drift")
+        self.assertEqual(result.source, "runtime")
+        self.assertEqual(result.state["workOrders"]["activeOrderId"], "WO-RUNTIME")
+        self.assertEqual(result.state["workOrders"]["ordersById"]["WO-RUNTIME"]["status"], "pending_approval")
+        drift = result.state["workOrders"]["source"]["work_order_db_drift"]
+        self.assertTrue(drift["detected"])
+        self.assertEqual(drift["runtime_active_order_id"], "WO-RUNTIME")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from .command_policy import is_local_only_command
 from .config import AppConfig
 from .db.work_order_mirror import mirror_work_orders_from_state
 from .db.work_order_read import state_with_db_work_orders
+from .db.work_order_transition_writer import mirror_work_order_transition_from_state
 from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
 from .masterdata import load_kiosk_masterdata
 from .oee_state import WorkOrderTransitionReasonRequired, build_work_order_snapshot
@@ -780,16 +781,36 @@ def create_app() -> FastAPI:
     static_dir = Path(config.static_dir)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-    def sync_work_order_runtime(state: dict[str, Any] | None = None) -> None:
+    def sync_work_order_runtime(
+        state: dict[str, Any] | None = None,
+        *,
+        event_type: str = "runtime_sync",
+        actor_id: str = "",
+        replace_current: bool = False,
+    ) -> None:
         runtime_state = state if isinstance(state, dict) else oee_state_manager.read_state()
         runtime_service.excel_sink.record_work_order_state(runtime_state, utc_now_text())
+        try:
+            transition_result = mirror_work_order_transition_from_state(
+                config,
+                runtime_state,
+                event_type=event_type,
+                actor_id=actor_id,
+                replace_current=replace_current,
+            )
+        except Exception:
+            logger.exception("Work order DB transition hook failed unexpectedly")
+            transition_result = None
+        if transition_result is not None and transition_result.reason == "error_fail_open":
+            logger.warning("Work order DB transition hook failed open: %s", transition_result.error_type)
         try:
             mirror_result = mirror_work_orders_from_state(config, runtime_state)
         except Exception:
             logger.exception("Work order DB mirror hook failed unexpectedly")
-            return
-        if mirror_result.status == "error":
-            logger.warning("Work order DB mirror failed: %s", mirror_result.message)
+        else:
+            if mirror_result.status == "error":
+                logger.warning("Work order DB mirror failed: %s", mirror_result.message)
+        store.refresh_oee_runtime_state(config.module_id, force=True)
 
     def _ferp_export_acceptance_result(result: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -909,9 +930,16 @@ def create_app() -> FastAPI:
     def _record_kiosk_event(event_type: str, payload: dict[str, Any], *, received_at: str) -> None:
         runtime_service.excel_sink.record_kiosk_event(event_type, payload, received_at)
 
-    def _refresh_after_kiosk_write(module_id: str, state: dict[str, Any] | None) -> None:
+    def _refresh_after_kiosk_write(
+        module_id: str,
+        state: dict[str, Any] | None,
+        *,
+        event_type: str = "runtime_sync",
+        actor_id: str = "",
+        replace_current: bool = False,
+    ) -> None:
         store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(state)
+        sync_work_order_runtime(state, event_type=event_type, actor_id=actor_id, replace_current=replace_current)
 
     @app.on_event("startup")
     async def on_startup() -> None:
@@ -1136,7 +1164,12 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
         stamp = utc_now_text()
         updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
-        _refresh_after_kiosk_write(module_id, updated_state)
+        _refresh_after_kiosk_write(
+            module_id,
+            updated_state,
+            event_type="started",
+            actor_id=actor["operator_code"] or actor["operator_id"],
+        )
         session = result.get("session") if isinstance(result.get("session"), dict) else {}
         for step in session.get("steps") if isinstance(session.get("steps"), list) else []:
             if not isinstance(step, dict) or not bool(step.get("completed")):
@@ -1547,7 +1580,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
         stamp = utc_now_text()
         updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
-        _refresh_after_kiosk_write(module_id, updated_state)
+        _refresh_after_kiosk_write(module_id, updated_state, event_type="completed", actor_id="KIOSK")
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
         store.append_system_log(
             module_id,
@@ -1577,7 +1610,12 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
         stamp = utc_now_text()
         updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
-        _refresh_after_kiosk_write(module_id, updated_state)
+        _refresh_after_kiosk_write(
+            module_id,
+            updated_state,
+            event_type="package_started",
+            actor_id=actor["operator_code"],
+        )
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
         ferp_export = _ferp_export_acceptance_result(result)
         store.append_system_log(
@@ -1614,7 +1652,12 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
         stamp = utc_now_text()
         updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
-        _refresh_after_kiosk_write(module_id, updated_state)
+        _refresh_after_kiosk_write(
+            module_id,
+            updated_state,
+            event_type="package_finished",
+            actor_id=actor["operator_code"],
+        )
         session = result.get("session") if isinstance(result.get("session"), dict) else {}
         buffer_item = result.get("buffer_item") if isinstance(result.get("buffer_item"), dict) else {}
         store.append_system_log(
@@ -1652,7 +1695,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
         stamp = utc_now_text()
         updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
-        _refresh_after_kiosk_write(module_id, updated_state)
+        _refresh_after_kiosk_write(module_id, updated_state, event_type="quality_override")
         session = result.get("session") if isinstance(result.get("session"), dict) else {}
         package_item = result.get("package_item") if isinstance(result.get("package_item"), dict) else {}
         store.append_system_log(
@@ -1738,7 +1781,10 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
             store.reset_counts(module_id, received_at=stamp)
             store.refresh_oee_runtime_state(module_id, force=True)
-            sync_work_order_runtime(runtime_result.get("state") if isinstance(runtime_result, dict) and isinstance(runtime_result.get("state"), dict) else None)
+            sync_work_order_runtime(
+                runtime_result.get("state") if isinstance(runtime_result, dict) and isinstance(runtime_result.get("state"), dict) else None,
+                event_type="runtime_counts_reset",
+            )
             runtime_service.excel_sink.record_local_counts_reset(stamp)
             return {"status": "accepted", "kind": kind, "value": value, "dispatch": "local_only"}
 
@@ -1767,7 +1813,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None, event_type="oee_control")
         recent_log = str(result.get("recent_log") or "").strip()
         if recent_log:
             store.append_system_log(module_id, recent_log, topic="local/oee")
@@ -1794,7 +1840,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None, event_type="quality_override")
         override = result.get("override") if isinstance(result.get("override"), dict) else None
         if override is not None:
             runtime_service.excel_sink.record_quality_override(
@@ -1824,7 +1870,11 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        sync_work_order_runtime(
+            result.get("state") if isinstance(result.get("state"), dict) else None,
+            event_type="import",
+            replace_current=replace_existing,
+        )
         summary = str(result.get("summary") or "Is emri listesi guncellendi.")
         store.append_system_log(module_id, f"SYSTEM|WORK_ORDER|IMPORT|COUNT={int(result.get('total_count') or 0)}", topic="local/work-orders")
         return {
@@ -1851,7 +1901,11 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        sync_work_order_runtime(
+            result.get("state") if isinstance(result.get("state"), dict) else None,
+            event_type="reload",
+            replace_current=True,
+        )
         summary = str(result.get("summary") or "Is emri kaynagi yenilendi.")
         store.append_system_log(module_id, f"SYSTEM|WORK_ORDER|RELOAD|FILE={candidates[0].name}", topic="local/work-orders")
         return {
@@ -1882,7 +1936,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None, event_type="tolerance_updated")
         summary = str(result.get("summary") or "Is emri toleransi guncellendi.")
         store.append_system_log(module_id, f"SYSTEM|WORK_ORDER|TOLERANCE|{result.get('tolerance_minutes')}", topic="local/work-orders")
         return {
@@ -1905,7 +1959,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None, event_type="reordered")
         summary = str(result.get("summary") or "Is emri sirasi guncellendi.")
         store.append_system_log(module_id, "SYSTEM|WORK_ORDER|REORDER", topic="local/work-orders")
         return {
@@ -1945,7 +1999,11 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        sync_work_order_runtime(
+            result.get("state") if isinstance(result.get("state"), dict) else None,
+            event_type="started",
+            actor_id=str(payload.get("operator_code") or payload.get("operatorCode") or ""),
+        )
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
         summary = str(result.get("summary") or "Is emri baslatildi.")
         store.append_system_log(
@@ -1973,7 +2031,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None, event_type="completed")
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
         summary = str(result.get("summary") or "Is emri operator onayi ile kapatildi.")
         ferp_export = _ferp_export_acceptance_result(result)
@@ -2002,7 +2060,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None, event_type="rolled_back")
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
         summary = str(result.get("summary") or "Aktif is emri geri alindi.")
         store.append_system_log(
@@ -2031,7 +2089,11 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        sync_work_order_runtime(
+            result.get("state") if isinstance(result.get("state"), dict) else None,
+            event_type="reset",
+            replace_current=True,
+        )
         summary = str(result.get("summary") or "Is emirleri sifirlandi.")
         store.append_system_log(
             module_id,
@@ -2060,7 +2122,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None)
+        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None, event_type="inventory_updated")
         summary = str(result.get("summary") or "Depo stogu guncellendi.")
         store.append_system_log(
             module_id,

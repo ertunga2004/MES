@@ -1,4 +1,4 @@
-const state = {
+﻿const state = {
   moduleId: "",
   deviceId: "",
   snapshot: null,
@@ -184,7 +184,7 @@ function currentActorPayload() {
   const snapshot = state.snapshot || {};
   const device = snapshot.device || {};
   const selectedOperatorId = els.operatorSelect.value || readStoredOperatorId() || device.last_operator_id || "";
-  const boundStationId = readStoredStationId() || device.bound_station_id || "";
+  const boundStationId = state.stationCode || readStoredStationId() || device.bound_station_id || "";
   const deviceName = readStoredDeviceName() || device.device_name || state.deviceId;
   return {
     device_id: state.deviceId,
@@ -226,7 +226,8 @@ async function resolveModuleId() {
 }
 
 async function loadBootstrap() {
-  const bootstrap = await fetchJson(`/api/modules/${state.moduleId}/kiosk/bootstrap?device_id=${encodeURIComponent(state.deviceId)}`);
+  const url = `/api/modules/${state.moduleId}/kiosk/bootstrap?device_id=${encodeURIComponent(state.deviceId)}&station_code=${encodeURIComponent(state.stationCode || "")}`;
+  const bootstrap = await fetchJson(url);
   state.snapshot = bootstrap;
   const visibleItemIds = new Set(((bootstrap.recent_items || []).map((item) => String((item || {}).item_id || "").trim())).filter(Boolean));
   for (const itemId of Object.keys(state.drafts.qualityReasonByItem)) {
@@ -889,7 +890,11 @@ function connectSocket() {
     state.socket.close();
   }
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  state.socket = new WebSocket(`${protocol}://${window.location.host}/ws/modules/${encodeURIComponent(state.moduleId)}/kiosk/${encodeURIComponent(state.deviceId)}`);
+  const socketUrl = new URL(`${protocol}://${window.location.host}/ws/modules/${encodeURIComponent(state.moduleId)}/kiosk/${encodeURIComponent(state.deviceId)}`);
+  if (state.stationCode) {
+    socketUrl.searchParams.set("station_code", state.stationCode);
+  }
+  state.socket = new WebSocket(socketUrl.toString());
   state.socket.addEventListener("open", () => {
     setConnectionState("Canli");
   });
@@ -909,7 +914,13 @@ function connectSocket() {
 
 async function init() {
   const parts = window.location.pathname.split("/").filter(Boolean);
-  state.deviceId = decodeURIComponent(parts[parts.length - 1] || "");
+  const lastPart = decodeURIComponent(parts[parts.length - 1] || "");
+  state.deviceId = lastPart;
+  if (parts.length >= 3 && parts[parts.length - 2] === "station") {
+    state.stationCode = lastPart;
+  } else {
+    state.stationCode = "";
+  }
   if (!state.deviceId) {
     window.alert("DEVICE_ID_REQUIRED");
     return;
@@ -937,3 +948,4 @@ els.faultStartButton.addEventListener("click", handleFaultStart);
 els.operatorSelect.addEventListener("change", handleOperatorChange);
 
 window.addEventListener("load", init);
+

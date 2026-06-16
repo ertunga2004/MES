@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .command_policy import is_local_only_command
@@ -271,11 +271,27 @@ def _project_kiosk_packaging(state: dict[str, Any], ordered_orders: list[dict[st
             }
         )
     raw_orders = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
-    package_orders = [
-        copy.deepcopy(row)
-        for row in ordered_orders
-        if _is_kiosk_package_order(str(row.get("order_id") or ""), raw_orders.get(str(row.get("order_id") or "")) if isinstance(raw_orders.get(str(row.get("order_id") or "")), dict) else {})
-    ]
+    package_orders = []
+    for row in ordered_orders:
+        order_id = str(row.get("order_id") or "")
+        raw_order = raw_orders.get(order_id)
+        if not isinstance(raw_order, dict):
+            raw_order = {}
+        explicit_station = str(raw_order.get("stationCode") or "").strip()
+        metadata = raw_order.get("_metadata") if isinstance(raw_order.get("_metadata"), dict) else {}
+        if not explicit_station and "station_code" in metadata:
+            explicit_station = str(metadata.get("station_code") or "").strip()
+        
+        is_pkg = False
+        if explicit_station == "PACKAGING_01":
+            is_pkg = True
+        elif explicit_station == "ASSEMBLY_01":
+            is_pkg = False
+        else:
+            is_pkg = _is_kiosk_package_order(order_id, raw_order)
+            
+        if is_pkg:
+            package_orders.append(copy.deepcopy(row))
     sessions = work_orders.get("packagingSessions") if isinstance(work_orders.get("packagingSessions"), dict) else {}
     active_sessions = [
         copy.deepcopy(row)
@@ -417,7 +433,7 @@ def _kiosk_big_action(
     }
 
 
-def _build_kiosk_snapshot(module_id: str, device_id: str) -> dict[str, Any]:
+def _build_kiosk_snapshot(module_id: str, device_id: str, station_code: str = "") -> dict[str, Any]:
     dashboard = store.get_dashboard_snapshot(module_id)
     state = state_with_db_work_orders(config, oee_state_manager.read_state(), logger=logger).state
     catalog = load_kiosk_masterdata(config)
@@ -453,6 +469,37 @@ def _build_kiosk_snapshot(module_id: str, device_id: str) -> dict[str, Any]:
         if not normalized_id or normalized_id in seen_order_ids or not isinstance(order, dict):
             continue
         ordered_orders.append(_project_kiosk_work_order(normalized_id, order, state))
+        
+    filtered_orders = []
+    for row in ordered_orders:
+        order_id = str(row.get("order_id") or "")
+        raw_order = raw_orders.get(order_id)
+        if not isinstance(raw_order, dict):
+            raw_order = {}
+            
+        explicit_station = str(raw_order.get("stationCode") or "").strip()
+        metadata = raw_order.get("_metadata") if isinstance(raw_order.get("_metadata"), dict) else {}
+        if not explicit_station and "station_code" in metadata:
+            explicit_station = str(metadata.get("station_code") or "").strip()
+            
+        is_pkg = False
+        if explicit_station == "PACKAGING_01":
+            is_pkg = True
+        elif explicit_station == "ASSEMBLY_01":
+            is_pkg = False
+        else:
+            is_pkg = _is_kiosk_package_order(order_id, raw_order)
+
+        if station_code == "PACKAGING_01":
+            if is_pkg:
+                filtered_orders.append(row)
+        elif station_code == "ASSEMBLY_01":
+            if not is_pkg:
+                filtered_orders.append(row)
+        else:
+            filtered_orders.append(row)
+    ordered_orders = filtered_orders
+
     active_order = next(
         (
             row
@@ -499,6 +546,9 @@ def _build_kiosk_snapshot(module_id: str, device_id: str) -> dict[str, Any]:
     permissions = store.command_permissions()
     packaging_state = _project_kiosk_packaging(state, ordered_orders)
     return {
+        "station_context": {
+            "station_code": station_code
+        },
         "device": {
             "device_id": device_id,
             "device_name": str(device_entry.get("deviceName") or device_id),
@@ -965,6 +1015,49 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.get("/kiosk/")
+    async def kiosk_selector() -> HTMLResponse:
+        html_content = """
+        <!doctype html>
+        <html lang="tr">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>MES Station Selector</title>
+          <link rel="stylesheet" href="/static/kiosk.css">
+        </head>
+        <body class="selector-body" style="padding:2rem;font-family:sans-serif;background:#f5f5f5;">
+          <div class="selector-container" style="max-width:600px;margin:0 auto;background:#fff;padding:2rem;border-radius:8px;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <h1 style="margin-top:0;">Istasyon Seciniz</h1>
+            <div class="selector-cards" style="display:flex;flex-direction:column;gap:1rem;margin-top:1.5rem;">
+              <a href="/kiosk/station/ASSEMBLY_01" class="station-card" style="text-decoration:none;color:inherit;border:1px solid #ddd;padding:1.5rem;border-radius:6px;display:block;transition:all 0.2s;">
+                <h2 style="margin:0 0 0.5rem 0;color:#0052cc;">ASSEMBLY_01</h2>
+                <p style="margin:0;color:#555;">Istasyon 1 - Kutu Uretim</p>
+              </a>
+              <a href="/kiosk/station/PACKAGING_01" class="station-card" style="text-decoration:none;color:inherit;border:1px solid #ddd;padding:1.5rem;border-radius:6px;display:block;transition:all 0.2s;">
+                <h2 style="margin:0 0 0.5rem 0;color:#0052cc;">PACKAGING_01</h2>
+                <p style="margin:0;color:#555;">Istasyon 2 - Paketleme</p>
+              </a>
+            </div>
+          </div>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content)
+
+    @app.get("/kiosk/station/{station_code}")
+    async def kiosk_station_index(station_code: str) -> FileResponse:
+        if not str(station_code or "").strip():
+            raise HTTPException(status_code=400, detail="STATION_CODE_REQUIRED")
+        return FileResponse(
+            static_dir / "kiosk.html",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
+
     @app.get("/kiosk/{device_id}")
     async def kiosk_index(device_id: str) -> FileResponse:
         if not str(device_id or "").strip():
@@ -1003,12 +1096,12 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND") from exc
 
     @app.get("/api/modules/{module_id}/kiosk/bootstrap")
-    async def get_kiosk_bootstrap(module_id: str, device_id: str) -> dict[str, Any]:
+    async def get_kiosk_bootstrap(module_id: str, device_id: str, station_code: str = "") -> dict[str, Any]:
         _ensure_module(module_id)
         if not str(device_id or "").strip():
             raise HTTPException(status_code=400, detail="DEVICE_ID_REQUIRED")
         store.refresh_oee_runtime_state(module_id, force=True)
-        return _build_kiosk_snapshot(module_id, str(device_id).strip())
+        return _build_kiosk_snapshot(module_id, str(device_id).strip(), station_code)
 
     @app.get("/api/modules/{module_id}/technician/bootstrap")
     async def get_technician_bootstrap(module_id: str, device_id: str, technician_name: str = "") -> dict[str, Any]:

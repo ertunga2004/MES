@@ -65,6 +65,28 @@ def _state(status: str = "active") -> dict:
     }
 
 
+def _state_after_accept_with_queued_sibling() -> dict:
+    state = _state("completed")
+    work_orders = state["workOrders"]
+    work_orders["orderSequence"] = ["WO-1", "WO-2"]
+    work_orders["ordersById"]["WO-2"] = {
+        "orderId": "WO-2",
+        "erpType": "FERP",
+        "status": "queued",
+        "stockCode": "PKT-BLUE",
+        "productCode": "PKT-BLUE",
+        "quantity": 1,
+        "targetQuantity": 1,
+        "queuedAt": "2026-06-16T09:00:00+00:00",
+        "startedAt": "",
+        "autoCompletedAt": "",
+        "completedAt": "",
+        "completedQty": 0,
+        "remainingQty": 1,
+    }
+    return state
+
+
 class WorkOrderTransitionWriterTests(unittest.TestCase):
     def test_read_flag_does_not_trigger_transition_writer(self) -> None:
         with patch.object(
@@ -139,6 +161,15 @@ class WorkOrderTransitionWriterTests(unittest.TestCase):
 
     def test_rollback_writes_queued_current_state(self) -> None:
         captured = {}
+        state = _state("queued")
+        state["workOrders"]["transitionLog"].insert(
+            0,
+            {
+                "eventType": "rolled_back",
+                "time": "2026-06-16T09:04:00+00:00",
+                "orderId": "WO-1",
+            },
+        )
 
         def fake_execute(_config, current_rows, event_rows, *, replace_current):
             captured["current_rows"] = current_rows
@@ -152,7 +183,7 @@ class WorkOrderTransitionWriterTests(unittest.TestCase):
         with patch.object(work_order_transition_writer, "_execute_transition_write", side_effect=fake_execute):
             result = mirror_work_order_transition_from_state(
                 AppConfig(db_enabled=True, db_hook_work_order_transitions=True),
-                _state("queued"),
+                state,
                 event_type="rolled_back",
             )
 
@@ -173,6 +204,13 @@ class WorkOrderTransitionWriterTests(unittest.TestCase):
 
         self.assertEqual(rows[0].event_type, "completed")
         self.assertEqual(rows[0].event_at, "2026-06-16T09:10:00+00:00")
+
+    def test_completed_transition_does_not_emit_events_for_queued_siblings(self) -> None:
+        rows = build_work_order_transition_event_rows(_state_after_accept_with_queued_sibling(), event_type="completed")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].order_id, "WO-1")
+        self.assertEqual(rows[0].event_type, "completed")
 
     def test_pending_current_state_does_not_write_completed_at(self) -> None:
         current_row = {

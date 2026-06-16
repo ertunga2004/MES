@@ -153,6 +153,69 @@ def _event_type_for_order(requested_event_type: str, order: JsonObject) -> str:
     return requested
 
 
+def _is_order_scoped_request(requested_event_type: str) -> bool:
+    requested = _text(requested_event_type).lower()
+    return requested in {
+        "started",
+        "completed",
+        "accept_active",
+        "rollback_active",
+        "rolled_back",
+        "package_started",
+        "package_finished",
+    }
+
+
+def _should_emit_order_scoped_event(
+    requested_event_type: str,
+    normalized_event_type: str,
+    work_orders: JsonObject,
+    order_id: str,
+    order: JsonObject,
+) -> bool:
+    if not _is_order_scoped_request(requested_event_type):
+        return True
+
+    requested = _text(requested_event_type).lower()
+    status = _text(order.get("status")).lower()
+
+    if normalized_event_type == "auto_completed":
+        return status == "pending_approval" and bool(
+            _nullable_text(order.get("autoCompletedAt"))
+            or _nullable_text(order.get("lastAllocationAt"))
+            or _latest_log_time(work_orders, order_id, {"auto_completed"})
+        )
+
+    if normalized_event_type == "completed":
+        return status == "completed" and bool(
+            _nullable_text(order.get("completedAt"))
+            or _latest_log_time(work_orders, order_id, {"completed"})
+        )
+
+    if normalized_event_type == "started":
+        return status == "active" and bool(
+            _nullable_text(order.get("startedAt"))
+            or _latest_log_time(work_orders, order_id, {"started", "package_started"})
+        )
+
+    if normalized_event_type == "package_started":
+        return status == "active" and bool(
+            _latest_log_time(work_orders, order_id, {"package_started"})
+            or (requested == "package_started" and _nullable_text(order.get("startedAt")))
+        )
+
+    if normalized_event_type == "package_finished":
+        return status in {"active", "pending_approval", "completed"} and bool(
+            _latest_log_time(work_orders, order_id, {"package_finished"})
+            or _nullable_text(order.get("lastAllocationAt"))
+        )
+
+    if normalized_event_type == "rolled_back":
+        return status == "queued" and bool(_latest_log_time(work_orders, order_id, {"rolled_back"}))
+
+    return True
+
+
 def _event_at_for_order(state: JsonObject, work_orders: JsonObject, order_id: str, order: JsonObject, event_type: str) -> str | None:
     log_types = {event_type}
     if event_type == "auto_completed":
@@ -232,6 +295,8 @@ def build_work_order_transition_event_rows(
         if not order_id:
             continue
         normalized_event_type = _event_type_for_order(event_type, raw_order)
+        if not _should_emit_order_scoped_event(event_type, normalized_event_type, work_orders, order_id, raw_order):
+            continue
         event_at = _event_at_for_order(state, work_orders, order_id, raw_order, normalized_event_type)
         status = _text(raw_order.get("status")).lower() or "unknown"
         rows.append(

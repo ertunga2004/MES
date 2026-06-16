@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -280,6 +281,106 @@ class KioskAppTests(unittest.TestCase):
         state = manager.read_state()
         self.assertEqual(state["workOrders"]["activeOrderId"], "WO-002")
         self.assertEqual(state["workOrders"]["ordersById"]["WO-002"]["transitionReason"], "Kirmizi kutu stokta hazir degil")
+
+    def test_kiosk_work_order_start_syncs_started_transition_and_active_snapshots(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.apply_control("shift_start")
+        manager.import_work_orders(
+            [
+                {"order_id": "WO-001", "stock_code": "BOX-RED", "stock_name": "Kirmizi Kutu", "qty": 1, "color": "red"},
+            ]
+        )
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        transition_calls: list[dict[str, object]] = []
+
+        def capture_transition(_config, state, *, event_type: str = "runtime_sync", actor_id: str = "", replace_current: bool = False):
+            work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
+            active_order_id = str(work_orders.get("activeOrderId") or "")
+            orders_by_id = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+            active_order = orders_by_id.get(active_order_id) if isinstance(orders_by_id.get(active_order_id), dict) else {}
+            transition_calls.append(
+                {
+                    "event_type": event_type,
+                    "actor_id": actor_id,
+                    "active_order_id": active_order_id,
+                    "active_status": str(active_order.get("status") or ""),
+                    "replace_current": replace_current,
+                }
+            )
+            return None
+
+        with patch.object(app_module, "mirror_work_order_transition_from_state", side_effect=capture_transition):
+            response = client.post(
+                f"/api/modules/{config.module_id}/kiosk/work-orders/start",
+                json={"device_id": "kiosk-1", "operator_id": "1", "order_id": "WO-001"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(transition_calls)
+        self.assertEqual(transition_calls[-1]["event_type"], "started")
+        self.assertEqual(transition_calls[-1]["actor_id"], "OP-001")
+        self.assertEqual(transition_calls[-1]["active_order_id"], "WO-001")
+        self.assertEqual(transition_calls[-1]["active_status"], "active")
+
+        dashboard = client.get(f"/api/modules/{config.module_id}/dashboard").json()
+        kiosk = client.get(f"/api/modules/{config.module_id}/kiosk/bootstrap", params={"device_id": "kiosk-1"}).json()
+        self.assertEqual(dashboard["work_orders"]["active_order"]["order_id"], "WO-001")
+        self.assertEqual(kiosk["work_orders"]["active_order"]["order_id"], "WO-001")
+
+    def test_kiosk_accept_active_work_order_syncs_completed_transition(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        order_id = "WO-ACCEPT"
+        manager.import_work_orders(
+            [
+                {
+                    "order_id": order_id,
+                    "qty": 1,
+                    "stock_code": "BOX-RED",
+                    "stock_name": "Kirmizi Kutu",
+                    "product_color": "red",
+                    "unit": "ADET",
+                    "cycleTimeSec": 15,
+                }
+            ],
+            now=datetime(2026, 4, 27, 9, 0, tzinfo=timezone.utc),
+        )
+        manager.start_work_order(order_id, operator_code="OP-001", now=datetime(2026, 4, 27, 9, 1, tzinfo=timezone.utc))
+        manager.apply_mega_log(
+            "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=ITEM-1|MEASURE_ID=1|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=4500|PENDING=1",
+            "2026-04-27T09:02:00Z",
+        )
+        manager.apply_mega_log(
+            "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=ITEM-1|MEASURE_ID=1|TRIGGER=TIMER",
+            "2026-04-27T09:02:10Z",
+        )
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        prepared_state = manager.read_state()
+        self.assertEqual(prepared_state["workOrders"]["ordersById"][order_id]["status"], "pending_approval")
+        transition_calls: list[dict[str, object]] = []
+
+        def capture_transition(_config, state, *, event_type: str = "runtime_sync", actor_id: str = "", replace_current: bool = False):
+            work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
+            order = ((work_orders.get("ordersById") or {}) if isinstance(work_orders.get("ordersById"), dict) else {}).get(order_id) or {}
+            transition_calls.append(
+                {
+                    "event_type": event_type,
+                    "actor_id": actor_id,
+                    "active_order_id": str(work_orders.get("activeOrderId") or ""),
+                    "status": str(order.get("status") or ""),
+                    "replace_current": replace_current,
+                }
+            )
+            return None
+
+        with patch.object(app_module, "mirror_work_order_transition_from_state", side_effect=capture_transition):
+            response = client.post(f"/api/modules/{config.module_id}/kiosk/work-orders/accept-active")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(transition_calls)
+        self.assertEqual(transition_calls[-1]["event_type"], "completed")
+        self.assertEqual(transition_calls[-1]["active_order_id"], "")
+        self.assertEqual(transition_calls[-1]["status"], "completed")
+        self.assertEqual(response.json()["order_id"], order_id)
 
     def test_kiosk_work_order_reason_required_response_exposes_ms_fields(self) -> None:
         client, config, manager, _store, _runtime_service = self._build_client()

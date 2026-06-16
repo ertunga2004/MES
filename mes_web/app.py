@@ -1580,7 +1580,12 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
         stamp = utc_now_text()
         updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
-        _refresh_after_kiosk_write(module_id, updated_state, event_type="completed", actor_id="KIOSK")
+        _refresh_after_kiosk_write(
+            module_id,
+            updated_state,
+            event_type="started",
+            actor_id=actor["operator_code"] or actor["operator_id"],
+        )
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
         store.append_system_log(
             module_id,
@@ -1613,8 +1618,8 @@ def create_app() -> FastAPI:
         _refresh_after_kiosk_write(
             module_id,
             updated_state,
-            event_type="package_started",
-            actor_id=actor["operator_code"],
+            event_type="completed",
+            actor_id="KIOSK",
         )
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
         ferp_export = _ferp_export_acceptance_result(result)
@@ -1655,7 +1660,7 @@ def create_app() -> FastAPI:
         _refresh_after_kiosk_write(
             module_id,
             updated_state,
-            event_type="package_finished",
+            event_type="package_started",
             actor_id=actor["operator_code"],
         )
         session = result.get("session") if isinstance(result.get("session"), dict) else {}
@@ -1695,7 +1700,12 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
         stamp = utc_now_text()
         updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
-        _refresh_after_kiosk_write(module_id, updated_state, event_type="quality_override")
+        _refresh_after_kiosk_write(
+            module_id,
+            updated_state,
+            event_type="package_finished",
+            actor_id=actor["operator_code"],
+        )
         session = result.get("session") if isinstance(result.get("session"), dict) else {}
         package_item = result.get("package_item") if isinstance(result.get("package_item"), dict) else {}
         store.append_system_log(

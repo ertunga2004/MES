@@ -515,6 +515,24 @@ function createQueuedOrderButton(row) {
   return button;
 }
 
+function createPackageBomSummary(row) {
+  const packageBom = row.package_bom || {};
+  const components = Array.isArray(packageBom.components) ? packageBom.components : [];
+  if (components.length === 0) {
+    return null;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.className = "muted";
+  const label = components.map((component) => {
+    const code = safeText(component.component_stock_code, "-");
+    const required = Number(component.required_qty || 0);
+    const available = Number(component.available_qty || 0);
+    return `${code}: ${available}/${required}`;
+  }).join(" | ");
+  wrapper.textContent = packageBom.can_start === false ? `Komponent eksik - ${label}` : `Komponent hazir - ${label}`;
+  return wrapper;
+}
+
 function renderWorkOrders() {
   const rows = ((state.snapshot || {}).work_orders || {}).ordered || [];
   els.workOrderList.innerHTML = "";
@@ -552,6 +570,10 @@ function renderWorkOrders() {
 
     main.appendChild(header);
     main.appendChild(contentRow);
+    const bomSummary = createPackageBomSummary(row);
+    if (bomSummary) {
+      main.appendChild(bomSummary);
+    }
 
     const actions = document.createElement("div");
     actions.className = "order-row-actions";

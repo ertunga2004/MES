@@ -417,6 +417,186 @@ class KioskAppTests(unittest.TestCase):
         self.assertEqual(detail["elapsed_ms"], 10 * 60 * 1000)
         self.assertEqual(detail["tolerance_ms"], 5 * 60 * 1000)
 
+    def test_kiosk_package_work_order_start_blocks_when_bom_components_missing(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.apply_control("shift_start")
+        manager.import_work_orders(
+            [
+                {
+                    "order_id": "WO-PKT-BLUE-001",
+                    "stock_code": "PKG_BLUE_3",
+                    "stock_name": "Mavi Uclu Paket",
+                    "qty": 1,
+                    "stationCode": "PACKAGING_01",
+                }
+            ]
+        )
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        availability = {
+            "bom_configured": True,
+            "can_start": False,
+            "package_stock_code": "PKG_BLUE_3",
+            "components": [
+                {
+                    "component_stock_code": "BLUE_BOX",
+                    "required_qty": 3,
+                    "available_qty": 1,
+                    "missing_qty": 2,
+                }
+            ],
+        }
+
+        with patch.object(app_module, "package_component_availability", return_value=availability):
+            blocked = client.post(
+                f"/api/modules/{config.module_id}/kiosk/work-orders/start",
+                json={
+                    "device_id": "kiosk-1",
+                    "operator_id": "1",
+                    "order_id": "WO-PKT-BLUE-001",
+                    "station_code": "PACKAGING_01",
+                },
+            )
+
+        self.assertEqual(blocked.status_code, 409)
+        detail = blocked.json()["detail"]
+        self.assertEqual(detail["code"], "PACKAGE_COMPONENTS_NOT_AVAILABLE")
+        self.assertEqual(detail["components"][0]["component_stock_code"], "BLUE_BOX")
+        self.assertEqual(detail["components"][0]["missing_qty"], 2)
+
+    def test_kiosk_package_start_blocks_when_bom_components_missing(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {
+                    "order_id": "WO-PKT-BLUE-001",
+                    "stock_code": "PKG_BLUE_3",
+                    "stock_name": "Mavi Uclu Paket",
+                    "qty": 1,
+                    "stationCode": "PACKAGING_01",
+                }
+            ]
+        )
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        availability = {
+            "bom_configured": True,
+            "can_start": False,
+            "package_stock_code": "PKG_BLUE_3",
+            "components": [
+                {
+                    "component_stock_code": "BLUE_BOX",
+                    "required_qty": 3,
+                    "available_qty": 0,
+                    "missing_qty": 3,
+                }
+            ],
+        }
+
+        with patch.object(app_module, "package_component_availability", return_value=availability):
+            blocked = client.post(
+                f"/api/modules/{config.module_id}/kiosk/package/start",
+                json={"device_id": "kiosk-1", "operator_id": "1", "package_order_id": "WO-PKT-BLUE-001"},
+            )
+
+        self.assertEqual(blocked.status_code, 409)
+        detail = blocked.json()["detail"]
+        self.assertEqual(detail["code"], "PACKAGE_COMPONENTS_NOT_AVAILABLE")
+        self.assertEqual(detail["package_stock_code"], "PKG_BLUE_3")
+
+    def test_kiosk_packaging_snapshot_exposes_package_bom_availability(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {
+                    "order_id": "WO-PKT-BLUE-001",
+                    "stock_code": "PKG_BLUE_3",
+                    "stock_name": "Mavi Uclu Paket",
+                    "qty": 1,
+                    "stationCode": "PACKAGING_01",
+                }
+            ]
+        )
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        availability = {
+            "bom_configured": True,
+            "can_start": True,
+            "package_stock_code": "PKG_BLUE_3",
+            "components": [
+                {
+                    "component_stock_code": "BLUE_BOX",
+                    "required_qty": 3,
+                    "available_qty": 3,
+                    "missing_qty": 0,
+                }
+            ],
+        }
+
+        with patch.object(app_module, "package_component_availability", return_value=availability):
+            snapshot = client.get(
+                f"/api/modules/{config.module_id}/kiosk/bootstrap",
+                params={"device_id": "kiosk-1", "station_code": "PACKAGING_01"},
+            ).json()
+
+        package_orders = snapshot["packaging"]["package_orders"]
+        self.assertEqual(len(package_orders), 1)
+        self.assertEqual(package_orders[0]["package_bom"]["package_stock_code"], "PKG_BLUE_3")
+        self.assertEqual(package_orders[0]["package_bom"]["components"][0]["available_qty"], 3)
+
+    def test_kiosk_package_start_reserves_phase2_components_when_available(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {
+                    "order_id": "WO-PKT-BLUE-001",
+                    "stock_code": "PKG_BLUE_3",
+                    "stock_name": "Mavi Uclu Paket",
+                    "qty": 1,
+                    "stationCode": "PACKAGING_01",
+                }
+            ]
+        )
+        state = manager.read_state()
+        state["workOrders"]["packagingBuffer"] = {
+            "itemsById": {
+                "BUF-1": {
+                    "item_id": "BUF-1",
+                    "status": "available",
+                    "classification": "GOOD",
+                    "color": "blue",
+                    "product_code": "BLUE_BOX",
+                }
+            },
+            "availableItemIds": ["BUF-1"],
+        }
+        manager.write_state(state)
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        availability = {
+            "bom_configured": True,
+            "can_start": True,
+            "package_stock_code": "PKG_BLUE_3",
+            "components": [
+                {
+                    "component_stock_code": "BLUE_BOX",
+                    "required_qty": 3,
+                    "available_qty": 3,
+                    "missing_qty": 0,
+                }
+            ],
+        }
+
+        with patch.object(app_module, "package_component_availability", return_value=availability), patch.object(
+            app_module,
+            "reserve_package_components",
+            return_value=[{"wip_item_pk": 1}, {"wip_item_pk": 2}, {"wip_item_pk": 3}],
+        ) as reserve_mock:
+            response = client.post(
+                f"/api/modules/{config.module_id}/kiosk/package/start",
+                json={"device_id": "kiosk-1", "operator_id": "1", "package_order_id": "WO-PKT-BLUE-001"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["reserved_component_count"], 3)
+        reserve_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

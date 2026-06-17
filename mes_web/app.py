@@ -11,6 +11,12 @@ from fastapi.staticfiles import StaticFiles
 
 from .command_policy import is_local_only_command
 from .config import AppConfig
+from .db.package_bom_wip import (
+    consume_package_components,
+    insufficient_components_detail,
+    package_component_availability,
+    reserve_package_components,
+)
 from .db.work_order_mirror import mirror_work_orders_from_state
 from .db.work_order_read import state_with_db_work_orders
 from .db.work_order_transition_writer import mirror_work_order_transition_from_state
@@ -309,7 +315,9 @@ def _project_kiosk_packaging(state: dict[str, Any], ordered_orders: list[dict[st
             is_pkg = _is_kiosk_package_order(order_id, raw_order)
             
         if is_pkg:
-            package_orders.append(copy.deepcopy(row))
+            projected_order = copy.deepcopy(row)
+            projected_order["package_bom"] = package_component_availability(config, state, projected_order)
+            package_orders.append(projected_order)
     sessions = work_orders.get("packagingSessions") if isinstance(work_orders.get("packagingSessions"), dict) else {}
     active_sessions = [
         copy.deepcopy(row)
@@ -413,6 +421,24 @@ def _kiosk_big_action(
                     "payload": {"session_id": str(my_session.get("session_id") or "")}
                 }
             else:
+                package_orders = packaging.get("package_orders", []) if isinstance(packaging, dict) else []
+                package_row = next(
+                    (
+                        row
+                        for row in package_orders
+                        if isinstance(row, dict)
+                        and str(row.get("order_id") or "") == str(active_order.get("order_id") or "")
+                    ),
+                    None,
+                )
+                package_bom = package_row.get("package_bom") if isinstance(package_row, dict) and isinstance(package_row.get("package_bom"), dict) else {}
+                if package_bom.get("bom_configured") and not bool(package_bom.get("can_start", True)):
+                    return {
+                        "action": "wait",
+                        "label": "Paket komponent stogu eksik",
+                        "enabled": False,
+                        "phase": "",
+                    }
                 available_count = (packaging.get("buffer", {}) if isinstance(packaging, dict) else {}).get("available_count", 0)
                 if available_count > 0:
                     return {
@@ -1666,6 +1692,11 @@ def create_app() -> FastAPI:
                     "priority_order_id": top_queue_order_id,
                 },
             )
+        if isinstance(requested_order, dict) and _is_kiosk_package_order(order_id, requested_order):
+            availability = package_component_availability(config, current_state, requested_order)
+            insufficient_detail = insufficient_components_detail(availability, order_id)
+            if insufficient_detail is not None:
+                raise HTTPException(status_code=409, detail=insufficient_detail)
         try:
             result = oee_state_manager.start_work_order(
                 order_id,
@@ -1756,6 +1787,14 @@ def create_app() -> FastAPI:
         package_order_id = str(payload.get("package_order_id") or payload.get("packageOrderId") or "").strip()
         if not package_order_id:
             raise HTTPException(status_code=400, detail="PACKAGE_ORDER_ID_REQUIRED")
+        current_state = oee_state_manager.read_state()
+        work_orders = current_state.get("workOrders") if isinstance(current_state.get("workOrders"), dict) else {}
+        orders_by_id = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+        package_order = orders_by_id.get(package_order_id) if isinstance(orders_by_id.get(package_order_id), dict) else {}
+        availability = package_component_availability(config, current_state, package_order)
+        insufficient_detail = insufficient_components_detail(availability, package_order_id)
+        if insufficient_detail is not None:
+            raise HTTPException(status_code=409, detail=insufficient_detail)
         try:
             result = oee_state_manager.start_package_flow(
                 package_order_id,
@@ -1778,6 +1817,16 @@ def create_app() -> FastAPI:
         )
         session = result.get("session") if isinstance(result.get("session"), dict) else {}
         buffer_item = result.get("buffer_item") if isinstance(result.get("buffer_item"), dict) else {}
+        reserved_components: list[dict[str, Any]] = []
+        try:
+            reserved_components = reserve_package_components(
+                config,
+                package_order_id,
+                str(session.get("session_id") or ""),
+                availability,
+            )
+        except Exception as exc:
+            logger.error("Package component reservation failed: %s", exc, exc_info=exc)
         store.append_system_log(
             module_id,
             f"SYSTEM|KIOSK|PACKAGE_START|ORDER={package_order_id}|ITEM={str(buffer_item.get('item_id') or '')}|SESSION={str(session.get('session_id') or '')}",
@@ -1791,6 +1840,7 @@ def create_app() -> FastAPI:
             "package_order_id": str(session.get("package_order_id") or package_order_id),
             "buffer_item_id": str(session.get("buffer_item_id") or ""),
             "color": str(session.get("color") or ""),
+            "reserved_component_count": len(reserved_components),
         }
 
     @app.post("/api/modules/{module_id}/kiosk/package/finish")
@@ -1821,6 +1871,20 @@ def create_app() -> FastAPI:
         )
         session = result.get("session") if isinstance(result.get("session"), dict) else {}
         package_item = result.get("package_item") if isinstance(result.get("package_item"), dict) else {}
+        updated_work_orders = updated_state.get("workOrders") if isinstance(updated_state, dict) and isinstance(updated_state.get("workOrders"), dict) else {}
+        updated_orders_by_id = updated_work_orders.get("ordersById") if isinstance(updated_work_orders.get("ordersById"), dict) else {}
+        package_order_id = str(session.get("package_order_id") or "")
+        package_order = updated_orders_by_id.get(package_order_id) if isinstance(updated_orders_by_id.get(package_order_id), dict) else {}
+        consumed_components: list[dict[str, Any]] = []
+        try:
+            consumed_components = consume_package_components(
+                config,
+                package_order=package_order,
+                session=session,
+                package_item=package_item,
+            )
+        except Exception as exc:
+            logger.error("Package component traceability write failed: %s", exc, exc_info=exc)
         store.append_system_log(
             module_id,
             f"SYSTEM|KIOSK|PACKAGE_FINISH|ORDER={str(session.get('package_order_id') or '')}|PACKAGE_ITEM={str(package_item.get('item_id') or '')}|SESSION={session_id}",
@@ -1835,6 +1899,7 @@ def create_app() -> FastAPI:
             "buffer_item_id": str(session.get("buffer_item_id") or ""),
             "package_item_id": str(package_item.get("item_id") or ""),
             "work_order_id": str(package_item.get("work_order_id") or ""),
+            "consumed_component_count": len(consumed_components),
         }
 
     @app.post("/api/modules/{module_id}/kiosk/quality/override")

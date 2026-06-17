@@ -137,6 +137,19 @@ def _latest_log_time(work_orders: JsonObject, order_id: str, event_types: set[st
     return None
 
 
+def _latest_log_row(work_orders: JsonObject, order_id: str, event_types: set[str]) -> JsonObject:
+    for log_name in ("transitionLog", "completionLog"):
+        rows = work_orders.get(log_name) if isinstance(work_orders.get(log_name), list) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if _text(row.get("orderId")) != order_id:
+                continue
+            if _text(row.get("eventType")) in event_types:
+                return dict(row)
+    return {}
+
+
 def _event_type_for_order(requested_event_type: str, order: JsonObject) -> str:
     requested = _text(requested_event_type).lower() or "runtime_sync"
     status = _text(order.get("status")).lower()
@@ -150,6 +163,10 @@ def _event_type_for_order(requested_event_type: str, order: JsonObject) -> str:
         return "completed"
     if requested == "rollback_active":
         return "rolled_back"
+    if requested in {"finish", "finished", "work_order_finished"}:
+        return "finished"
+    if requested in {"cancel", "cancelled", "work_order_cancelled"}:
+        return "cancelled"
     return requested
 
 
@@ -161,6 +178,8 @@ def _is_order_scoped_request(requested_event_type: str) -> bool:
         "accept_active",
         "rollback_active",
         "rolled_back",
+        "finished",
+        "cancelled",
         "package_started",
         "package_finished",
     }
@@ -213,6 +232,12 @@ def _should_emit_order_scoped_event(
     if normalized_event_type == "rolled_back":
         return status == "queued" and bool(_latest_log_time(work_orders, order_id, {"rolled_back"}))
 
+    if normalized_event_type == "finished":
+        return status == "pending_approval" and bool(_latest_log_time(work_orders, order_id, {"finished"}))
+
+    if normalized_event_type == "cancelled":
+        return status == "cancelled" and bool(_latest_log_time(work_orders, order_id, {"cancelled"}))
+
     return True
 
 
@@ -228,6 +253,10 @@ def _event_at_for_order(state: JsonObject, work_orders: JsonObject, order_id: st
         log_types.add("package_finished")
     elif event_type == "rolled_back":
         log_types.add("rolled_back")
+    elif event_type == "finished":
+        log_types.add("finished")
+    elif event_type == "cancelled":
+        log_types.add("cancelled")
 
     log_time = _latest_log_time(work_orders, order_id, log_types)
     if log_time is not None:
@@ -287,6 +316,36 @@ def build_work_order_transition_event_rows(
     orders = _orders_by_id(work_orders)
     source_file = _source_file(work_orders)
     rows: list[WorkOrderTransitionEventRow] = []
+    requested_event_type = _text(event_type).lower()
+
+    if requested_event_type == "reordered":
+        event_at = _latest_log_time(work_orders, "", {"reordered"}) or _nullable_text(state.get("lastUpdatedAt")) or _source_loaded_at(work_orders)
+        latest_reorder = None
+        transition_rows = work_orders.get("transitionLog") if isinstance(work_orders.get("transitionLog"), list) else []
+        for row in transition_rows:
+            if isinstance(row, dict) and _text(row.get("eventType")) == "reordered":
+                latest_reorder = row
+                break
+        rows.append(
+            WorkOrderTransitionEventRow(
+                order_id=None,
+                event_type="reordered",
+                event_at=event_at,
+                actor_id=_nullable_text(actor_id),
+                source_system=SOURCE_SYSTEM,
+                source_file=source_file,
+                external_ref=_event_external_ref("reordered", None, event_at),
+                payload={"reorder": dict(latest_reorder or {})},
+                metadata={
+                    "source": HOOK_SOURCE,
+                    "requested_event_type": "reordered",
+                    "replace_current": bool(replace_current),
+                    "state_file": str(state_file or ""),
+                    "natural_key_policy": NATURAL_KEY_POLICY,
+                },
+            )
+        )
+        return rows
 
     for order_key, raw_order in sorted(orders.items(), key=lambda item: str(item[0])):
         if not isinstance(raw_order, dict):
@@ -299,6 +358,11 @@ def build_work_order_transition_event_rows(
             continue
         event_at = _event_at_for_order(state, work_orders, order_id, raw_order, normalized_event_type)
         status = _text(raw_order.get("status")).lower() or "unknown"
+        event_log = _latest_log_row(work_orders, order_id, {normalized_event_type})
+        if normalized_event_type == "package_finished":
+            event_log = _latest_log_row(work_orders, order_id, {"package_finished"})
+        elif normalized_event_type == "package_started":
+            event_log = _latest_log_row(work_orders, order_id, {"package_started"})
         rows.append(
             WorkOrderTransitionEventRow(
                 order_id=order_id,
@@ -310,6 +374,7 @@ def build_work_order_transition_event_rows(
                 external_ref=_event_external_ref(normalized_event_type, order_id, event_at),
                 payload={
                     "order": dict(raw_order),
+                    "event_log": event_log,
                     "work_order_source": dict(work_orders.get("source") if isinstance(work_orders.get("source"), dict) else {}),
                     "active_order_id": _text(work_orders.get("activeOrderId")),
                     "last_completed_order_id": _text(work_orders.get("lastCompletedOrderId")),

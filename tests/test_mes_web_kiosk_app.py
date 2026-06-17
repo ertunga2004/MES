@@ -401,6 +401,7 @@ class KioskAppTests(unittest.TestCase):
             json={
                 "station_code": "ASSEMBLY_01",
                 "ordered_order_ids": ["WO-ASM-2", "WO-ASM-1"],
+                "reason": "test_station_reorder",
             },
         )
 
@@ -417,6 +418,7 @@ class KioskAppTests(unittest.TestCase):
             json={
                 "station_code": "ASSEMBLY_01",
                 "ordered_order_ids": ["WO-PKG-1", "WO-ASM-1"],
+                "reason": "test_wrong_station",
             },
         )
         self.assertEqual(wrong_station.status_code, 400)
@@ -431,10 +433,265 @@ class KioskAppTests(unittest.TestCase):
             json={
                 "station_code": "ASSEMBLY_01",
                 "ordered_order_ids": ["WO-ASM-2", "WO-ASM-1"],
+                "reason": "test_active_reorder",
             },
         )
         self.assertEqual(active_reorder.status_code, 400)
         self.assertEqual(active_reorder.json()["detail"], "INVALID_WORK_ORDER_REORDER")
+
+    def test_dashboard_reorder_requires_reason(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {"order_id": "WO-ASM-1", "stock_code": "BOX-RED", "stock_name": "Kirmizi Kutu", "qty": 1, "stationCode": "ASSEMBLY_01"},
+                {"order_id": "WO-ASM-2", "stock_code": "BOX-BLUE", "stock_name": "Mavi Kutu", "qty": 1, "stationCode": "ASSEMBLY_01"},
+            ]
+        )
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        response = client.post(
+            f"/api/modules/{config.module_id}/work-orders/reorder",
+            json={"station_code": "ASSEMBLY_01", "ordered_order_ids": ["WO-ASM-2", "WO-ASM-1"]},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "WORK_ORDER_REORDER_REASON_REQUIRED")
+
+    def test_successful_reorder_writes_reordered_event(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {"order_id": "WO-ASM-1", "stock_code": "BOX-RED", "stock_name": "Kirmizi Kutu", "qty": 1, "stationCode": "ASSEMBLY_01"},
+                {"order_id": "WO-ASM-2", "stock_code": "BOX-BLUE", "stock_name": "Mavi Kutu", "qty": 1, "stationCode": "ASSEMBLY_01"},
+            ]
+        )
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        calls: list[dict[str, object]] = []
+
+        def capture_transition(_config, state, *, event_type: str = "runtime_sync", actor_id: str = "", replace_current: bool = False):
+            calls.append({"event_type": event_type, "replace_current": replace_current})
+            return None
+
+        with patch.object(app_module, "mirror_work_order_transition_from_state", side_effect=capture_transition):
+            response = client.post(
+                f"/api/modules/{config.module_id}/work-orders/reorder",
+                json={
+                    "station_code": "ASSEMBLY_01",
+                    "ordered_order_ids": ["WO-ASM-2", "WO-ASM-1"],
+                    "reason": "test_reorder_event",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(calls)
+        self.assertEqual(calls[-1]["event_type"], "reordered")
+
+    def test_cancel_requires_reason_and_rejects_wrong_station(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {"order_id": "WO-ASM-1", "stock_code": "BOX-RED", "stock_name": "Kirmizi Kutu", "qty": 1, "stationCode": "ASSEMBLY_01"},
+            ]
+        )
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        missing_reason = client.post(
+            f"/api/modules/{config.module_id}/work-orders/cancel",
+            json={"station_code": "ASSEMBLY_01", "order_id": "WO-ASM-1"},
+        )
+        wrong_station = client.post(
+            f"/api/modules/{config.module_id}/work-orders/cancel",
+            json={"station_code": "PACKAGING_01", "order_id": "WO-ASM-1", "reason": "operator_cancel"},
+        )
+
+        self.assertEqual(missing_reason.status_code, 400)
+        self.assertEqual(missing_reason.json()["detail"], "WORK_ORDER_CANCEL_REASON_REQUIRED")
+        self.assertEqual(wrong_station.status_code, 400)
+        self.assertEqual(wrong_station.json()["detail"], "WORK_ORDER_STATION_MISMATCH")
+
+    def test_successful_cancel_writes_cancelled_event(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {"order_id": "WO-ASM-1", "stock_code": "BOX-RED", "stock_name": "Kirmizi Kutu", "qty": 1, "stationCode": "ASSEMBLY_01"},
+            ]
+        )
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        calls: list[dict[str, object]] = []
+
+        def capture_transition(_config, state, *, event_type: str = "runtime_sync", actor_id: str = "", replace_current: bool = False):
+            calls.append({"event_type": event_type, "actor_id": actor_id})
+            return None
+
+        with patch.object(app_module, "mirror_work_order_transition_from_state", side_effect=capture_transition):
+            response = client.post(
+                f"/api/modules/{config.module_id}/work-orders/cancel",
+                json={
+                    "station_code": "ASSEMBLY_01",
+                    "order_id": "WO-ASM-1",
+                    "operator_id": "OP-001",
+                    "reason": "operator_cancel",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(calls)
+        self.assertEqual(calls[-1]["event_type"], "cancelled")
+        self.assertEqual(calls[-1]["actor_id"], "OP-001")
+
+    def test_active_assembly_cancel_does_not_clear_packaging_active(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {"order_id": "WO-ASM-ACT", "stock_code": "BOX-RED", "stock_name": "Kirmizi Kutu", "qty": 1, "stationCode": "ASSEMBLY_01"},
+                {"order_id": "WO-PKG-ACT", "stock_code": "PKG_BLUE_3", "stock_name": "Mavi Uclu Paket", "qty": 1, "stationCode": "PACKAGING_01"},
+            ]
+        )
+        manager.start_work_order("WO-ASM-ACT", station_code="ASSEMBLY_01")
+        manager.start_work_order("WO-PKG-ACT", station_code="PACKAGING_01")
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        response = client.post(
+            f"/api/modules/{config.module_id}/work-orders/cancel",
+            json={"station_code": "ASSEMBLY_01", "order_id": "WO-ASM-ACT", "reason": "operator_cancel"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        state = manager.read_state()
+        self.assertEqual(state["workOrders"]["ordersById"]["WO-ASM-ACT"]["status"], "cancelled")
+        self.assertEqual(state["workOrders"]["ordersById"]["WO-PKG-ACT"]["status"], "active")
+        self.assertEqual(state["workOrders"]["activeOrderByStation"].get("PACKAGING_01"), "WO-PKG-ACT")
+        self.assertNotIn("ASSEMBLY_01", state["workOrders"]["activeOrderByStation"])
+
+    def test_active_package_cancel_releases_runtime_and_db_wip(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {"order_id": "WO-PKG-ACT", "stock_code": "PKG_BLUE_3", "stock_name": "Mavi Uclu Paket", "qty": 1, "stationCode": "PACKAGING_01"},
+            ]
+        )
+        state = manager.read_state()
+        order = state["workOrders"]["ordersById"]["WO-PKG-ACT"]
+        order["status"] = "active"
+        order["startedAt"] = "2026-04-27T09:00:00+00:00"
+        session_id = "SESSION-1"
+        state["workOrders"]["activeOrderByStation"] = {"PACKAGING_01": "WO-PKG-ACT"}
+        state["workOrders"]["packagingSessions"] = {
+            session_id: {
+                "session_id": session_id,
+                "package_order_id": "WO-PKG-ACT",
+                "buffer_item_id": "BUF-1",
+                "status": "reserved",
+            }
+        }
+        state["workOrders"]["packagingBuffer"] = {
+            "itemsById": {
+                "BUF-1": {
+                    "item_id": "BUF-1",
+                    "item_key": "ITEM-1",
+                    "status": "reserved",
+                    "reserved_by_order_id": "WO-PKG-ACT",
+                    "reserved_by_session_id": session_id,
+                }
+            },
+            "availableItemIds": [],
+        }
+        state["itemsById"] = {
+            "ITEM-1": {
+                "item_id": "BUF-1",
+                "completed_at": "2026-04-27T08:00:00+00:00",
+                "classification": "GOOD",
+                "color": "blue",
+                "final_color": "blue",
+                "product_code": "BLUE_BOX",
+                "stock_code": "BLUE_BOX",
+                "packaging_status": "reserved",
+                "packaging_order_id": "WO-PKG-ACT",
+                "packaging_session_id": session_id,
+            }
+        }
+        manager.write_state(state)
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        with patch.object(app_module, "release_reserved_package_components", return_value=[{"wip_item_pk": 1}]) as release_mock:
+            response = client.post(
+                f"/api/modules/{config.module_id}/work-orders/cancel",
+                json={"station_code": "PACKAGING_01", "order_id": "WO-PKG-ACT", "reason": "operator_cancel"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        release_mock.assert_called_once()
+        state = manager.read_state()
+        self.assertEqual(state["workOrders"]["packagingSessions"][session_id]["status"], "cancelled")
+        buffer_items = state["workOrders"]["packagingBuffer"]["itemsById"]
+        self.assertTrue(buffer_items)
+        buffer_row = next(iter(buffer_items.values()))
+        self.assertEqual(buffer_row["status"], "available")
+        self.assertTrue(state["workOrders"]["packagingBuffer"]["availableItemIds"])
+        self.assertEqual(response.json()["released_component_count"], 1)
+
+    def test_pending_package_cancel_is_not_supported(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {"order_id": "WO-PKG-PENDING", "stock_code": "PKG_BLUE_3", "stock_name": "Mavi Uclu Paket", "qty": 1, "stationCode": "PACKAGING_01"},
+            ]
+        )
+        state = manager.read_state()
+        order = state["workOrders"]["ordersById"]["WO-PKG-PENDING"]
+        order["status"] = "pending_approval"
+        order["startedAt"] = "2026-04-27T09:00:00+00:00"
+        order["completedQty"] = 1
+        order["productionQty"] = 1
+        order["remainingQty"] = 0
+        order["autoCompletedAt"] = "2026-04-27T09:05:00+00:00"
+        for requirement in order.get("requirements") or []:
+            requirement["completedQty"] = requirement.get("quantity", 1)
+            requirement["productionQty"] = requirement.get("quantity", 1)
+            requirement["remainingQty"] = 0
+        state["workOrders"]["activeOrderByStation"] = {"PACKAGING_01": "WO-PKG-PENDING"}
+        manager.write_state(state)
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        response = client.post(
+            f"/api/modules/{config.module_id}/work-orders/cancel",
+            json={"station_code": "PACKAGING_01", "order_id": "WO-PKG-PENDING", "reason": "operator_cancel"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "PACKAGE_PENDING_ROLLBACK_NOT_SUPPORTED")
+
+    def test_work_order_reset_triggers_demo_wip_cleanup_by_default(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {"order_id": "WO-ASM-1", "stock_code": "BOX-RED", "stock_name": "Kirmizi Kutu", "qty": 1, "stationCode": "ASSEMBLY_01"},
+            ]
+        )
+        state = manager.read_state()
+        state["workOrders"]["packagingBuffer"] = {
+            "itemsById": {
+                "BUF-RED-1": {
+                    "item_id": "BUF-RED-1",
+                    "status": "available",
+                    "classification": "GOOD",
+                    "color": "red",
+                    "product_code": "RED_BOX",
+                }
+            },
+            "availableItemIds": ["BUF-RED-1"],
+        }
+        manager.write_state(state)
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        with patch.object(app_module, "reset_demo_package_wip", return_value=3) as reset_wip_mock:
+            response = client.post(f"/api/modules/{config.module_id}/work-orders/reset", json={})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        reset_wip_mock.assert_called_once()
+        self.assertEqual(response.json()["wip_reset_count"], 3)
+        state = manager.read_state()
+        self.assertEqual(state["workOrders"]["packagingBuffer"], {"itemsById": {}, "availableItemIds": []})
 
     def test_kiosk_accept_active_work_order_syncs_completed_transition(self) -> None:
         client, config, manager, store, _runtime_service = self._build_client()
@@ -526,7 +783,7 @@ class KioskAppTests(unittest.TestCase):
         self.assertEqual(detail["elapsed_ms"], 10 * 60 * 1000)
         self.assertEqual(detail["tolerance_ms"], 5 * 60 * 1000)
 
-    def test_kiosk_package_work_order_start_blocks_when_bom_components_missing(self) -> None:
+    def test_kiosk_package_work_order_start_does_not_gate_or_reserve_wip(self) -> None:
         client, config, manager, store, _runtime_service = self._build_client()
         manager.apply_control("shift_start")
         manager.import_work_orders(
@@ -556,7 +813,7 @@ class KioskAppTests(unittest.TestCase):
         }
 
         with patch.object(app_module, "package_component_availability", return_value=availability):
-            blocked = client.post(
+            started = client.post(
                 f"/api/modules/{config.module_id}/kiosk/work-orders/start",
                 json={
                     "device_id": "kiosk-1",
@@ -566,11 +823,11 @@ class KioskAppTests(unittest.TestCase):
                 },
             )
 
-        self.assertEqual(blocked.status_code, 409)
-        detail = blocked.json()["detail"]
-        self.assertEqual(detail["code"], "PACKAGE_COMPONENTS_NOT_AVAILABLE")
-        self.assertEqual(detail["components"][0]["component_stock_code"], "BLUE_BOX")
-        self.assertEqual(detail["components"][0]["missing_qty"], 2)
+        self.assertEqual(started.status_code, 200, started.text)
+        state = manager.read_state()
+        order = state["workOrders"]["ordersById"]["WO-PKT-BLUE-001"]
+        self.assertEqual(order["status"], "active")
+        self.assertEqual(state["workOrders"]["packagingSessions"], {})
 
     def test_kiosk_package_start_blocks_when_bom_components_missing(self) -> None:
         client, config, manager, store, _runtime_service = self._build_client()
@@ -585,6 +842,7 @@ class KioskAppTests(unittest.TestCase):
                 }
             ]
         )
+        manager.start_work_order("WO-PKT-BLUE-001", station_code="PACKAGING_01")
         store.refresh_oee_runtime_state(config.module_id, force=True)
         availability = {
             "bom_configured": True,
@@ -663,6 +921,7 @@ class KioskAppTests(unittest.TestCase):
                 }
             ]
         )
+        manager.start_work_order("WO-PKT-BLUE-001", station_code="PACKAGING_01")
         state = manager.read_state()
         state["workOrders"]["packagingBuffer"] = {
             "itemsById": {
@@ -705,6 +964,138 @@ class KioskAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["reserved_component_count"], 3)
         reserve_mock.assert_called_once()
+        state = manager.read_state()
+        sessions = state["workOrders"]["packagingSessions"]
+        self.assertEqual(len(sessions), 1)
+        session = next(iter(sessions.values()))
+        self.assertEqual(session["status"], "in_progress")
+        self.assertEqual(state["workOrders"]["ordersById"]["WO-PKT-BLUE-001"]["status"], "active")
+
+    def test_package_lifecycle_requires_start_finish_accept_sequence(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.apply_control("shift_start")
+        manager.import_work_orders(
+            [
+                {
+                    "order_id": "WO-PKT-BLUE-001",
+                    "stock_code": "PKG_BLUE_3",
+                    "stock_name": "Mavi Uclu Paket",
+                    "qty": 1,
+                    "stationCode": "PACKAGING_01",
+                }
+            ]
+        )
+        state = manager.read_state()
+        state["workOrders"]["packagingBuffer"] = {
+            "itemsById": {
+                "BUF-1": {
+                    "item_id": "BUF-1",
+                    "item_key": "ITEM-1",
+                    "status": "available",
+                    "classification": "GOOD",
+                    "color": "blue",
+                    "product_code": "BLUE_BOX",
+                    "upstream_order_id": "TEST-FERP-SCRAP",
+                    "upstream_external_ref": "TEST-FERP-SCRAP_BUF-1",
+                }
+            },
+            "availableItemIds": ["BUF-1"],
+        }
+        state["itemsById"] = {
+            "ITEM-1": {
+                "item_id": "BUF-1",
+                "completed_at": "2026-04-27T08:00:00+00:00",
+                "classification": "GOOD",
+                "color": "blue",
+                "final_color": "blue",
+                "product_code": "BLUE_BOX",
+                "stock_code": "BLUE_BOX",
+                "work_order_id": "TEST-FERP-SCRAP",
+            }
+        }
+        manager.write_state(state)
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        availability = {
+            "bom_configured": True,
+            "can_start": True,
+            "package_stock_code": "PKG_BLUE_3",
+            "components": [
+                {
+                    "component_stock_code": "BLUE_BOX",
+                    "required_qty": 3,
+                    "available_qty": 3,
+                    "missing_qty": 0,
+                }
+            ],
+        }
+
+        with patch.object(app_module, "package_component_availability", return_value=availability):
+            started = client.post(
+                f"/api/modules/{config.module_id}/kiosk/work-orders/start",
+                json={
+                    "device_id": "kiosk-1",
+                    "operator_id": "1",
+                    "order_id": "WO-PKT-BLUE-001",
+                    "station_code": "PACKAGING_01",
+                },
+            )
+            self.assertEqual(started.status_code, 200, started.text)
+            snapshot = client.get(
+                f"/api/modules/{config.module_id}/kiosk/bootstrap",
+                params={"device_id": "kiosk-1", "station_code": "PACKAGING_01"},
+            ).json()
+
+        self.assertEqual(snapshot["big_action"]["action"], "package_start")
+        state = manager.read_state()
+        self.assertEqual(state["workOrders"]["ordersById"]["WO-PKT-BLUE-001"]["status"], "active")
+        self.assertEqual(state["workOrders"]["packagingSessions"], {})
+
+        with patch.object(app_module, "package_component_availability", return_value=availability), patch.object(
+            app_module,
+            "reserve_package_components",
+            return_value=[{"wip_item_pk": 1}, {"wip_item_pk": 2}, {"wip_item_pk": 3}],
+        ):
+            package_started = client.post(
+                f"/api/modules/{config.module_id}/kiosk/package/start",
+                json={"device_id": "kiosk-1", "operator_id": "1", "package_order_id": "WO-PKT-BLUE-001"},
+            )
+            self.assertEqual(package_started.status_code, 200, package_started.text)
+            snapshot = client.get(
+                f"/api/modules/{config.module_id}/kiosk/bootstrap",
+                params={"device_id": "kiosk-1", "station_code": "PACKAGING_01"},
+            ).json()
+
+        self.assertEqual(snapshot["big_action"]["action"], "package_finish")
+        state = manager.read_state()
+        sessions = state["workOrders"]["packagingSessions"]
+        session_id = next(iter(sessions))
+        self.assertEqual(sessions[session_id]["status"], "in_progress")
+        sessions[session_id]["started_at"] = "2026-04-27T09:00:00+00:00"
+        manager.write_state(state)
+
+        with patch.object(app_module, "consume_package_components", return_value=[{"wip_item_pk": 1}, {"wip_item_pk": 2}, {"wip_item_pk": 3}]):
+            package_finished = client.post(
+                f"/api/modules/{config.module_id}/kiosk/package/finish",
+                json={"device_id": "kiosk-1", "operator_id": "1", "session_id": session_id},
+            )
+
+        self.assertEqual(package_finished.status_code, 200, package_finished.text)
+        self.assertGreater(package_finished.json()["duration_seconds"], 0)
+        state = manager.read_state()
+        order = state["workOrders"]["ordersById"]["WO-PKT-BLUE-001"]
+        self.assertEqual(order["status"], "pending_approval")
+        self.assertEqual(state["workOrders"]["packagingSessions"][session_id]["status"], "finished")
+        self.assertGreater(state["workOrders"]["packagingSessions"][session_id]["duration_seconds"], 0)
+
+        accepted = client.post(
+            f"/api/modules/{config.module_id}/kiosk/work-orders/accept-active",
+            json={"station_code": "PACKAGING_01", "order_id": "WO-PKT-BLUE-001"},
+        )
+
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        state = manager.read_state()
+        self.assertEqual(state["workOrders"]["ordersById"]["WO-PKT-BLUE-001"]["status"], "completed")
+        self.assertNotIn("PACKAGING_01", state["workOrders"].get("activeOrderByStation") or {})
 
 
 if __name__ == "__main__":

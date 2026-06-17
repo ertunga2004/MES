@@ -15,7 +15,9 @@ from .db.package_bom_wip import (
     consume_package_components,
     insufficient_components_detail,
     package_component_availability,
+    release_reserved_package_components,
     reserve_package_components,
+    reset_demo_package_wip,
 )
 from .db.work_order_mirror import load_work_order_planning_snapshot, mirror_work_orders_from_state, reset_work_order_operational_state
 from .db.work_order_read import state_with_db_work_orders
@@ -333,7 +335,7 @@ def _project_kiosk_packaging(state: dict[str, Any], ordered_orders: list[dict[st
     active_sessions = [
         copy.deepcopy(row)
         for row in sessions.values()
-        if isinstance(row, dict) and str(row.get("status") or "").strip().lower() == "reserved"
+        if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"in_progress", "reserved"}
     ]
     return {
         "buffer": {
@@ -413,6 +415,19 @@ def _build_station_work_order_board(module_id: str) -> dict[str, Any]:
             if station_code == "PACKAGING_01" and _is_kiosk_package_order(order_id, raw_order):
                 availability = package_component_availability(config, state, raw_order)
                 projected["package_bom"] = availability
+                package_sessions = work_orders.get("packagingSessions") if isinstance(work_orders.get("packagingSessions"), dict) else {}
+                active_package_session = next(
+                    (
+                        copy.deepcopy(session)
+                        for session in package_sessions.values()
+                        if isinstance(session, dict)
+                        and str(session.get("package_order_id") or "").strip() == order_id
+                        and str(session.get("status") or "").strip().lower() in {"in_progress", "reserved"}
+                    ),
+                    None,
+                )
+                projected["package_session"] = active_package_session
+                projected["package_process_status"] = str((active_package_session or {}).get("status") or "not_started").strip().lower()
                 if not package_wip_summary:
                     package_wip_summary = _package_wip_summary_from_availability(availability)
             status = str(projected.get("status") or "").strip()
@@ -525,41 +540,13 @@ def _kiosk_big_action(
                     "phase": "",
                     "payload": {"session_id": str(my_session.get("session_id") or "")}
                 }
-            else:
-                package_orders = packaging.get("package_orders", []) if isinstance(packaging, dict) else []
-                package_row = next(
-                    (
-                        row
-                        for row in package_orders
-                        if isinstance(row, dict)
-                        and str(row.get("order_id") or "") == str(active_order.get("order_id") or "")
-                    ),
-                    None,
-                )
-                package_bom = package_row.get("package_bom") if isinstance(package_row, dict) and isinstance(package_row.get("package_bom"), dict) else {}
-                if package_bom.get("bom_configured") and not bool(package_bom.get("can_start", True)):
-                    return {
-                        "action": "wait",
-                        "label": "Paket komponent stogu eksik",
-                        "enabled": False,
-                        "phase": "",
-                    }
-                available_count = (packaging.get("buffer", {}) if isinstance(packaging, dict) else {}).get("available_count", 0)
-                if available_count > 0:
-                    return {
-                        "action": "package_start",
-                        "label": "Paketlemeyi Baslat",
-                        "enabled": True,
-                        "phase": "",
-                        "payload": {"package_order_id": str(active_order.get("order_id") or "")}
-                    }
-                else:
-                    return {
-                        "action": "wait",
-                        "label": "Uygun GOOD kutu yok",
-                        "enabled": False,
-                        "phase": "",
-                    }
+            return {
+                "action": "package_start",
+                "label": "Paketlemeye Basla",
+                "enabled": True,
+                "phase": "",
+                "payload": {"package_order_id": str(active_order.get("order_id") or "")}
+            }
 
         return {
             "action": "wait",
@@ -1799,14 +1786,10 @@ def create_app() -> FastAPI:
                     "priority_order_id": top_queue_order_id,
                 },
             )
-        if isinstance(requested_order, dict) and _is_kiosk_package_order(order_id, requested_order):
-            availability = package_component_availability(config, current_state, requested_order)
-            insufficient_detail = insufficient_components_detail(availability, order_id)
-            if insufficient_detail is not None:
-                raise HTTPException(status_code=409, detail=insufficient_detail)
         try:
             result = oee_state_manager.start_work_order(
                 order_id,
+                station_code=station_code,
                 operator_code=actor["operator_code"],
                 operator_name=actor["operator_name"],
                 transition_reason=transition_reason,
@@ -1840,7 +1823,7 @@ def create_app() -> FastAPI:
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
         store.append_system_log(
             module_id,
-            f"SYSTEM|KIOSK|WORK_ORDER_START|ORDER={order_id}|OPERATOR={actor['operator_code'] or actor['operator_id']}",
+            f"SYSTEM|KIOSK|WORK_ORDER_START|STATION={station_code}|ORDER={order_id}|OPERATOR={actor['operator_code'] or actor['operator_id']}",
             topic="local/kiosk",
             received_at=stamp,
         )
@@ -1851,15 +1834,13 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/modules/{module_id}/kiosk/work-orders/accept-active")
-    async def kiosk_accept_active_work_order(module_id: str) -> dict[str, Any]:
+    async def kiosk_accept_active_work_order(module_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         _ensure_module(module_id)
-        state = oee_state_manager.read_state()
-        active_order_id = str((((state.get("workOrders") or {}) if isinstance(state.get("workOrders"), dict) else {}).get("activeOrderId") or "")).strip()
-        active_order = (((state.get("workOrders") or {}) if isinstance(state.get("workOrders"), dict) else {}).get("ordersById") or {}).get(active_order_id) if active_order_id else None
-        if not isinstance(active_order, dict) or str(active_order.get("status") or "") != "pending_approval":
-            raise HTTPException(status_code=400, detail="ACTIVE_WORK_ORDER_NOT_PENDING_APPROVAL")
+        request_payload = payload if isinstance(payload, dict) else {}
+        station_code = str(request_payload.get("station_code") or request_payload.get("stationCode") or "").strip()
+        order_id = str(request_payload.get("order_id") or request_payload.get("orderId") or "").strip()
         try:
-            result = oee_state_manager.accept_active_work_order()
+            result = oee_state_manager.accept_active_work_order(station_code=station_code, order_id=order_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
@@ -1876,7 +1857,7 @@ def create_app() -> FastAPI:
         ferp_export = _ferp_export_acceptance_result(result)
         store.append_system_log(
             module_id,
-            f"SYSTEM|KIOSK|WORK_ORDER_ACCEPT|ORDER={str(order.get('orderId') or '')}",
+            f"SYSTEM|KIOSK|WORK_ORDER_ACCEPT|STATION={station_code}|ORDER={str(order.get('orderId') or '')}",
             topic="local/kiosk",
             received_at=stamp,
         )
@@ -2006,6 +1987,7 @@ def create_app() -> FastAPI:
             "buffer_item_id": str(session.get("buffer_item_id") or ""),
             "package_item_id": str(package_item.get("item_id") or ""),
             "work_order_id": str(package_item.get("work_order_id") or ""),
+            "duration_seconds": float(session.get("duration_seconds") or 0),
             "consumed_component_count": len(consumed_components),
         }
 
@@ -2248,8 +2230,15 @@ def create_app() -> FastAPI:
 
         ordered_ids = payload.get("ordered_order_ids") or payload.get("orderedOrderIds") or payload.get("order_ids") or payload.get("orderIds")
         station_code = str(payload.get("station_code") or payload.get("stationCode") or "").strip()
+        reason = str(payload.get("reason") or payload.get("transition_reason") or payload.get("transitionReason") or "").strip()
+        if not station_code:
+            raise HTTPException(status_code=400, detail="WORK_ORDER_STATION_REQUIRED")
+        if not isinstance(ordered_ids, list) or not ordered_ids:
+            raise HTTPException(status_code=400, detail="WORK_ORDER_REORDER_IDS_REQUIRED")
+        if not reason:
+            raise HTTPException(status_code=400, detail="WORK_ORDER_REORDER_REASON_REQUIRED")
         try:
-            result = oee_state_manager.reorder_work_orders(ordered_ids, station_code=station_code)
+            result = oee_state_manager.reorder_work_orders(ordered_ids, station_code=station_code, reason=reason)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
@@ -2273,6 +2262,7 @@ def create_app() -> FastAPI:
         try:
             result = oee_state_manager.start_work_order(
                 str(payload.get("order_id") or payload.get("orderId") or ""),
+                station_code=str(payload.get("station_code") or payload.get("stationCode") or ""),
                 operator_code=str(payload.get("operator_code") or payload.get("operatorCode") or ""),
                 operator_name=str(payload.get("operator_name") or payload.get("operatorName") or ""),
                 transition_reason=str(payload.get("transition_reason") or payload.get("transitionReason") or ""),
@@ -2317,12 +2307,16 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/modules/{module_id}/work-orders/accept-active")
-    async def accept_active_work_order(module_id: str) -> dict[str, Any]:
+    async def accept_active_work_order(module_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         if module_id != config.module_id:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+        request_payload = payload if isinstance(payload, dict) else {}
 
         try:
-            result = oee_state_manager.accept_active_work_order()
+            result = oee_state_manager.accept_active_work_order(
+                station_code=str(request_payload.get("station_code") or request_payload.get("stationCode") or ""),
+                order_id=str(request_payload.get("order_id") or request_payload.get("orderId") or ""),
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
@@ -2343,6 +2337,110 @@ def create_app() -> FastAPI:
             "summary": summary,
             "order_id": str(order.get("orderId") or ""),
             "ferp_export": ferp_export,
+        }
+
+    @app.post("/api/modules/{module_id}/work-orders/finish")
+    async def finish_work_order(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if module_id != config.module_id:
+            raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+        order_id = str(payload.get("order_id") or payload.get("orderId") or "").strip()
+        station_code = str(payload.get("station_code") or payload.get("stationCode") or "").strip()
+        reason = str(payload.get("reason") or payload.get("transition_reason") or payload.get("transitionReason") or "").strip()
+        if not order_id:
+            raise HTTPException(status_code=400, detail="WORK_ORDER_ID_REQUIRED")
+        if not station_code:
+            raise HTTPException(status_code=400, detail="WORK_ORDER_STATION_REQUIRED")
+        if not reason:
+            raise HTTPException(status_code=400, detail="WORK_ORDER_FINISH_REASON_REQUIRED")
+        try:
+            result = oee_state_manager.finish_work_order(
+                order_id,
+                station_code=station_code,
+                operator_code=str(payload.get("operator_code") or payload.get("operatorCode") or ""),
+                operator_name=str(payload.get("operator_name") or payload.get("operatorName") or ""),
+                reason=reason,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        store.refresh_oee_runtime_state(module_id, force=True)
+        sync_work_order_runtime(
+            result.get("state") if isinstance(result.get("state"), dict) else None,
+            event_type="finished",
+            actor_id=str(payload.get("operator_code") or payload.get("operatorCode") or ""),
+        )
+        order = result.get("order") if isinstance(result.get("order"), dict) else {}
+        store.append_system_log(
+            module_id,
+            f"SYSTEM|WORK_ORDER|FINISH|STATION={station_code}|ORDER={order.get('orderId') or order_id}",
+            topic="local/work-orders",
+        )
+        return {
+            "status": "accepted",
+            "summary": str(result.get("summary") or "Is emri bitirildi."),
+            "order_id": str(order.get("orderId") or order_id),
+            "station_code": station_code,
+        }
+
+    @app.post("/api/modules/{module_id}/work-orders/cancel")
+    async def cancel_work_order(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if module_id != config.module_id:
+            raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+        order_id = str(payload.get("order_id") or payload.get("orderId") or "").strip()
+        station_code = str(payload.get("station_code") or payload.get("stationCode") or "").strip()
+        reason = str(payload.get("reason") or payload.get("transition_reason") or payload.get("transitionReason") or "").strip()
+        if not order_id:
+            raise HTTPException(status_code=400, detail="WORK_ORDER_ID_REQUIRED")
+        if not station_code:
+            raise HTTPException(status_code=400, detail="WORK_ORDER_STATION_REQUIRED")
+        if not reason:
+            raise HTTPException(status_code=400, detail="WORK_ORDER_CANCEL_REASON_REQUIRED")
+        try:
+            result = oee_state_manager.cancel_work_order(
+                order_id,
+                station_code=station_code,
+                operator_code=str(payload.get("operator_id") or payload.get("operator_code") or payload.get("operatorCode") or ""),
+                operator_name=str(payload.get("operator_name") or payload.get("operatorName") or ""),
+                device_id=str(payload.get("device_id") or payload.get("deviceId") or ""),
+                reason=reason,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        released_components: list[dict[str, Any]] = []
+        for session_id in result.get("released_package_session_ids") or []:
+            try:
+                released_components.extend(
+                    release_reserved_package_components(
+                        config,
+                        package_order_id=order_id,
+                        package_session_id=str(session_id or ""),
+                    )
+                )
+            except Exception as exc:
+                logger.error("Package WIP release failed after cancel: %s", exc, exc_info=exc)
+        store.refresh_oee_runtime_state(module_id, force=True)
+        sync_work_order_runtime(
+            result.get("state") if isinstance(result.get("state"), dict) else None,
+            event_type="cancelled",
+            actor_id=str(payload.get("operator_id") or payload.get("operator_code") or payload.get("operatorCode") or ""),
+        )
+        order = result.get("order") if isinstance(result.get("order"), dict) else {}
+        store.append_system_log(
+            module_id,
+            f"SYSTEM|WORK_ORDER|CANCEL|STATION={station_code}|ORDER={order.get('orderId') or order_id}|REASON={reason}",
+            topic="local/work-orders",
+        )
+        return {
+            "status": "accepted",
+            "summary": str(result.get("summary") or "Is emri iptal edildi."),
+            "order_id": str(order.get("orderId") or order_id),
+            "station_code": station_code,
+            "previous_status": str(result.get("previous_status") or ""),
+            "released_package_session_count": len(result.get("released_package_session_ids") or []),
+            "released_component_count": len(released_components),
         }
 
     @app.post("/api/modules/{module_id}/work-orders/rollback-active")
@@ -2377,9 +2475,11 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/modules/{module_id}/work-orders/reset")
-    async def reset_work_orders(module_id: str) -> dict[str, Any]:
+    async def reset_work_orders(module_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         if module_id != config.module_id:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+        request_payload = payload if isinstance(payload, dict) else {}
+        reset_wip = bool(request_payload.get("reset_wip", request_payload.get("resetWip", True)))
 
         planning_snapshot: dict[str, Any] = {}
         try:
@@ -2395,6 +2495,12 @@ def create_app() -> FastAPI:
         db_reset_result = reset_work_order_operational_state(config, planning_snapshot=planning_snapshot)
         if db_reset_result.status == "error":
             logger.warning("Work order DB operational reset failed: %s", db_reset_result.message)
+        wip_reset_count = 0
+        if reset_wip:
+            try:
+                wip_reset_count = reset_demo_package_wip(config, reason="work_order_reset")
+            except Exception as exc:
+                logger.warning("Demo package WIP reset failed: %s", exc, exc_info=exc)
         sync_work_order_runtime(
             result.get("state") if isinstance(result.get("state"), dict) else None,
             event_type="reset",
@@ -2404,7 +2510,7 @@ def create_app() -> FastAPI:
         summary = str(result.get("summary") or "Is emirleri sifirlandi.")
         store.append_system_log(
             module_id,
-            f"SYSTEM|WORK_ORDER|RESET|CLEARED={int(result.get('cleared_item_count') or 0)}|PRESERVED={int(result.get('preserved_order_count') or 0)}|DB_ROWS={int(db_reset_result.row_count or 0)}",
+            f"SYSTEM|WORK_ORDER|RESET|CLEARED={int(result.get('cleared_item_count') or 0)}|PRESERVED={int(result.get('preserved_order_count') or 0)}|DB_ROWS={int(db_reset_result.row_count or 0)}|WIP_RESET={wip_reset_count}",
             topic="local/work-orders",
         )
         return {
@@ -2414,6 +2520,7 @@ def create_app() -> FastAPI:
             "preserved_order_count": int(result.get("preserved_order_count") or 0),
             "db_reset_status": db_reset_result.status,
             "db_reset_row_count": int(db_reset_result.row_count or 0),
+            "wip_reset_count": int(wip_reset_count),
         }
 
     @app.post("/api/modules/{module_id}/work-orders/inventory/remove")

@@ -1266,7 +1266,44 @@ function renderWorkOrderReasonPanel() {
   }
 }
 
-function stationOrderSummary(order) {
+function stationOrderActions(order, stationCode, slot) {
+  if (!order) return "";
+  const orderId = order.order_id || "";
+  if (slot === "active") {
+    const isPackage = stationCode === "PACKAGING_01" && (order.package_bom || order.package_process_status);
+    if (isPackage) {
+      const sessionId = order.package_session?.session_id || "";
+      const hasActiveSession = ["in_progress", "reserved"].includes(String(order.package_process_status || "").toLowerCase()) && sessionId;
+      return `
+        <div class="station-order-actions">
+          ${hasActiveSession ? `
+          <button class="oee-choice-button" type="button" data-station-package-finish="${sessionId}" data-station-code="${stationCode}" ${state.workOrderBusy ? "disabled" : ""}>Paketlemeyi Bitir</button>
+          ` : `
+          <button class="oee-choice-button" type="button" data-station-package-start="${orderId}" data-station-code="${stationCode}" ${state.workOrderBusy ? "disabled" : ""}>Paketlemeye Basla</button>
+          `}
+          <button class="oee-danger-button" type="button" data-station-work-order-cancel="${orderId}" data-station-code="${stationCode}" ${state.workOrderBusy ? "disabled" : ""}>Iptal</button>
+        </div>
+      `;
+    }
+    return `
+      <div class="station-order-actions">
+        <button class="oee-choice-button" type="button" data-station-work-order-finish="${orderId}" data-station-code="${stationCode}" ${state.workOrderBusy ? "disabled" : ""}>Bitir</button>
+        <button class="oee-danger-button" type="button" data-station-work-order-cancel="${orderId}" data-station-code="${stationCode}" ${state.workOrderBusy ? "disabled" : ""}>Iptal</button>
+      </div>
+    `;
+  }
+  if (slot === "pending") {
+    return `
+      <div class="station-order-actions">
+        <button class="oee-choice-button" type="button" data-station-work-order-accept="${orderId}" data-station-code="${stationCode}" ${state.workOrderBusy ? "disabled" : ""}>Onayla</button>
+        <button class="oee-danger-button" type="button" data-station-work-order-cancel="${orderId}" data-station-code="${stationCode}" ${state.workOrderBusy ? "disabled" : ""}>Iptal</button>
+      </div>
+    `;
+  }
+  return "";
+}
+
+function stationOrderSummary(order, stationCode, slot) {
   if (!order) return `<p class="empty-state">Yok</p>`;
   return `
     <article class="station-order-card">
@@ -1282,6 +1319,7 @@ function stationOrderSummary(order) {
         <span>Kalan ${formatNumber(order.remaining_qty)}</span>
       </div>
       ${renderWorkOrderRequirements(order, true)}
+      ${stationOrderActions(order, stationCode, slot)}
     </article>
   `;
 }
@@ -1317,8 +1355,10 @@ function renderStationQueue(stationCode, queue) {
         </div>
       </div>
       <div class="station-queue-actions">
+        <button class="oee-choice-button" type="button" data-station-work-order-start="${order.order_id}" data-station-code="${stationCode}" ${state.workOrderBusy ? "disabled" : ""}>Baslat</button>
         <button class="oee-choice-button" type="button" data-station-work-order-move="${order.order_id}" data-station-code="${stationCode}" data-direction="up" ${state.workOrderBusy || index === 0 ? "disabled" : ""}>Yukari</button>
         <button class="oee-choice-button" type="button" data-station-work-order-move="${order.order_id}" data-station-code="${stationCode}" data-direction="down" ${state.workOrderBusy || index === rows.length - 1 ? "disabled" : ""}>Asagi</button>
+        <button class="oee-danger-button" type="button" data-station-work-order-cancel="${order.order_id}" data-station-code="${stationCode}" ${state.workOrderBusy ? "disabled" : ""}>Iptal</button>
       </div>
     </article>
   `).join("");
@@ -1341,11 +1381,11 @@ function renderStationWorkOrderBoard(snapshot) {
         </div>
         <div class="station-card-section">
           <h4>Aktif Is</h4>
-          ${stationOrderSummary(station.active_order)}
+          ${stationOrderSummary(station.active_order, stationCode, "active")}
         </div>
         <div class="station-card-section">
           <h4>Onay Bekleyen</h4>
-          ${stationOrderSummary(station.pending_order)}
+          ${stationOrderSummary(station.pending_order, stationCode, "pending")}
         </div>
         ${stationCode === "PACKAGING_01" ? `
         <div class="station-card-section">
@@ -1878,6 +1918,13 @@ async function sendWorkOrderReload() {
 }
 
 async function sendWorkOrderReorder(orderId, direction) {
+  const board = state.snapshot?.station_work_orders || {};
+  const stationEntry = Object.entries(board).find(([, station]) => (
+    Array.isArray(station.queue) && station.queue.some((order) => order.order_id === orderId)
+  ));
+  if (stationEntry) {
+    return sendStationWorkOrderReorder(stationEntry[0], orderId, direction);
+  }
   if (!state.snapshot?.work_orders?.queue?.length) return;
   clearWorkOrderRollbackDraft();
   clearWorkOrderResetDraft();
@@ -1949,6 +1996,198 @@ async function sendStationWorkOrderReorder(stationCode, orderId, direction) {
   }
 }
 
+async function sendStationWorkOrderStart(stationCode, orderId, transitionReason = "") {
+  state.workOrderBusy = true;
+  setWorkOrderFeedback(`${stationCode} ${orderId} baslatiliyor...`, "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/work-orders/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        station_code: stationCode,
+        order_id: orderId,
+        operator_code: els.workOrderOperatorCode.value.trim(),
+        operator_name: els.workOrderOperatorName.value.trim(),
+        transition_reason: transitionReason,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 409 && payload.detail?.code === "WORK_ORDER_REASON_REQUIRED") {
+        const reason = window.prompt("Is emri gecis sebebi zorunlu. Sebep yazin.", transitionReason || "");
+        if (reason && reason.trim()) {
+          return sendStationWorkOrderStart(stationCode, orderId, reason.trim());
+        }
+        throw new Error("Sebep girilmedi.");
+      }
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    setWorkOrderFeedback(payload.summary || `${orderId} baslatildi.`, "success");
+    const snapshot = await fetchDashboard();
+    state.snapshot = snapshot;
+    render(snapshot);
+  } catch (error) {
+    setWorkOrderFeedback(`Istasyon baslatma hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
+async function sendStationWorkOrderFinish(stationCode, orderId) {
+  const reason = window.prompt(`${orderId} bitirme sebebi`, "dashboard_finish");
+  if (!reason || !reason.trim()) return;
+  state.workOrderBusy = true;
+  setWorkOrderFeedback(`${stationCode} ${orderId} bitiriliyor...`, "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/work-orders/finish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        station_code: stationCode,
+        order_id: orderId,
+        operator_code: els.workOrderOperatorCode.value.trim(),
+        operator_name: els.workOrderOperatorName.value.trim(),
+        reason: reason.trim(),
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+    setWorkOrderFeedback(payload.summary || `${orderId} bitirildi.`, "success");
+    const snapshot = await fetchDashboard();
+    state.snapshot = snapshot;
+    render(snapshot);
+  } catch (error) {
+    setWorkOrderFeedback(`Istasyon bitirme hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
+async function sendStationPackageStart(stationCode, orderId) {
+  state.workOrderBusy = true;
+  setWorkOrderFeedback(`${stationCode} ${orderId} paketleme prosesi baslatiliyor...`, "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/kiosk/package/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        device_id: "dashboard",
+        station_code: stationCode,
+        operator_id: els.workOrderOperatorCode.value.trim(),
+        operator_code: els.workOrderOperatorCode.value.trim(),
+        operator_name: els.workOrderOperatorName.value.trim(),
+        package_order_id: orderId,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail?.code || payload.detail || `HTTP ${response.status}`);
+    setWorkOrderFeedback(payload.summary || `${orderId} paketleme prosesi basladi.`, "success");
+    const snapshot = await fetchDashboard();
+    state.snapshot = snapshot;
+    render(snapshot);
+  } catch (error) {
+    setWorkOrderFeedback(`Paketleme baslatma hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
+async function sendStationPackageFinish(stationCode, sessionId) {
+  state.workOrderBusy = true;
+  setWorkOrderFeedback(`${stationCode} paketleme prosesi bitiriliyor...`, "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/kiosk/package/finish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        device_id: "dashboard",
+        station_code: stationCode,
+        operator_id: els.workOrderOperatorCode.value.trim(),
+        operator_code: els.workOrderOperatorCode.value.trim(),
+        operator_name: els.workOrderOperatorName.value.trim(),
+        session_id: sessionId,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail?.code || payload.detail || `HTTP ${response.status}`);
+    const duration = Number(payload.duration_seconds || 0);
+    const suffix = duration > 0 ? ` Sure ${duration.toFixed(1)} sn.` : "";
+    setWorkOrderFeedback((payload.summary || "Paketleme prosesi bitti.") + suffix, "success");
+    const snapshot = await fetchDashboard();
+    state.snapshot = snapshot;
+    render(snapshot);
+  } catch (error) {
+    setWorkOrderFeedback(`Paketleme bitirme hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
+async function sendStationWorkOrderAccept(stationCode, orderId) {
+  state.workOrderBusy = true;
+  setWorkOrderFeedback(`${stationCode} ${orderId} onaylaniyor...`, "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/work-orders/accept-active`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ station_code: stationCode, order_id: orderId }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+    setWorkOrderFeedback(payload.summary || `${orderId} onaylandi.`, "success");
+    const snapshot = await fetchDashboard();
+    state.snapshot = snapshot;
+    render(snapshot);
+  } catch (error) {
+    setWorkOrderFeedback(`Istasyon onay hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
+async function sendStationWorkOrderCancel(stationCode, orderId) {
+  const reason = window.prompt(`${orderId} iptal sebebi`, "operator_cancel");
+  if (!reason || !reason.trim()) return;
+  state.workOrderBusy = true;
+  setWorkOrderFeedback(`${stationCode} ${orderId} iptal ediliyor...`, "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/work-orders/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        station_code: stationCode,
+        order_id: orderId,
+        operator_id: els.workOrderOperatorCode.value.trim(),
+        operator_name: els.workOrderOperatorName.value.trim(),
+        device_id: "dashboard",
+        reason: reason.trim(),
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+    setWorkOrderFeedback(payload.summary || `${orderId} iptal edildi.`, "success");
+    const snapshot = await fetchDashboard();
+    state.snapshot = snapshot;
+    render(snapshot);
+  } catch (error) {
+    setWorkOrderFeedback(`Istasyon iptal hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
 async function sendWorkOrderStart(orderId, transitionReason = "") {
   clearWorkOrderRollbackDraft();
   clearWorkOrderResetDraft();
@@ -2004,7 +2243,7 @@ async function sendWorkOrderAccept(orderId) {
     const response = await fetch(`/api/modules/${state.moduleId}/work-orders/accept-active`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ order_id: orderId }),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -2239,6 +2478,36 @@ els.workOrderQueueList.addEventListener("click", (event) => {
 });
 
 els.stationWorkOrderBoard.addEventListener("click", (event) => {
+  const startButton = event.target.closest("button[data-station-work-order-start][data-station-code]");
+  if (startButton && !startButton.disabled) {
+    sendStationWorkOrderStart(startButton.dataset.stationCode, startButton.dataset.stationWorkOrderStart);
+    return;
+  }
+  const finishButton = event.target.closest("button[data-station-work-order-finish][data-station-code]");
+  if (finishButton && !finishButton.disabled) {
+    sendStationWorkOrderFinish(finishButton.dataset.stationCode, finishButton.dataset.stationWorkOrderFinish);
+    return;
+  }
+  const packageStartButton = event.target.closest("button[data-station-package-start][data-station-code]");
+  if (packageStartButton && !packageStartButton.disabled) {
+    sendStationPackageStart(packageStartButton.dataset.stationCode, packageStartButton.dataset.stationPackageStart);
+    return;
+  }
+  const packageFinishButton = event.target.closest("button[data-station-package-finish][data-station-code]");
+  if (packageFinishButton && !packageFinishButton.disabled) {
+    sendStationPackageFinish(packageFinishButton.dataset.stationCode, packageFinishButton.dataset.stationPackageFinish);
+    return;
+  }
+  const acceptButton = event.target.closest("button[data-station-work-order-accept][data-station-code]");
+  if (acceptButton && !acceptButton.disabled) {
+    sendStationWorkOrderAccept(acceptButton.dataset.stationCode, acceptButton.dataset.stationWorkOrderAccept);
+    return;
+  }
+  const cancelButton = event.target.closest("button[data-station-work-order-cancel][data-station-code]");
+  if (cancelButton && !cancelButton.disabled) {
+    sendStationWorkOrderCancel(cancelButton.dataset.stationCode, cancelButton.dataset.stationWorkOrderCancel);
+    return;
+  }
   const moveButton = event.target.closest("button[data-station-work-order-move][data-station-code][data-direction]");
   if (!moveButton || moveButton.disabled) return;
   sendStationWorkOrderReorder(

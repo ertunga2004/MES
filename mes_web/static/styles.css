@@ -983,6 +983,12 @@ body {
   gap: 10px;
 }
 
+.station-order-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .station-order-head {
   align-items: center;
 }

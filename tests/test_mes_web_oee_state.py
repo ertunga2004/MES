@@ -1262,9 +1262,7 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(state["itemsById"]["702"]["work_order_match_key"], "")
             self.assertTrue(state["itemsById"]["702"]["inventory_backfill_disabled"])
             self.assertEqual(state["workOrders"]["packagingSessions"], {})
-            buffer_row = state["workOrders"]["packagingBuffer"]["itemsById"]["PKG-BUF-1"]
-            self.assertEqual(buffer_row["status"], "available")
-            self.assertEqual(state["workOrders"]["packagingBuffer"]["availableItemIds"], ["PKG-BUF-1"])
+            self.assertEqual(state["workOrders"]["packagingBuffer"], {"itemsById": {}, "availableItemIds": []})
 
     def test_remove_inventory_stock_drops_one_item_and_detaches_latest_tracking(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

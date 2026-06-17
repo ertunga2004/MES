@@ -783,7 +783,7 @@ async function handleBigAction() {
     } else if (action === "work_order_accept") {
       await fetchJson(`/api/modules/${state.moduleId}/kiosk/work-orders/accept-active`, {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify(currentActorPayload()),
       });
     } else if (action === "package_start") {
       const payload = (snapshot.big_action || {}).payload || {};

@@ -10,12 +10,22 @@ from .connection import database_connection
 
 JsonObject = dict[str, Any]
 logger = logging.getLogger(__name__)
+DEMO_COMPONENT_STOCK_CODES = ("RED_BOX", "BLUE_BOX", "YELLOW_BOX")
+DEMO_PACKAGE_BOM_LINES: dict[str, list[JsonObject]] = {
+    "PKG_BLUE_3": [{"component_stock_code": "BLUE_BOX", "required_qty": 3, "color_code": "blue"}],
+    "PKT-BLUE": [{"component_stock_code": "BLUE_BOX", "required_qty": 3, "color_code": "blue"}],
+    "PKG_RED_3": [{"component_stock_code": "RED_BOX", "required_qty": 2, "color_code": "red"}],
+    "PKT-RED": [{"component_stock_code": "RED_BOX", "required_qty": 2, "color_code": "red"}],
+    "PKG_YELLOW_3": [{"component_stock_code": "YELLOW_BOX", "required_qty": 1, "color_code": "yellow"}],
+    "PKT-YELLOW": [{"component_stock_code": "YELLOW_BOX", "required_qty": 1, "color_code": "yellow"}],
+}
 
 
 @dataclass(frozen=True, slots=True)
 class PackageComponentRequirement:
     component_stock_code: str
     required_qty: int
+    required_total: int
     available_qty: int
     missing_qty: int
     color_code: str
@@ -24,6 +34,7 @@ class PackageComponentRequirement:
         return {
             "component_stock_code": self.component_stock_code,
             "required_qty": self.required_qty,
+            "required_total": self.required_total,
             "available_qty": self.available_qty,
             "missing_qty": self.missing_qty,
             "color_code": self.color_code,
@@ -44,6 +55,14 @@ def _text(value: Any) -> str:
 
 def _upper(value: Any) -> str:
     return _text(value).upper()
+
+
+def _positive_int(value: Any, default: int = 0) -> int:
+    try:
+        parsed = int(float(str(value or "").replace(",", ".").strip()))
+    except ValueError:
+        return max(0, default)
+    return max(0, parsed)
 
 
 def _first_text(row: JsonObject, *names: str) -> str:
@@ -115,6 +134,9 @@ def _runtime_available_component_rows(state: JsonObject) -> list[JsonObject]:
         component_stock_code = component_stock_code_for_item(item)
         if not component_stock_code:
             continue
+        source_work_order_id = _first_text(item, "work_order_id", "workOrderId", "upstream_order_id", "upstreamOrderId")
+        if not source_work_order_id or not item_id:
+            continue
         external_ref = _text(item.get("external_ref") or item.get("externalRef"))
         if not external_ref:
             external_ref = f"runtime_buffer:{item_id}"
@@ -122,7 +144,7 @@ def _runtime_available_component_rows(state: JsonObject) -> list[JsonObject]:
             {
                 "component_stock_code": component_stock_code,
                 "color_code": _text(item.get("color") or item.get("display_color") or color_for_component(component_stock_code)).lower(),
-                "source_work_order_id": _first_text(item, "work_order_id", "workOrderId", "upstream_order_id", "upstreamOrderId"),
+                "source_work_order_id": source_work_order_id,
                 "source_item_id": item_id,
                 "source_external_ref": external_ref,
                 "quality_status": classification,
@@ -196,6 +218,9 @@ def sync_runtime_package_wip(config: AppConfig, state: JsonObject) -> int:
 def _read_bom_lines(config: AppConfig, package_stock_code: str) -> list[JsonObject]:
     if not package_stock_code:
         return []
+    demo_lines = DEMO_PACKAGE_BOM_LINES.get(_upper(package_stock_code))
+    if demo_lines is not None:
+        return [dict(row) for row in demo_lines]
     with database_connection(config) as connection:
         if connection is None:
             return []
@@ -236,6 +261,12 @@ def _available_counts(config: AppConfig, component_codes: list[str]) -> dict[str
                 WHERE status = 'available'
                   AND quality_status = 'GOOD'
                   AND component_stock_code = ANY(%s)
+                  AND COALESCE(btrim(source_work_order_id), '') <> ''
+                  AND COALESCE(btrim(source_item_id), '') <> ''
+                  AND COALESCE(btrim(reserved_by_order_id), '') = ''
+                  AND COALESCE(btrim(reserved_by_session_id), '') = ''
+                  AND COALESCE(btrim(consumed_by_package_id), '') = ''
+                  AND consumed_at IS NULL
                 GROUP BY component_stock_code
                 """,
                 (component_codes,),
@@ -262,16 +293,22 @@ def package_component_availability(config: AppConfig, state: JsonObject, order: 
             "can_start": True,
             "components": [],
         }
-    components = [
-        PackageComponentRequirement(
-            component_stock_code=row["component_stock_code"],
-            required_qty=int(row["required_qty"] or 0),
-            available_qty=int(counts.get(row["component_stock_code"], 0)),
-            missing_qty=max(int(row["required_qty"] or 0) - int(counts.get(row["component_stock_code"], 0)), 0),
-            color_code=_text(row.get("color_code")) or color_for_component(row["component_stock_code"]),
-        ).as_dict()
-        for row in bom_lines
-    ]
+    order_qty = max(1, _positive_int((order or {}).get("qty") or (order or {}).get("quantity") or (order or {}).get("target_quantity"), 1))
+    components = []
+    for row in bom_lines:
+        required_qty = _positive_int(row.get("required_qty"))
+        required_total = required_qty * order_qty
+        available_qty = int(counts.get(row["component_stock_code"], 0))
+        components.append(
+            PackageComponentRequirement(
+                component_stock_code=row["component_stock_code"],
+                required_qty=required_qty,
+                required_total=required_total,
+                available_qty=available_qty,
+                missing_qty=max(required_total - available_qty, 0),
+                color_code=_text(row.get("color_code")) or color_for_component(row["component_stock_code"]),
+            ).as_dict()
+        )
     return {
         "enabled": True,
         "bom_configured": True,
@@ -305,7 +342,7 @@ def reserve_package_components(config: AppConfig, package_order_id: str, package
                 if not isinstance(component, dict):
                     continue
                 component_stock_code = _text(component.get("component_stock_code"))
-                required_qty = int(component.get("required_qty") or 0)
+                required_qty = int(component.get("required_total") or component.get("required_qty") or 0)
                 if not component_stock_code or required_qty <= 0:
                     continue
                 cursor.execute(
@@ -316,6 +353,12 @@ def reserve_package_components(config: AppConfig, package_order_id: str, package
                         WHERE component_stock_code = %(component_stock_code)s
                           AND status = 'available'
                           AND quality_status = 'GOOD'
+                          AND COALESCE(btrim(source_work_order_id), '') <> ''
+                          AND COALESCE(btrim(source_item_id), '') <> ''
+                          AND COALESCE(btrim(reserved_by_order_id), '') = ''
+                          AND COALESCE(btrim(reserved_by_session_id), '') = ''
+                          AND COALESCE(btrim(consumed_by_package_id), '') = ''
+                          AND consumed_at IS NULL
                         ORDER BY completed_at NULLS LAST, wip_item_pk
                         LIMIT %(required_qty)s
                         FOR UPDATE SKIP LOCKED
@@ -349,6 +392,95 @@ def reserve_package_components(config: AppConfig, package_order_id: str, package
                     for row in rows
                 )
     return reserved
+
+
+def reset_demo_package_wip(
+    config: AppConfig,
+    *,
+    stock_codes: list[str] | tuple[str, ...] | None = None,
+    source_work_order_ids: list[str] | tuple[str, ...] | None = None,
+    reason: str = "work_order_reset",
+) -> int:
+    if not config.db_enabled:
+        return 0
+    target_stock_codes = [_upper(value) for value in (stock_codes or DEMO_COMPONENT_STOCK_CODES) if _upper(value)]
+    target_order_ids = [_text(value) for value in (source_work_order_ids or []) if _text(value)]
+    if not target_stock_codes:
+        return 0
+    with database_connection(config) as connection:
+        if connection is None:
+            return 0
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE mes.package_component_wip
+                SET status = 'scrapped',
+                    reserved_by_order_id = NULL,
+                    reserved_by_session_id = NULL,
+                    consumed_by_package_id = NULL,
+                    reserved_at = NULL,
+                    updated_at = now(),
+                    metadata = metadata || %(metadata)s
+                WHERE component_stock_code = ANY(%(stock_codes)s)
+                  AND status IN ('available', 'reserved')
+                  AND (
+                    %(has_source_filter)s = false
+                    OR source_work_order_id = ANY(%(source_work_order_ids)s)
+                  )
+                """,
+                {
+                    "stock_codes": target_stock_codes,
+                    "source_work_order_ids": target_order_ids,
+                    "has_source_filter": bool(target_order_ids),
+                    "metadata": _jsonb({"last_reset_reason": _text(reason) or "work_order_reset"}),
+                },
+            )
+            row_count = int(getattr(cursor, "rowcount", 0) or 0)
+        commit = getattr(connection, "commit", None)
+        if callable(commit):
+            commit()
+    return row_count
+
+
+def release_reserved_package_components(config: AppConfig, *, package_order_id: str, package_session_id: str) -> list[JsonObject]:
+    if not config.db_enabled:
+        return []
+    package_order_id = _text(package_order_id)
+    package_session_id = _text(package_session_id)
+    if not package_order_id or not package_session_id:
+        return []
+    with database_connection(config) as connection:
+        if connection is None:
+            return []
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE mes.package_component_wip
+                SET status = 'available',
+                    reserved_by_order_id = NULL,
+                    reserved_by_session_id = NULL,
+                    reserved_at = NULL,
+                    updated_at = now(),
+                    metadata = metadata || %(metadata)s
+                WHERE reserved_by_order_id = %(package_order_id)s
+                  AND reserved_by_session_id = %(package_session_id)s
+                  AND status = 'reserved'
+                RETURNING wip_item_pk, component_stock_code, source_item_id
+                """,
+                {
+                    "package_order_id": package_order_id,
+                    "package_session_id": package_session_id,
+                    "metadata": _jsonb({"last_release_source": "work_order_cancel"}),
+                },
+            )
+            return [
+                {
+                    "wip_item_pk": int(row[0]),
+                    "component_stock_code": _text(row[1]),
+                    "source_item_id": _text(row[2]),
+                }
+                for row in cursor.fetchall()
+            ]
 
 
 def consume_package_components(

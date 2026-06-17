@@ -67,6 +67,32 @@ class WorkOrderMirrorResult:
     message: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class WorkOrderOperationalResetResult:
+    status: str
+    attempted: bool = False
+    row_count: int = 0
+    message: str = ""
+
+
+def load_work_order_planning_snapshot(config: AppConfig) -> dict[str, JsonObject]:
+    if not config.db_enabled:
+        return {}
+    with database_connection(config) as connection:
+        if connection is None:
+            return {}
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT order_id, product_code, target_quantity, payload FROM mes.work_orders ORDER BY order_id")
+            return {
+                str(row[0]): {
+                    "product_code": _nullable_text(row[1]),
+                    "target_quantity": int(row[2]) if row[2] is not None else None,
+                    "payload": dict(row[3]) if isinstance(row[3], dict) else {},
+                }
+                for row in cursor.fetchall()
+            }
+
+
 def _text(value: Any) -> str:
     return str(value or "").strip()
 
@@ -184,6 +210,103 @@ def _jsonb(value: Any) -> Any:
     except ModuleNotFoundError:
         return value
     return Jsonb(value)
+
+
+def _reset_payload_operational_fields(payload: Any) -> JsonObject:
+    row = dict(payload) if isinstance(payload, dict) else {}
+    quantity = _first_int(row, "quantity", "targetQuantity", "targetQty") or 0
+    row["status"] = "queued"
+    row["startedAt"] = ""
+    row["completedAt"] = ""
+    row["startedBy"] = ""
+    row["startedByName"] = ""
+    row["completedQty"] = 0
+    row["productionQty"] = 0
+    row["inventoryConsumedQty"] = 0
+    row["autoCompletedAt"] = ""
+    row["transitionReason"] = ""
+    row["lastAllocationAt"] = ""
+    row["remainingQty"] = quantity
+    requirements = row.get("requirements")
+    if isinstance(requirements, list):
+        normalized_requirements: list[Any] = []
+        for requirement in requirements:
+            if not isinstance(requirement, dict):
+                normalized_requirements.append(requirement)
+                continue
+            req = dict(requirement)
+            req_quantity = _first_int(req, "quantity", "qty") or 0
+            req["completedQty"] = 0
+            req["productionQty"] = 0
+            req["inventoryConsumedQty"] = 0
+            req["remainingQty"] = req_quantity
+            normalized_requirements.append(req)
+        row["requirements"] = normalized_requirements
+        row["remainingQty"] = sum(
+            _first_int(requirement, "remainingQty") or 0
+            for requirement in normalized_requirements
+            if isinstance(requirement, dict)
+        )
+    return row
+
+
+def reset_work_order_operational_state(
+    config: AppConfig,
+    *,
+    planning_snapshot: dict[str, JsonObject] | None = None,
+) -> WorkOrderOperationalResetResult:
+    if not config.db_enabled:
+        return WorkOrderOperationalResetResult(status="disabled", message="MES_WEB_DB_ENABLED=false")
+    try:
+        with database_connection(config) as connection:
+            if connection is None:
+                return WorkOrderOperationalResetResult(status="disabled", message="Database connection is disabled")
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT order_id, payload FROM mes.work_orders ORDER BY order_id")
+                rows = cursor.fetchall()
+                snapshot = planning_snapshot if isinstance(planning_snapshot, dict) else {}
+                for order_id, payload in rows:
+                    order_key = str(order_id)
+                    planning_row = snapshot.get(order_key) if isinstance(snapshot.get(order_key), dict) else {}
+                    planned_payload = planning_row.get("payload") if isinstance(planning_row.get("payload"), dict) else payload
+                    target_quantity = planning_row.get("target_quantity")
+                    if target_quantity is None:
+                        target_quantity = _first_int(planned_payload if isinstance(planned_payload, dict) else {}, "quantity", "targetQuantity", "targetQty")
+                    product_code = _nullable_text(planning_row.get("product_code")) or _first_text(
+                        planned_payload if isinstance(planned_payload, dict) else {},
+                        "productCode",
+                        "product_code",
+                        "stockCode",
+                    )
+                    cursor.execute(
+                        """
+                        UPDATE mes.work_orders
+                        SET status = 'queued',
+                            product_code = COALESCE(%(product_code)s, product_code),
+                            target_quantity = COALESCE(%(target_quantity)s, target_quantity),
+                            started_at = NULL,
+                            completed_at = NULL,
+                            payload = %(payload)s,
+                            updated_at = now()
+                        WHERE order_id = %(order_id)s
+                        """,
+                        {
+                            "order_id": order_key,
+                            "product_code": product_code,
+                            "target_quantity": target_quantity,
+                            "payload": _jsonb(_reset_payload_operational_fields(planned_payload)),
+                        },
+                    )
+            commit = getattr(connection, "commit", None)
+            if callable(commit):
+                commit()
+        return WorkOrderOperationalResetResult(status="ok", attempted=True, row_count=len(rows))
+    except Exception as exc:
+        return WorkOrderOperationalResetResult(
+            status="error",
+            attempted=True,
+            message=f"{type(exc).__name__}: {exc}",
+        )
 
 
 def _upsert_work_order_rows(config: AppConfig, rows: list[JsonObject]) -> WorkOrderMirrorResult:

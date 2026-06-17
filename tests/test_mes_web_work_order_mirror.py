@@ -146,6 +146,50 @@ class WorkOrderMirrorTests(unittest.TestCase):
         for forbidden in ("delete", "truncate", "drop", "alter"):
             self.assertNotIn(forbidden, lowered)
 
+    def test_operational_reset_payload_preserves_planning_fields(self) -> None:
+        payload = {
+            "orderId": "TEST-FERP-SCRAP",
+            "stockCode": "BOX-BLUE",
+            "productCode": "BOX-BLUE",
+            "stockName": "Mavi Test Kutusu",
+            "quantity": 3,
+            "remainingQty": 1,
+            "status": "active",
+            "startedAt": "2026-06-17T12:00:00+03:00",
+            "completedQty": 2,
+            "productionQty": 2,
+            "inventoryConsumedQty": 0,
+            "requirements": [
+                {
+                    "lineId": "blue",
+                    "stockCode": "BOX-BLUE",
+                    "productCode": "BOX-BLUE",
+                    "quantity": 3,
+                    "remainingQty": 1,
+                    "completedQty": 2,
+                    "productionQty": 2,
+                    "inventoryConsumedQty": 0,
+                }
+            ],
+        }
+
+        reset = work_order_mirror._reset_payload_operational_fields(payload)
+
+        self.assertEqual(reset["status"], "queued")
+        self.assertEqual(reset["stockCode"], "BOX-BLUE")
+        self.assertEqual(reset["productCode"], "BOX-BLUE")
+        self.assertEqual(reset["quantity"], 3)
+        self.assertEqual(reset["remainingQty"], 3)
+        self.assertEqual(reset["completedQty"], 0)
+        self.assertEqual(reset["productionQty"], 0)
+        self.assertEqual(reset["inventoryConsumedQty"], 0)
+        self.assertEqual(reset["startedAt"], "")
+        self.assertEqual(reset["requirements"][0]["stockCode"], "BOX-BLUE")
+        self.assertEqual(reset["requirements"][0]["productCode"], "BOX-BLUE")
+        self.assertEqual(reset["requirements"][0]["quantity"], 3)
+        self.assertEqual(reset["requirements"][0]["remainingQty"], 3)
+        self.assertEqual(reset["requirements"][0]["completedQty"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

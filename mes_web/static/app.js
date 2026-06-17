@@ -1289,7 +1289,8 @@ function renderWorkOrders(snapshot) {
   els.workOrderReasonSubmit.disabled = state.workOrderBusy;
   els.workOrderReloadSubmit.disabled = state.workOrderBusy;
   els.workOrderResetSubmit.disabled = state.workOrderBusy;
-  els.workOrderResetSubmit.textContent = resetArmed ? "Tekrar tikla: Is Emirlerini + Depoyu Sifirla" : "Is Emirlerini + Depoyu Sifirla";
+  els.workOrderResetSubmit.textContent = resetArmed ? "Tekrar tikla: Is Emri Durumlarini Sifirla" : "Is Emri Durumlarini Sifirla";
+  els.workOrderResetSubmit.title = "Is emirlerini yeniden olusturmaz; sadece durum ve sayaclari sifirlar.";
   els.workOrderResetSubmit.className = resetArmed ? "oee-danger-button is-active" : "oee-danger-button";
 
   els.workOrderSummary.innerHTML = `
@@ -1912,7 +1913,7 @@ async function sendWorkOrderReset() {
   clearWorkOrderResetDraft();
   clearWorkOrderInventoryRemoveDraft();
   state.workOrderBusy = true;
-  setWorkOrderFeedback("Is emirleri ve depo sifirlaniyor...", "neutral");
+  setWorkOrderFeedback("Is emri durumlari ve sayaclari sifirlaniyor...", "neutral");
   if (state.snapshot) renderWorkOrders(state.snapshot);
   try {
     const response = await fetch(`/api/modules/${state.moduleId}/work-orders/reset`, {
@@ -1924,7 +1925,7 @@ async function sendWorkOrderReset() {
     if (!response.ok) {
       throw new Error(payload.detail || `HTTP ${response.status}`);
     }
-    setWorkOrderFeedback(payload.summary || "Is emirleri sifirlandi.", "success");
+    setWorkOrderFeedback(payload.summary || "Is emri durumlari sifirlandi.", "success");
   } catch (error) {
     setWorkOrderFeedback(`Is emri reset hatasi: ${error.message}`, "error");
   } finally {
@@ -2070,7 +2071,7 @@ els.workOrderResetSubmit.addEventListener("click", () => {
     return;
   }
   armWorkOrderReset();
-  setWorkOrderFeedback("Tum is emirlerini ve depo kayitlarini sifirlamak icin ayni tusa tekrar tikla.", "neutral");
+  setWorkOrderFeedback("Is emirlerini yeniden olusturmadan durum ve sayaclari sifirlamak icin ayni tusa tekrar tikla.", "neutral");
   if (state.snapshot) renderWorkOrders(state.snapshot);
 });
 

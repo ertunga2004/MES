@@ -2015,6 +2015,26 @@ def _sync_work_order_row(order: dict[str, Any]) -> None:
     order["remainingQty"] = max(0, quantity - order["completedQty"])
 
 
+def _reset_work_order_operational_fields(order: dict[str, Any]) -> None:
+    order["status"] = "queued"
+    order["startedAt"] = ""
+    order["completedAt"] = ""
+    order["startedBy"] = ""
+    order["startedByName"] = ""
+    order["completedQty"] = 0
+    order["productionQty"] = 0
+    order["inventoryConsumedQty"] = 0
+    order["autoCompletedAt"] = ""
+    order["transitionReason"] = ""
+    order["lastAllocationAt"] = ""
+    for requirement in _work_order_requirements(order):
+        requirement["completedQty"] = 0
+        requirement["productionQty"] = 0
+        requirement["inventoryConsumedQty"] = 0
+        requirement["remainingQty"] = max(0, round(_numeric(requirement.get("quantity"))))
+    _sync_work_order_row(order)
+
+
 def _persist_work_order_metrics(state: dict[str, Any], order: dict[str, Any], *, now: datetime) -> dict[str, Any]:
     snapshot = build_work_order_snapshot(state, order, now=now)
     order["goodQty"] = snapshot["goodQty"]
@@ -4875,15 +4895,45 @@ class OeeRuntimeStateManager:
         state = self.read_state()
         work_orders = _work_orders_state(state)
         previous_source = work_orders.get("source") if isinstance(work_orders.get("source"), dict) else {}
-        reset_state = default_work_order_state()
-        reset_state["toleranceMs"] = _duration_ms(
+        tolerance_ms = _duration_ms(
             _first_present(work_orders.get("toleranceMs"), work_orders.get("toleranceMinutes")),
             multiplier=60_000.0 if work_orders.get("toleranceMs") in (None, "") else 1.0,
         )
-        reset_state["toleranceMinutes"] = _minutes_from_ms(reset_state["toleranceMs"])
-        reset_state["source"]["folder"] = str(previous_source.get("folder") or "")
-        work_orders.clear()
-        work_orders.update(reset_state)
+        orders_by_id = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+        order_sequence = [
+            str(order_id or "").strip()
+            for order_id in (work_orders.get("orderSequence") if isinstance(work_orders.get("orderSequence"), list) else list(orders_by_id))
+            if str(order_id or "").strip() in orders_by_id
+        ]
+        for order_id in sorted(orders_by_id):
+            if order_id not in order_sequence:
+                order_sequence.append(str(order_id))
+        for order in orders_by_id.values():
+            if isinstance(order, dict):
+                _reset_work_order_operational_fields(order)
+        packaging_buffer = _packaging_buffer_state(state)
+        for buffer_row in packaging_buffer.get("itemsById", {}).values():
+            if not isinstance(buffer_row, dict):
+                continue
+            if str(buffer_row.get("status") or "").strip().lower() == "reserved":
+                buffer_row["status"] = "available"
+                buffer_row["reserved_by_order_id"] = ""
+                buffer_row["reserved_by_session_id"] = ""
+                buffer_row["reserved_at"] = ""
+        _rebuild_packaging_available_ids(packaging_buffer)
+        work_orders["ordersById"] = orders_by_id
+        work_orders["orderSequence"] = order_sequence
+        work_orders["activeOrderId"] = ""
+        work_orders["lastCompletedOrderId"] = ""
+        work_orders["lastCompletedAt"] = ""
+        work_orders["inventoryByProduct"] = {}
+        work_orders["packagingSessions"] = {}
+        work_orders["transitionLog"] = []
+        work_orders["completionLog"] = []
+        work_orders["toleranceMs"] = tolerance_ms
+        work_orders["toleranceMinutes"] = _minutes_from_ms(tolerance_ms)
+        work_orders["source"] = previous_source if isinstance(previous_source, dict) else {}
+        work_orders["source"]["folder"] = str(previous_source.get("folder") or "")
         state["recentItemIds"] = []
         state["qualityOverrideLog"] = []
         state["qualityOverrideResetAt"] = reset_text
@@ -4905,7 +4955,7 @@ class OeeRuntimeStateManager:
 
         _set_summary(
             state,
-            f"Is emirleri ve depo sifirlandi. {cleared_item_count} urun baglantisi temizlendi.",
+            f"Is emirleri operasyonel olarak sifirlandi. {len(orders_by_id)} is emri korundu, {cleared_item_count} urun baglantisi temizlendi.",
             now=stamp,
         )
         self.write_state(state)
@@ -4913,6 +4963,7 @@ class OeeRuntimeStateManager:
             "state": state,
             "summary": state["lastEventSummary"],
             "cleared_item_count": cleared_item_count,
+            "preserved_order_count": len(orders_by_id),
         }
 
     @_state_locked

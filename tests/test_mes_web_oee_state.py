@@ -1155,12 +1155,27 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(reassigned_snapshot["goodQty"], 2)
             self.assertEqual(reassigned_snapshot["fulfilledQty"], 2)
 
-    def test_reset_work_orders_clears_queue_inventory_and_item_links(self) -> None:
+    def test_reset_work_orders_preserves_planning_fields_and_clears_operational_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
             manager.import_work_orders(
                 [
-                    {"order_id": "WO-RESET-A", "stock_code": "BOX-RED", "qty": 2, "product_color": "red"},
+                    {
+                        "order_id": "WO-RESET-A",
+                        "stock_code": "BOX-BLUE",
+                        "product_code": "BOX-BLUE",
+                        "qty": 3,
+                        "product_color": "blue",
+                        "requirements": [
+                            {
+                                "line_id": "BLU",
+                                "stock_code": "BOX-BLUE",
+                                "product_code": "BOX-BLUE",
+                                "color": "blue",
+                                "qty": 3,
+                            }
+                        ],
+                    },
                     {"order_id": "WO-RESET-B", "stock_code": "BOX-BLUE", "qty": 1, "product_color": "blue"},
                 ],
                 now=datetime(2026, 4, 2, 8, 0, 0),
@@ -1200,22 +1215,56 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
                 "inventory_match_key": "",
                 "inventoryAction": "work_order",
             }
+            state["workOrders"]["packagingBuffer"] = {
+                "itemsById": {
+                    "PKG-BUF-1": {
+                        "item_id": "PKG-BUF-1",
+                        "status": "reserved",
+                        "classification": "GOOD",
+                        "color": "blue",
+                        "product_code": "BOX-BLUE",
+                        "reserved_by_order_id": "WO-PKT-BLUE-001",
+                        "reserved_by_session_id": "SESSION-1",
+                    }
+                },
+                "availableItemIds": [],
+            }
+            state["workOrders"]["packagingSessions"] = {"SESSION-1": {"session_id": "SESSION-1", "status": "reserved"}}
             manager.write_state(state)
 
             result = manager.reset_work_orders(now=datetime(2026, 4, 2, 8, 3, 0))
 
             state = manager.read_state()
             self.assertEqual(result["cleared_item_count"], 2)
-            self.assertEqual(state["workOrders"]["ordersById"], {})
-            self.assertEqual(state["workOrders"]["orderSequence"], [])
+            self.assertEqual(result["preserved_order_count"], 2)
+            self.assertEqual(state["workOrders"]["orderSequence"], ["WO-RESET-A", "WO-RESET-B"])
             self.assertEqual(state["workOrders"]["inventoryByProduct"], {})
             self.assertEqual(state["workOrders"]["activeOrderId"], "")
+            reset_order = state["workOrders"]["ordersById"]["WO-RESET-A"]
+            self.assertEqual(reset_order["status"], "queued")
+            self.assertEqual(reset_order["productCode"], "BOX-BLUE")
+            self.assertEqual(reset_order["stockCode"], "BOX-BLUE")
+            self.assertEqual(reset_order["quantity"], 3)
+            self.assertEqual(reset_order["remainingQty"], 3)
+            self.assertEqual(reset_order["completedQty"], 0)
+            self.assertEqual(reset_order["productionQty"], 0)
+            self.assertEqual(reset_order["inventoryConsumedQty"], 0)
+            self.assertEqual(reset_order["startedAt"], "")
+            self.assertEqual(reset_order["startedBy"], "")
+            self.assertEqual(reset_order["requirements"][0]["productCode"], "BOX-BLUE")
+            self.assertEqual(reset_order["requirements"][0]["quantity"], 3)
+            self.assertEqual(reset_order["requirements"][0]["remainingQty"], 3)
+            self.assertEqual(reset_order["requirements"][0]["completedQty"], 0)
             self.assertEqual(state["itemsById"]["701"]["inventory_match_key"], "")
             self.assertEqual(state["itemsById"]["701"]["inventoryAction"], "")
             self.assertTrue(state["itemsById"]["701"]["inventory_backfill_disabled"])
             self.assertEqual(state["itemsById"]["702"]["work_order_id"], "")
             self.assertEqual(state["itemsById"]["702"]["work_order_match_key"], "")
             self.assertTrue(state["itemsById"]["702"]["inventory_backfill_disabled"])
+            self.assertEqual(state["workOrders"]["packagingSessions"], {})
+            buffer_row = state["workOrders"]["packagingBuffer"]["itemsById"]["PKG-BUF-1"]
+            self.assertEqual(buffer_row["status"], "available")
+            self.assertEqual(state["workOrders"]["packagingBuffer"]["availableItemIds"], ["PKG-BUF-1"])
 
     def test_remove_inventory_stock_drops_one_item_and_detaches_latest_tracking(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

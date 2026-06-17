@@ -17,7 +17,7 @@ from .db.package_bom_wip import (
     package_component_availability,
     reserve_package_components,
 )
-from .db.work_order_mirror import mirror_work_orders_from_state
+from .db.work_order_mirror import load_work_order_planning_snapshot, mirror_work_orders_from_state, reset_work_order_operational_state
 from .db.work_order_read import state_with_db_work_orders
 from .db.work_order_transition_writer import mirror_work_order_transition_from_state
 from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
@@ -881,6 +881,7 @@ def create_app() -> FastAPI:
         event_type: str = "runtime_sync",
         actor_id: str = "",
         replace_current: bool = False,
+        mirror_current: bool = True,
     ) -> None:
         runtime_state = state if isinstance(state, dict) else oee_state_manager.read_state()
         runtime_service.excel_sink.record_work_order_state(runtime_state, utc_now_text())
@@ -897,13 +898,14 @@ def create_app() -> FastAPI:
             transition_result = None
         if transition_result is not None and transition_result.reason == "error_fail_open":
             logger.warning("Work order DB transition hook failed open: %s", transition_result.error_type)
-        try:
-            mirror_result = mirror_work_orders_from_state(config, runtime_state)
-        except Exception:
-            logger.exception("Work order DB mirror hook failed unexpectedly")
-        else:
-            if mirror_result.status == "error":
-                logger.warning("Work order DB mirror failed: %s", mirror_result.message)
+        if mirror_current:
+            try:
+                mirror_result = mirror_work_orders_from_state(config, runtime_state)
+            except Exception:
+                logger.exception("Work order DB mirror hook failed unexpectedly")
+            else:
+                if mirror_result.status == "error":
+                    logger.warning("Work order DB mirror failed: %s", mirror_result.message)
         store.refresh_oee_runtime_state(config.module_id, force=True)
 
     def _ferp_export_acceptance_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -2271,27 +2273,39 @@ def create_app() -> FastAPI:
         if module_id != config.module_id:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
 
+        planning_snapshot: dict[str, Any] = {}
+        try:
+            planning_snapshot = load_work_order_planning_snapshot(config)
+        except Exception as exc:
+            logger.warning("Work order DB planning snapshot failed before reset: %s", exc)
         try:
             result = oee_state_manager.reset_work_orders()
         except OSError as exc:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
         store.refresh_oee_runtime_state(module_id, force=True)
+        db_reset_result = reset_work_order_operational_state(config, planning_snapshot=planning_snapshot)
+        if db_reset_result.status == "error":
+            logger.warning("Work order DB operational reset failed: %s", db_reset_result.message)
         sync_work_order_runtime(
             result.get("state") if isinstance(result.get("state"), dict) else None,
             event_type="reset",
-            replace_current=True,
+            replace_current=False,
+            mirror_current=False,
         )
         summary = str(result.get("summary") or "Is emirleri sifirlandi.")
         store.append_system_log(
             module_id,
-            f"SYSTEM|WORK_ORDER|RESET|CLEARED={int(result.get('cleared_item_count') or 0)}",
+            f"SYSTEM|WORK_ORDER|RESET|CLEARED={int(result.get('cleared_item_count') or 0)}|PRESERVED={int(result.get('preserved_order_count') or 0)}|DB_ROWS={int(db_reset_result.row_count or 0)}",
             topic="local/work-orders",
         )
         return {
             "status": "accepted",
             "summary": summary,
             "cleared_item_count": int(result.get("cleared_item_count") or 0),
+            "preserved_order_count": int(result.get("preserved_order_count") or 0),
+            "db_reset_status": db_reset_result.status,
+            "db_reset_row_count": int(db_reset_result.row_count or 0),
         }
 
     @app.post("/api/modules/{module_id}/work-orders/inventory/remove")

@@ -37,6 +37,12 @@ runtime_service = RuntimeService(config, store, hub)
 oee_state_manager = runtime_service.oee_manager
 
 
+STATION_BOARD_CONFIG = (
+    {"code": "ASSEMBLY_01", "label": "Kutu Uretim"},
+    {"code": "PACKAGING_01", "label": "Paketleme"},
+)
+
+
 def _is_benign_socket_disconnect_error(exc: BaseException) -> bool:
     return isinstance(exc, OSError) and getattr(exc, "winerror", None) in {121, 10054}
 
@@ -183,19 +189,6 @@ def _project_kiosk_requirements(order: dict[str, Any]) -> tuple[list[dict[str, A
 def _queued_order_ids(raw_orders: dict[str, Any], sequence: list[Any], station_code: str = "") -> list[str]:
     queued: list[str] = []
     seen: set[str] = set()
-    
-    def _matches_station(order_id: str, order: dict[str, Any]) -> bool:
-        if not station_code:
-            return True
-        explicit_station = str(order.get("stationCode") or "").strip()
-        if station_code == "PACKAGING_01":
-            is_pkg = _is_kiosk_package_order(order_id, order)
-            return explicit_station == "PACKAGING_01" or (not explicit_station and is_pkg)
-        elif station_code == "ASSEMBLY_01":
-            is_pkg = _is_kiosk_package_order(order_id, order)
-            return explicit_station == "ASSEMBLY_01" or (not explicit_station and not is_pkg)
-        else:
-            return explicit_station == station_code
 
     for raw_order_id in sequence:
         order_id = str(raw_order_id or "").strip()
@@ -204,7 +197,7 @@ def _queued_order_ids(raw_orders: dict[str, Any], sequence: list[Any], station_c
             continue
         if str(order.get("status") or "").strip() != "queued":
             continue
-        if not _matches_station(order_id, order):
+        if not _order_matches_station(order_id, order, station_code):
             continue
         queued.append(order_id)
         seen.add(order_id)
@@ -214,11 +207,29 @@ def _queued_order_ids(raw_orders: dict[str, Any], sequence: list[Any], station_c
             continue
         if str(order.get("status") or "").strip() != "queued":
             continue
-        if not _matches_station(order_id, order):
+        if not _order_matches_station(order_id, order, station_code):
             continue
         queued.append(order_id)
         seen.add(order_id)
     return queued
+
+
+def _order_station_code(order_id: str, order: dict[str, Any]) -> str:
+    explicit_station = str(order.get("stationCode") or order.get("station_code") or "").strip().upper()
+    if explicit_station:
+        return explicit_station
+    metadata = order.get("_metadata") if isinstance(order.get("_metadata"), dict) else {}
+    metadata_station = str(metadata.get("station_code") or "").strip().upper()
+    if metadata_station:
+        return metadata_station
+    return "PACKAGING_01" if _is_kiosk_package_order(order_id, order) else "ASSEMBLY_01"
+
+
+def _order_matches_station(order_id: str, order: dict[str, Any], station_code: str = "") -> bool:
+    normalized_station = str(station_code or "").strip().upper()
+    if not normalized_station:
+        return True
+    return _order_station_code(order_id, order) == normalized_station
 
 
 def _project_kiosk_work_order(order_id: str, order: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
@@ -334,6 +345,100 @@ def _project_kiosk_packaging(state: dict[str, Any], ordered_orders: list[dict[st
         "package_orders": package_orders,
         "active_sessions": active_sessions,
     }
+
+
+def _package_wip_summary_from_availability(availability: dict[str, Any]) -> list[dict[str, Any]]:
+    components = availability.get("components") if isinstance(availability.get("components"), list) else []
+    summary: list[dict[str, Any]] = []
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        required_qty = int(component.get("required_total") or component.get("required_qty") or 0)
+        available_qty = int(component.get("available_qty") or 0)
+        missing_qty = max(0, required_qty - available_qty)
+        summary.append(
+            {
+                "component_stock_code": str(component.get("component_stock_code") or ""),
+                "required_qty": required_qty,
+                "available_qty": available_qty,
+                "missing_qty": missing_qty,
+                "ready": missing_qty <= 0,
+                "label": f"{component.get('component_stock_code') or '-'} {available_qty}/{required_qty} {'hazir' if missing_qty <= 0 else 'eksik'}",
+            }
+        )
+    return summary
+
+
+def _build_station_work_order_board(module_id: str) -> dict[str, Any]:
+    state = state_with_db_work_orders(config, oee_state_manager.read_state(), logger=logger).state
+    work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
+    raw_orders = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+    sequence = work_orders.get("orderSequence") if isinstance(work_orders.get("orderSequence"), list) else []
+    ordered_order_ids: list[str] = []
+    seen_order_ids: set[str] = set()
+    for raw_order_id in sequence:
+        order_id = str(raw_order_id or "").strip()
+        if order_id and order_id in raw_orders and order_id not in seen_order_ids:
+            ordered_order_ids.append(order_id)
+            seen_order_ids.add(order_id)
+    for order_id in raw_orders:
+        normalized_id = str(order_id or "").strip()
+        if normalized_id and normalized_id not in seen_order_ids:
+            ordered_order_ids.append(normalized_id)
+            seen_order_ids.add(normalized_id)
+
+    projected_by_id: dict[str, dict[str, Any]] = {}
+    for order_id in ordered_order_ids:
+        order = raw_orders.get(order_id)
+        if isinstance(order, dict):
+            projected_by_id[order_id] = _project_kiosk_work_order(order_id, order, state)
+
+    stations: dict[str, dict[str, Any]] = {}
+    for station in STATION_BOARD_CONFIG:
+        station_code = station["code"]
+        station_order_ids = [
+            order_id
+            for order_id in ordered_order_ids
+            if isinstance(raw_orders.get(order_id), dict) and _order_matches_station(order_id, raw_orders[order_id], station_code)
+        ]
+        active_order = None
+        pending_order = None
+        queue: list[dict[str, Any]] = []
+        package_wip_summary: list[dict[str, Any]] = []
+        for order_id in station_order_ids:
+            projected = copy.deepcopy(projected_by_id.get(order_id) or {})
+            raw_order = raw_orders.get(order_id)
+            if not projected or not isinstance(raw_order, dict):
+                continue
+            if station_code == "PACKAGING_01" and _is_kiosk_package_order(order_id, raw_order):
+                availability = package_component_availability(config, state, raw_order)
+                projected["package_bom"] = availability
+                if not package_wip_summary:
+                    package_wip_summary = _package_wip_summary_from_availability(availability)
+            status = str(projected.get("status") or "").strip()
+            if status == "active" and active_order is None:
+                active_order = projected
+            elif status == "pending_approval" and pending_order is None:
+                pending_order = projected
+            elif status == "queued":
+                queue.append(projected)
+        stations[station_code] = {
+            "station_code": station_code,
+            "station_label": station["label"],
+            "active_order": active_order,
+            "pending_order": pending_order,
+            "queue": queue,
+            "queue_order_ids": [str(row.get("order_id") or "") for row in queue],
+            "package_wip_summary": package_wip_summary,
+            "updated_at": str(state.get("lastUpdatedAt") or ""),
+        }
+    return stations
+
+
+def _build_dashboard_snapshot(module_id: str) -> dict[str, Any]:
+    snapshot = copy.deepcopy(store.get_dashboard_snapshot(module_id))
+    snapshot["station_work_orders"] = _build_station_work_order_board(module_id)
+    return snapshot
 
 
 def _checklist_ready(session: dict[str, Any] | None) -> bool:
@@ -1137,7 +1242,7 @@ def create_app() -> FastAPI:
     @app.get("/api/modules/{module_id}/dashboard")
     async def get_dashboard(module_id: str) -> dict[str, Any]:
         try:
-            return store.get_dashboard_snapshot(module_id)
+            return _build_dashboard_snapshot(module_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND") from exc
 
@@ -2141,8 +2246,10 @@ def create_app() -> FastAPI:
         if module_id != config.module_id:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
 
+        ordered_ids = payload.get("ordered_order_ids") or payload.get("orderedOrderIds") or payload.get("order_ids") or payload.get("orderIds")
+        station_code = str(payload.get("station_code") or payload.get("stationCode") or "").strip()
         try:
-            result = oee_state_manager.reorder_work_orders(payload.get("order_ids") or payload.get("orderIds"))
+            result = oee_state_manager.reorder_work_orders(ordered_ids, station_code=station_code)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
@@ -2151,10 +2258,11 @@ def create_app() -> FastAPI:
         store.refresh_oee_runtime_state(module_id, force=True)
         sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None, event_type="reordered")
         summary = str(result.get("summary") or "Is emri sirasi guncellendi.")
-        store.append_system_log(module_id, "SYSTEM|WORK_ORDER|REORDER", topic="local/work-orders")
+        store.append_system_log(module_id, f"SYSTEM|WORK_ORDER|REORDER|STATION={station_code or 'GLOBAL'}", topic="local/work-orders")
         return {
             "status": "accepted",
             "summary": summary,
+            "station_code": station_code,
         }
 
     @app.post("/api/modules/{module_id}/work-orders/start")
@@ -2438,11 +2546,13 @@ def create_app() -> FastAPI:
                 {
                     "type": "dashboard_snapshot",
                     "module_id": module_id,
-                    "data": store.get_dashboard_snapshot(module_id),
+                    "data": _build_dashboard_snapshot(module_id),
                 }
             )
             while True:
                 message = await queue.get()
+                if isinstance(message, dict) and message.get("type") == "dashboard_snapshot":
+                    message = {**message, "data": _build_dashboard_snapshot(module_id)}
                 await websocket.send_json(message)
         except WebSocketDisconnect:
             pass

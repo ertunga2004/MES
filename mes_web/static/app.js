@@ -161,6 +161,7 @@ const els = {
   oeeQualityOverrideList: document.getElementById("oee-quality-override-list"),
   oeeTrendList: document.getElementById("oee-trend-list"),
   workOrderSummary: document.getElementById("work-order-summary"),
+  stationWorkOrderBoard: document.getElementById("station-work-order-board"),
   workOrderOperatorCode: document.getElementById("work-order-operator-code"),
   workOrderOperatorName: document.getElementById("work-order-operator-name"),
   workOrderTolerance: document.getElementById("work-order-tolerance"),
@@ -1265,6 +1266,102 @@ function renderWorkOrderReasonPanel() {
   }
 }
 
+function stationOrderSummary(order) {
+  if (!order) return `<p class="empty-state">Yok</p>`;
+  return `
+    <article class="station-order-card">
+      <div class="station-order-head">
+        <span class="work-order-badge">${order.order_id || "-"}</span>
+        <strong>${formatToken(order.status)}</strong>
+      </div>
+      <h3>${workOrderTitle(order)}</h3>
+      ${workOrderProgressBar(order)}
+      <div class="work-order-row-meta">
+        <span>Plan ${formatNumber(order.qty)}</span>
+        <span>Tamamlanan ${formatNumber(order.completed_qty)}</span>
+        <span>Kalan ${formatNumber(order.remaining_qty)}</span>
+      </div>
+      ${renderWorkOrderRequirements(order, true)}
+    </article>
+  `;
+}
+
+function renderPackageWipSummary(rows) {
+  const summaryRows = Array.isArray(rows) ? rows : [];
+  if (!summaryRows.length) return `<p class="empty-state">BOM/WIP ozeti yok.</p>`;
+  return `
+    <div class="package-wip-summary">
+      ${summaryRows.map((row) => `
+        <span class="${row.ready ? "is-ready" : "is-missing"}">
+          ${row.component_stock_code || "-"} ${formatNumber(row.available_qty)}/${formatNumber(row.required_qty)} ${row.ready ? "hazir" : "eksik"}
+        </span>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderStationQueue(stationCode, queue) {
+  const rows = Array.isArray(queue) ? queue : [];
+  if (!rows.length) return `<p class="empty-state">Sirada is emri yok.</p>`;
+  return rows.map((order, index) => `
+    <article class="station-queue-row">
+      <div>
+        <div class="work-order-row-head">
+          <span class="work-order-badge">${order.order_id || "-"}</span>
+          <strong>${workOrderTitle(order)}</strong>
+        </div>
+        <div class="work-order-row-meta">
+          <span>Durum ${formatToken(order.status)}</span>
+          <span>Plan ${formatNumber(order.qty)}</span>
+          <span>Kalan ${formatNumber(order.remaining_qty)}</span>
+        </div>
+      </div>
+      <div class="station-queue-actions">
+        <button class="oee-choice-button" type="button" data-station-work-order-move="${order.order_id}" data-station-code="${stationCode}" data-direction="up" ${state.workOrderBusy || index === 0 ? "disabled" : ""}>Yukari</button>
+        <button class="oee-choice-button" type="button" data-station-work-order-move="${order.order_id}" data-station-code="${stationCode}" data-direction="down" ${state.workOrderBusy || index === rows.length - 1 ? "disabled" : ""}>Asagi</button>
+      </div>
+    </article>
+  `).join("");
+}
+
+function renderStationWorkOrderBoard(snapshot) {
+  const board = snapshot.station_work_orders || {};
+  const stations = ["ASSEMBLY_01", "PACKAGING_01"];
+  els.stationWorkOrderBoard.innerHTML = stations.map((stationCode) => {
+    const station = board[stationCode] || {};
+    const label = station.station_label || (stationCode === "PACKAGING_01" ? "Paketleme" : "Kutu Uretim");
+    return `
+      <article class="station-work-order-card">
+        <div class="station-card-head">
+          <div>
+            <span class="work-order-badge">${stationCode}</span>
+            <h3>${label}</h3>
+          </div>
+          <span class="panel-note">Son ${formatTime(station.updated_at)}</span>
+        </div>
+        <div class="station-card-section">
+          <h4>Aktif Is</h4>
+          ${stationOrderSummary(station.active_order)}
+        </div>
+        <div class="station-card-section">
+          <h4>Onay Bekleyen</h4>
+          ${stationOrderSummary(station.pending_order)}
+        </div>
+        ${stationCode === "PACKAGING_01" ? `
+        <div class="station-card-section">
+          <h4>BOM/WIP</h4>
+          ${renderPackageWipSummary(station.package_wip_summary)}
+        </div>
+        ` : ""}
+        <div class="station-card-section">
+          <h4>Siradaki Isler</h4>
+          <div class="station-queue-list">${renderStationQueue(stationCode, station.queue)}</div>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
 function renderWorkOrders(snapshot) {
   const workOrders = snapshot.work_orders || {};
   const summary = workOrders.summary || {};
@@ -1282,6 +1379,8 @@ function renderWorkOrders(snapshot) {
   const source = workOrders.source || {};
   const rollbackArmed = activeOrder && state.workOrderDrafts.pendingRollback?.orderId === activeOrder.order_id;
   const resetArmed = Boolean(state.workOrderDrafts.pendingReset);
+
+  renderStationWorkOrderBoard(snapshot);
 
   syncInputValue(els.workOrderTolerance, effectiveWorkOrderToleranceValue(controls.tolerance_minutes));
   els.workOrderTolerance.disabled = state.workOrderBusy;
@@ -1812,6 +1911,44 @@ async function sendWorkOrderReorder(orderId, direction) {
   }
 }
 
+async function sendStationWorkOrderReorder(stationCode, orderId, direction) {
+  const station = (state.snapshot?.station_work_orders || {})[stationCode] || {};
+  const queue = Array.isArray(station.queue) ? [...station.queue] : [];
+  const index = queue.findIndex((order) => order.order_id === orderId);
+  if (index < 0) return;
+  const targetIndex = direction === "up" ? index - 1 : index + 1;
+  if (targetIndex < 0 || targetIndex >= queue.length) return;
+  [queue[index], queue[targetIndex]] = [queue[targetIndex], queue[index]];
+
+  state.workOrderBusy = true;
+  setWorkOrderFeedback(`${stationCode} sirasi guncelleniyor...`, "neutral");
+  if (state.snapshot) renderWorkOrders(state.snapshot);
+  try {
+    const response = await fetch(`/api/modules/${state.moduleId}/work-orders/reorder`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        station_code: stationCode,
+        ordered_order_ids: queue.map((order) => order.order_id),
+        reason: "dashboard_station_reorder",
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `HTTP ${response.status}`);
+    }
+    setWorkOrderFeedback(payload.summary || `${stationCode} sirasi guncellendi.`, "success");
+    const snapshot = await fetchDashboard();
+    state.snapshot = snapshot;
+    render(snapshot);
+  } catch (error) {
+    setWorkOrderFeedback(`Istasyon sira hatasi: ${error.message}`, "error");
+  } finally {
+    state.workOrderBusy = false;
+    if (state.snapshot) renderWorkOrders(state.snapshot);
+  }
+}
+
 async function sendWorkOrderStart(orderId, transitionReason = "") {
   clearWorkOrderRollbackDraft();
   clearWorkOrderResetDraft();
@@ -2099,6 +2236,16 @@ els.workOrderQueueList.addEventListener("click", (event) => {
   if (moveButton && !moveButton.disabled) {
     sendWorkOrderReorder(moveButton.dataset.workOrderMove, moveButton.dataset.direction);
   }
+});
+
+els.stationWorkOrderBoard.addEventListener("click", (event) => {
+  const moveButton = event.target.closest("button[data-station-work-order-move][data-station-code][data-direction]");
+  if (!moveButton || moveButton.disabled) return;
+  sendStationWorkOrderReorder(
+    moveButton.dataset.stationCode,
+    moveButton.dataset.stationWorkOrderMove,
+    moveButton.dataset.direction,
+  );
 });
 
 els.workOrderActive.addEventListener("click", (event) => {

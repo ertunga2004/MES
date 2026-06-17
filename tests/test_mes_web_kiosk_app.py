@@ -327,6 +327,115 @@ class KioskAppTests(unittest.TestCase):
         self.assertEqual(dashboard["work_orders"]["active_order"]["order_id"], "WO-001")
         self.assertEqual(kiosk["work_orders"]["active_order"]["order_id"], "WO-001")
 
+    def test_dashboard_station_work_orders_split_active_pending_and_queue(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {"order_id": "WO-ASM-ACT", "stock_code": "BOX-RED", "stock_name": "Kirmizi Kutu", "qty": 1, "stationCode": "ASSEMBLY_01"},
+                {"order_id": "WO-ASM-QUEUE", "stock_code": "BOX-BLUE", "stock_name": "Mavi Kutu", "qty": 3, "stationCode": "ASSEMBLY_01"},
+                {"order_id": "WO-PKT-ACT", "stock_code": "PKG_BLUE_3", "stock_name": "Mavi Uclu Paket", "qty": 1, "stationCode": "PACKAGING_01"},
+                {"order_id": "WO-PKT-QUEUE", "stock_code": "PKG_RED_YELLOW", "stock_name": "Kirmizi Sari Paket", "qty": 1, "stationCode": "PACKAGING_01"},
+            ]
+        )
+        state = manager.read_state()
+        orders = state["workOrders"]["ordersById"]
+        orders["WO-ASM-ACT"]["status"] = "active"
+        orders["WO-ASM-ACT"]["startedAt"] = "2026-04-27T09:00:00+00:00"
+        orders["WO-PKT-ACT"]["status"] = "active"
+        orders["WO-PKT-ACT"]["startedAt"] = "2026-04-27T09:01:00+00:00"
+        orders["WO-PKT-QUEUE"]["status"] = "pending_approval"
+        orders["WO-PKT-QUEUE"]["startedAt"] = "2026-04-27T09:02:00+00:00"
+        orders["WO-PKT-QUEUE"]["completedQty"] = 1
+        orders["WO-PKT-QUEUE"]["productionQty"] = 1
+        orders["WO-PKT-QUEUE"]["goodQty"] = 1
+        orders["WO-PKT-QUEUE"]["remainingQty"] = 0
+        orders["WO-PKT-QUEUE"]["autoCompletedAt"] = "2026-04-27T09:03:00+00:00"
+        orders["WO-PKT-QUEUE"]["lastAllocationAt"] = "2026-04-27T09:03:00+00:00"
+        for requirement in orders["WO-PKT-QUEUE"].get("requirements") or []:
+            requirement["completedQty"] = requirement.get("quantity", 1)
+            requirement["productionQty"] = requirement.get("quantity", 1)
+            requirement["remainingQty"] = 0
+        state["workOrders"]["activeOrderId"] = "WO-ASM-ACT"
+        manager.write_state(state)
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        availability = {
+            "bom_configured": True,
+            "can_start": True,
+            "package_stock_code": "PKG_BLUE_3",
+            "components": [
+                {
+                    "component_stock_code": "BLUE_BOX",
+                    "required_qty": 3,
+                    "available_qty": 2,
+                    "missing_qty": 1,
+                }
+            ],
+        }
+
+        with patch.object(app_module, "package_component_availability", return_value=availability):
+            dashboard = client.get(f"/api/modules/{config.module_id}/dashboard").json()
+
+        board = dashboard["station_work_orders"]
+        self.assertEqual(board["ASSEMBLY_01"]["active_order"]["order_id"], "WO-ASM-ACT")
+        self.assertEqual(board["ASSEMBLY_01"]["queue_order_ids"], ["WO-ASM-QUEUE"])
+        self.assertEqual(board["PACKAGING_01"]["active_order"]["order_id"], "WO-PKT-ACT")
+        self.assertEqual(board["PACKAGING_01"]["pending_order"]["order_id"], "WO-PKT-QUEUE")
+        self.assertEqual(board["PACKAGING_01"]["queue_order_ids"], [])
+        self.assertEqual(board["PACKAGING_01"]["package_wip_summary"][0]["component_stock_code"], "BLUE_BOX")
+        self.assertEqual(board["PACKAGING_01"]["package_wip_summary"][0]["missing_qty"], 1)
+
+    def test_dashboard_station_reorder_only_changes_requested_station_queue(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {"order_id": "WO-ASM-1", "stock_code": "BOX-RED", "stock_name": "Kirmizi Kutu", "qty": 1, "stationCode": "ASSEMBLY_01"},
+                {"order_id": "WO-PKG-1", "stock_code": "PKG_BLUE_3", "stock_name": "Mavi Uclu Paket", "qty": 1, "stationCode": "PACKAGING_01"},
+                {"order_id": "WO-ASM-2", "stock_code": "BOX-YELLOW", "stock_name": "Sari Kutu", "qty": 1, "stationCode": "ASSEMBLY_01"},
+                {"order_id": "WO-PKG-2", "stock_code": "PKG_RED_YELLOW", "stock_name": "Kirmizi Sari Paket", "qty": 1, "stationCode": "PACKAGING_01"},
+            ]
+        )
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        response = client.post(
+            f"/api/modules/{config.module_id}/work-orders/reorder",
+            json={
+                "station_code": "ASSEMBLY_01",
+                "ordered_order_ids": ["WO-ASM-2", "WO-ASM-1"],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["station_code"], "ASSEMBLY_01")
+        state = manager.read_state()
+        self.assertEqual(
+            state["workOrders"]["orderSequence"],
+            ["WO-ASM-2", "WO-PKG-1", "WO-ASM-1", "WO-PKG-2"],
+        )
+
+        wrong_station = client.post(
+            f"/api/modules/{config.module_id}/work-orders/reorder",
+            json={
+                "station_code": "ASSEMBLY_01",
+                "ordered_order_ids": ["WO-PKG-1", "WO-ASM-1"],
+            },
+        )
+        self.assertEqual(wrong_station.status_code, 400)
+        self.assertEqual(wrong_station.json()["detail"], "WORK_ORDER_STATION_MISMATCH")
+
+        state = manager.read_state()
+        state["workOrders"]["ordersById"]["WO-ASM-2"]["status"] = "active"
+        state["workOrders"]["ordersById"]["WO-ASM-2"]["startedAt"] = "2026-04-27T09:00:00+00:00"
+        manager.write_state(state)
+        active_reorder = client.post(
+            f"/api/modules/{config.module_id}/work-orders/reorder",
+            json={
+                "station_code": "ASSEMBLY_01",
+                "ordered_order_ids": ["WO-ASM-2", "WO-ASM-1"],
+            },
+        )
+        self.assertEqual(active_reorder.status_code, 400)
+        self.assertEqual(active_reorder.json()["detail"], "INVALID_WORK_ORDER_REORDER")
+
     def test_kiosk_accept_active_work_order_syncs_completed_transition(self) -> None:
         client, config, manager, store, _runtime_service = self._build_client()
         order_id = "WO-ACCEPT"

@@ -824,6 +824,19 @@ def _is_package_work_order(order_id: Any, order: dict[str, Any] | None = None) -
     return "PAKET" in marker_text or "PACKAGE" in marker_text
 
 
+def _work_order_station_code(order_id: Any, order: dict[str, Any] | None = None) -> str:
+    if not isinstance(order, dict):
+        return ""
+    explicit = str(order.get("stationCode") or order.get("station_code") or "").strip().upper()
+    if explicit:
+        return explicit
+    metadata = order.get("_metadata") if isinstance(order.get("_metadata"), dict) else {}
+    metadata_station = str(metadata.get("station_code") or "").strip().upper()
+    if metadata_station:
+        return metadata_station
+    return "PACKAGING_01" if _is_package_work_order(order_id, order) else "ASSEMBLY_01"
+
+
 def _infer_color_from_order_or_product(*values: Any) -> str:
     return _normalize_order_color(*values)
 
@@ -4258,16 +4271,29 @@ class OeeRuntimeStateManager:
         )
 
     @_state_locked
-    def reorder_work_orders(self, ordered_ids: Any, *, now: datetime | None = None) -> dict[str, Any]:
+    def reorder_work_orders(self, ordered_ids: Any, *, station_code: str = "", now: datetime | None = None) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
         state = self.read_state()
         work_orders = _work_orders_state(state)
         sequence = _work_order_sequence(state)
         orders = _work_order_orders(state)
         requested = [str(value or "").strip() for value in (ordered_ids if isinstance(ordered_ids, list) else [])]
-        queued_current = [order_id for order_id in sequence if str(orders.get(order_id, {}).get("status") or "") == "queued"]
+        normalized_station = str(station_code or "").strip().upper()
+        queued_current = [
+            order_id
+            for order_id in sequence
+            if str(orders.get(order_id, {}).get("status") or "") == "queued"
+            and (not normalized_station or _work_order_station_code(order_id, orders.get(order_id)) == normalized_station)
+        ]
         queued_set = {order_id for order_id in queued_current}
         requested_set = {order_id for order_id in requested if order_id}
+        if normalized_station:
+            for order_id in requested:
+                order = orders.get(order_id)
+                if not isinstance(order, dict) or _work_order_station_code(order_id, order) != normalized_station:
+                    raise ValueError("WORK_ORDER_STATION_MISMATCH")
+                if str(order.get("status") or "") != "queued":
+                    raise ValueError("INVALID_WORK_ORDER_REORDER")
         if queued_set != requested_set:
             raise ValueError("INVALID_WORK_ORDER_REORDER")
         next_sequence: list[str] = []

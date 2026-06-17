@@ -920,6 +920,116 @@ body {
   gap: 10px;
 }
 
+.station-work-order-board {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.station-work-order-card {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.station-card-head,
+.station-order-head,
+.station-queue-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.station-card-head h3,
+.station-card-section h4,
+.station-order-card h3 {
+  margin: 0;
+}
+
+.station-card-head h3 {
+  margin-top: 8px;
+  font-size: 20px;
+}
+
+.station-card-section {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.station-card-section h4 {
+  color: var(--text-soft);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.station-order-card,
+.station-queue-row {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.station-order-card {
+  display: grid;
+  gap: 10px;
+}
+
+.station-order-head {
+  align-items: center;
+}
+
+.station-order-card h3 {
+  font-size: 18px;
+}
+
+.station-queue-list {
+  display: grid;
+  gap: 10px;
+}
+
+.station-queue-row > div:first-child {
+  min-width: 0;
+}
+
+.station-queue-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.package-wip-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.package-wip-summary span {
+  padding: 8px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.package-wip-summary .is-ready {
+  color: #b9f8dd;
+  border: 1px solid rgba(36, 199, 141, 0.28);
+  background: rgba(36, 199, 141, 0.12);
+}
+
+.package-wip-summary .is-missing {
+  color: #ffe8b0;
+  border: 1px solid rgba(248, 191, 79, 0.28);
+  background: rgba(248, 191, 79, 0.12);
+}
+
 .work-order-inventory-actions strong {
   min-width: 28px;
   text-align: right;
@@ -1266,7 +1376,8 @@ body {
   .oee-summary,
   .oee-kpi-grid,
   .oee-color-grid,
-  .oee-trend-grid {
+  .oee-trend-grid,
+  .station-work-order-board {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1314,7 +1425,8 @@ body {
   .oee-color-grid,
   .oee-chip-grid,
   .oee-trend-grid,
-  .oee-trend-axis {
+  .oee-trend-axis,
+  .station-work-order-board {
     grid-template-columns: 1fr;
   }
 
@@ -1349,7 +1461,9 @@ body {
   .work-order-inventory-actions,
   .work-order-log-head,
   .work-order-log-body,
-  .work-order-import-actions {
+  .work-order-import-actions,
+  .station-card-head,
+  .station-queue-row {
     display: grid;
   }
 

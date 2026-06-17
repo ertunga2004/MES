@@ -51,6 +51,7 @@ def _state(status: str = "active") -> dict:
                     "status": status,
                     "stockCode": "PKT-RED",
                     "productCode": "PKT-RED",
+                    "stationCode": "PACKAGING_01",
                     "quantity": 1,
                     "targetQuantity": 1,
                     "queuedAt": "2026-06-16T09:00:00+00:00",
@@ -84,6 +85,37 @@ def _state_after_accept_with_queued_sibling() -> dict:
         "completedQty": 0,
         "remainingQty": 1,
     }
+    return state
+
+
+def _package_process_state(event_type: str) -> dict:
+    state = _state("active" if event_type == "package_started" else "pending_approval")
+    work_orders = state["workOrders"]
+    work_orders["transitionLog"].insert(
+        0,
+        {
+            "eventType": "package_started",
+            "time": "2026-06-16T09:02:00+00:00",
+            "orderId": "WO-1",
+            "sessionId": "SESSION-1",
+            "packageProcessStartedAt": "2026-06-16T09:02:00+00:00",
+            "packageProcessStatus": "in_progress",
+        },
+    )
+    if event_type == "package_finished":
+        work_orders["completionLog"].insert(
+            0,
+            {
+                "eventType": "package_finished",
+                "time": "2026-06-16T09:04:05+00:00",
+                "orderId": "WO-1",
+                "sessionId": "SESSION-1",
+                "packageProcessStartedAt": "2026-06-16T09:02:00+00:00",
+                "packageProcessFinishedAt": "2026-06-16T09:04:05+00:00",
+                "durationSeconds": 125.0,
+            },
+        )
+        work_orders["ordersById"]["WO-1"]["lastAllocationAt"] = "2026-06-16T09:04:05+00:00"
     return state
 
 
@@ -129,9 +161,50 @@ class WorkOrderTransitionWriterTests(unittest.TestCase):
         self.assertIs(captured["config"], config)
         self.assertFalse(captured["replace_current"])
         self.assertEqual(captured["current_rows"][0]["status"], "active")
+        self.assertEqual(captured["current_rows"][0]["metadata"]["station_code"], "PACKAGING_01")
+        self.assertEqual(captured["current_rows"][0]["metadata"]["queue_rank"], 0)
         self.assertEqual(captured["event_rows"][0].event_type, "started")
         self.assertEqual(captured["event_rows"][0].actor_id, "OP-1")
         self.assertIn("work_order_transition:started:WO-1", captured["event_rows"][0].external_ref)
+
+    def test_finish_pending_and_cancelled_current_states_are_written(self) -> None:
+        finished_state = _state("pending_approval")
+        finished_state["workOrders"]["transitionLog"].insert(
+            0,
+            {"eventType": "finished", "time": "2026-06-16T09:06:00+00:00", "orderId": "WO-1"},
+        )
+        cancelled_state = _state("cancelled")
+        cancelled_state["workOrders"]["transitionLog"].insert(
+            0,
+            {"eventType": "cancelled", "time": "2026-06-16T09:07:00+00:00", "orderId": "WO-1"},
+        )
+
+        finished_rows = []
+        cancelled_rows = []
+
+        def capture_finished(_config, current_rows, event_rows, *, replace_current):
+            finished_rows.extend(current_rows)
+            return {"current_row_count": len(current_rows), "event_row_count": len(event_rows), "deleted_current_rows": 0}
+
+        def capture_cancelled(_config, current_rows, event_rows, *, replace_current):
+            cancelled_rows.extend(current_rows)
+            return {"current_row_count": len(current_rows), "event_row_count": len(event_rows), "deleted_current_rows": 0}
+
+        with patch.object(work_order_transition_writer, "_execute_transition_write", side_effect=capture_finished):
+            mirror_work_order_transition_from_state(
+                AppConfig(db_enabled=True, db_hook_work_order_transitions=True),
+                finished_state,
+                event_type="finished",
+            )
+        with patch.object(work_order_transition_writer, "_execute_transition_write", side_effect=capture_cancelled):
+            mirror_work_order_transition_from_state(
+                AppConfig(db_enabled=True, db_hook_work_order_transitions=True),
+                cancelled_state,
+                event_type="cancelled",
+            )
+
+        self.assertEqual(finished_rows[0]["status"], "pending_approval")
+        self.assertEqual(cancelled_rows[0]["status"], "cancelled")
 
     def test_accept_completed_writes_completed_current_state(self) -> None:
         captured = {}
@@ -211,6 +284,25 @@ class WorkOrderTransitionWriterTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].order_id, "WO-1")
         self.assertEqual(rows[0].event_type, "completed")
+
+    def test_package_started_payload_contains_session_identity(self) -> None:
+        rows = build_work_order_transition_event_rows(_package_process_state("package_started"), event_type="package_started")
+
+        self.assertEqual(len(rows), 1)
+        payload = rows[0].payload["package_process"]
+        self.assertEqual(payload["session_id"], "SESSION-1")
+        self.assertEqual(payload["package_order_id"], "WO-1")
+        self.assertEqual(payload["started_at"], "2026-06-16T09:02:00+00:00")
+
+    def test_package_finished_payload_contains_duration(self) -> None:
+        rows = build_work_order_transition_event_rows(_package_process_state("package_finished"), event_type="package_finished")
+
+        self.assertEqual(len(rows), 1)
+        payload = rows[0].payload["package_process"]
+        self.assertEqual(payload["session_id"], "SESSION-1")
+        self.assertEqual(payload["started_at"], "2026-06-16T09:02:00+00:00")
+        self.assertEqual(payload["finished_at"], "2026-06-16T09:04:05+00:00")
+        self.assertEqual(payload["duration_seconds"], 125.0)
 
     def test_pending_current_state_does_not_write_completed_at(self) -> None:
         current_row = {

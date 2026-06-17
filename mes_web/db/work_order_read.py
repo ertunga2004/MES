@@ -38,6 +38,12 @@ ORDER BY
         WHEN 'completed' THEN 3
         ELSE 4
     END,
+    COALESCE(metadata->>'station_code', ''),
+    CASE
+        WHEN metadata ? 'queue_rank' AND (metadata->>'queue_rank') ~ '^[0-9]+$'
+        THEN (metadata->>'queue_rank')::int
+        ELSE 999999
+    END,
     created_at NULLS LAST,
     order_id
 """

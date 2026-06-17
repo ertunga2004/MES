@@ -122,6 +122,11 @@ def _first_int(row: JsonObject, *names: str) -> int | None:
     return None
 
 
+def _station_code(row: JsonObject) -> str | None:
+    metadata = row.get("_metadata") if isinstance(row.get("_metadata"), dict) else {}
+    return _first_text(row, "stationCode", "station_code") or _nullable_text(metadata.get("station_code"))
+
+
 def _timestamp_or_none(value: Any) -> str | None:
     text = _nullable_text(value)
     if text in {None, "0"}:
@@ -140,6 +145,8 @@ def _work_orders_payload(state: JsonObject) -> tuple[JsonObject, JsonObject]:
 def build_work_order_mirror_rows(state: JsonObject, *, state_file: Path | str | None = None) -> list[JsonObject]:
     work_orders, orders_by_id = _work_orders_payload(state)
     source = work_orders.get("source") if isinstance(work_orders.get("source"), dict) else {}
+    sequence = work_orders.get("orderSequence") if isinstance(work_orders.get("orderSequence"), list) else []
+    queue_rank_by_id = {str(order_id): index for index, order_id in enumerate(sequence)}
     source_file = _first_text(source, "file", "sourceFile")
     source_system = "mes_web"
     rows: list[JsonObject] = []
@@ -155,6 +162,8 @@ def build_work_order_mirror_rows(state: JsonObject, *, state_file: Path | str | 
             "state_file": str(state_file or ""),
             "source_folder": _nullable_text(source.get("folder")) if isinstance(source, dict) else None,
             "source_loaded_at": _nullable_text(source.get("loadedAt")) if isinstance(source, dict) else None,
+            "station_code": _station_code(raw_order),
+            "queue_rank": queue_rank_by_id.get(order_id),
             "completed_quantity": _first_int(raw_order, "completedQty", "completed_quantity"),
             "remaining_quantity": _first_int(raw_order, "remainingQty", "remaining_quantity"),
             "priority": _first_int(raw_order, "priority"),

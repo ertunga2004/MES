@@ -150,6 +150,22 @@ def _latest_log_row(work_orders: JsonObject, order_id: str, event_types: set[str
     return {}
 
 
+def _package_process_payload(event_log: JsonObject, order_id: str) -> JsonObject:
+    if not event_log:
+        return {}
+    session_id = _text(event_log.get("sessionId") or event_log.get("session_id"))
+    if not session_id:
+        return {}
+    return {
+        "session_id": session_id,
+        "package_order_id": _text(event_log.get("orderId")) or order_id,
+        "started_at": _nullable_text(event_log.get("packageProcessStartedAt") or event_log.get("started_at")),
+        "finished_at": _nullable_text(event_log.get("packageProcessFinishedAt") or event_log.get("finished_at")),
+        "duration_seconds": event_log.get("durationSeconds") if event_log.get("durationSeconds") not in (None, "") else None,
+        "status": _nullable_text(event_log.get("packageProcessStatus")),
+    }
+
+
 def _event_type_for_order(requested_event_type: str, order: JsonObject) -> str:
     requested = _text(requested_event_type).lower() or "runtime_sync"
     status = _text(order.get("status")).lower()
@@ -363,6 +379,7 @@ def build_work_order_transition_event_rows(
             event_log = _latest_log_row(work_orders, order_id, {"package_finished"})
         elif normalized_event_type == "package_started":
             event_log = _latest_log_row(work_orders, order_id, {"package_started"})
+        package_process = _package_process_payload(event_log, order_id)
         rows.append(
             WorkOrderTransitionEventRow(
                 order_id=order_id,
@@ -375,6 +392,7 @@ def build_work_order_transition_event_rows(
                 payload={
                     "order": dict(raw_order),
                     "event_log": event_log,
+                    "package_process": package_process,
                     "work_order_source": dict(work_orders.get("source") if isinstance(work_orders.get("source"), dict) else {}),
                     "active_order_id": _text(work_orders.get("activeOrderId")),
                     "last_completed_order_id": _text(work_orders.get("lastCompletedOrderId")),

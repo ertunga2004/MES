@@ -613,7 +613,10 @@ class KioskAppTests(unittest.TestCase):
         manager.write_state(state)
         store.refresh_oee_runtime_state(config.module_id, force=True)
 
-        with patch.object(app_module, "release_reserved_package_components", return_value=[{"wip_item_pk": 1}]) as release_mock:
+        with patch.object(app_module, "release_reserved_package_components", return_value=[{"wip_item_pk": 1}]) as release_mock, patch.object(
+            app_module,
+            "upsert_package_session_cancelled",
+        ) as shadow_cancelled:
             response = client.post(
                 f"/api/modules/{config.module_id}/work-orders/cancel",
                 json={"station_code": "PACKAGING_01", "order_id": "WO-PKG-ACT", "reason": "operator_cancel"},
@@ -621,6 +624,7 @@ class KioskAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         release_mock.assert_called_once()
+        shadow_cancelled.assert_called_once()
         state = manager.read_state()
         self.assertEqual(state["workOrders"]["packagingSessions"][session_id]["status"], "cancelled")
         buffer_items = state["workOrders"]["packagingBuffer"]["itemsById"]
@@ -1054,12 +1058,13 @@ class KioskAppTests(unittest.TestCase):
             app_module,
             "reserve_package_components",
             return_value=[{"wip_item_pk": 1}, {"wip_item_pk": 2}, {"wip_item_pk": 3}],
-        ):
+        ), patch.object(app_module, "upsert_package_session_started") as shadow_started:
             package_started = client.post(
                 f"/api/modules/{config.module_id}/kiosk/package/start",
                 json={"device_id": "kiosk-1", "operator_id": "1", "package_order_id": "WO-PKT-BLUE-001"},
             )
             self.assertEqual(package_started.status_code, 200, package_started.text)
+            shadow_started.assert_called_once()
             snapshot = client.get(
                 f"/api/modules/{config.module_id}/kiosk/bootstrap",
                 params={"device_id": "kiosk-1", "station_code": "PACKAGING_01"},
@@ -1073,11 +1078,15 @@ class KioskAppTests(unittest.TestCase):
         sessions[session_id]["started_at"] = "2026-04-27T09:00:00+00:00"
         manager.write_state(state)
 
-        with patch.object(app_module, "consume_package_components", return_value=[{"wip_item_pk": 1}, {"wip_item_pk": 2}, {"wip_item_pk": 3}]):
+        with patch.object(app_module, "consume_package_components", return_value=[{"wip_item_pk": 1}, {"wip_item_pk": 2}, {"wip_item_pk": 3}]), patch.object(
+            app_module,
+            "upsert_package_session_finished",
+        ) as shadow_finished:
             package_finished = client.post(
                 f"/api/modules/{config.module_id}/kiosk/package/finish",
                 json={"device_id": "kiosk-1", "operator_id": "1", "session_id": session_id},
             )
+            shadow_finished.assert_called_once()
 
         self.assertEqual(package_finished.status_code, 200, package_finished.text)
         self.assertGreater(package_finished.json()["duration_seconds"], 0)

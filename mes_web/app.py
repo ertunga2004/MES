@@ -19,6 +19,11 @@ from .db.package_bom_wip import (
     reserve_package_components,
     reset_demo_package_wip,
 )
+from .db.package_sessions import (
+    upsert_package_session_cancelled,
+    upsert_package_session_finished,
+    upsert_package_session_started,
+)
 from .db.work_order_mirror import load_work_order_planning_snapshot, mirror_work_orders_from_state, reset_work_order_operational_state
 from .db.work_order_read import state_with_db_work_orders
 from .db.work_order_transition_writer import mirror_work_order_transition_from_state
@@ -1915,6 +1920,15 @@ def create_app() -> FastAPI:
             )
         except Exception as exc:
             logger.error("Package component reservation failed: %s", exc, exc_info=exc)
+        upsert_package_session_started(
+            config,
+            session,
+            payload={
+                "package_order_id": package_order_id,
+                "buffer_item": buffer_item,
+                "reserved_components": reserved_components,
+            },
+        )
         store.append_system_log(
             module_id,
             f"SYSTEM|KIOSK|PACKAGE_START|ORDER={package_order_id}|ITEM={str(buffer_item.get('item_id') or '')}|SESSION={str(session.get('session_id') or '')}",
@@ -1973,6 +1987,14 @@ def create_app() -> FastAPI:
             )
         except Exception as exc:
             logger.error("Package component traceability write failed: %s", exc, exc_info=exc)
+        upsert_package_session_finished(
+            config,
+            session,
+            payload={
+                "package_item": package_item,
+                "consumed_components": consumed_components,
+            },
+        )
         store.append_system_log(
             module_id,
             f"SYSTEM|KIOSK|PACKAGE_FINISH|ORDER={str(session.get('package_order_id') or '')}|PACKAGE_ITEM={str(package_item.get('item_id') or '')}|SESSION={session_id}",
@@ -2421,6 +2443,19 @@ def create_app() -> FastAPI:
                 )
             except Exception as exc:
                 logger.error("Package WIP release failed after cancel: %s", exc, exc_info=exc)
+            result_state = result.get("state") if isinstance(result.get("state"), dict) else {}
+            work_orders = result_state.get("workOrders") if isinstance(result_state.get("workOrders"), dict) else {}
+            sessions = work_orders.get("packagingSessions") if isinstance(work_orders.get("packagingSessions"), dict) else {}
+            session = sessions.get(str(session_id or "")) if isinstance(sessions.get(str(session_id or "")), dict) else {}
+            upsert_package_session_cancelled(
+                config,
+                session,
+                payload={
+                    "package_order_id": order_id,
+                    "reason": reason,
+                    "released_components": released_components,
+                },
+            )
         store.refresh_oee_runtime_state(module_id, force=True)
         sync_work_order_runtime(
             result.get("state") if isinstance(result.get("state"), dict) else None,

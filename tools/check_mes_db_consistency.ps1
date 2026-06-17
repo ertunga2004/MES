@@ -148,6 +148,47 @@ Check-Zero `
     -Name "package_started without package_finished session" `
     -Query "WITH started AS (SELECT payload->'package_process'->>'session_id' AS session_id FROM mes.work_order_events WHERE event_type = 'package_started'), finished AS (SELECT payload->'package_process'->>'session_id' AS session_id FROM mes.work_order_events WHERE event_type = 'package_finished') SELECT count(*) FROM started s LEFT JOIN finished f ON f.session_id = s.session_id WHERE COALESCE(s.session_id, '') <> '' AND f.session_id IS NULL;"
 
+Check-Zero `
+    -Name "package_sessions duplicate session_id" `
+    -Query "SELECT count(*) FROM (SELECT session_id FROM mes.package_sessions GROUP BY session_id HAVING count(*) > 1) d;"
+
+Check-Zero `
+    -Name "package_sessions in_progress missing started_at" `
+    -Query "SELECT count(*) FROM mes.package_sessions WHERE status = 'in_progress' AND started_at IS NULL;"
+
+Check-Zero `
+    -Name "package_sessions finished missing finished_at" `
+    -Query "SELECT count(*) FROM mes.package_sessions WHERE status = 'finished' AND finished_at IS NULL;"
+
+Check-Zero `
+    -Name "package_sessions finished missing duration" `
+    -Query "SELECT count(*) FROM mes.package_sessions WHERE status = 'finished' AND duration_seconds IS NULL;"
+
+# package_finished event missing package_session row
+# Scope: only check events produced AFTER the first package_sessions row was created
+# (pre-migration events have no session row and must not count as FAIL).
+# If package_sessions is empty → WARN (2F shadow-write has never run).
+$psRowCount = Invoke-PsqlScalar "SELECT count(*) FROM mes.package_sessions;"
+if ($null -eq $psRowCount -or $psRowCount -eq "") {
+    Write-Check -Name "package_finished event missing package_session row" -Status "FAIL" -Detail "could not query package_sessions"
+} elseif ([int]$psRowCount -eq 0) {
+    Write-Check -Name "package_finished event missing package_session row" -Status "WARN" -Detail "package_sessions is empty - no 2F shadow-writes recorded yet; skipping pre-migration events"
+} else {
+    $pfMissingQuery = "SELECT count(*) FROM mes.work_order_events e LEFT JOIN mes.package_sessions s ON s.session_id = e.payload->'package_process'->>'session_id' WHERE e.event_type = 'package_finished' AND COALESCE(e.payload->'package_process'->>'session_id', '') <> '' AND s.session_id IS NULL AND e.event_at >= (SELECT MIN(created_at) FROM mes.package_sessions);"
+    $pfMissing = Invoke-PsqlScalar $pfMissingQuery
+    if ($null -eq $pfMissing -or $pfMissing -eq "") {
+        Write-Check -Name "package_finished event missing package_session row" -Status "FAIL" -Detail "query failed"
+    } elseif ([int]$pfMissing -eq 0) {
+        Write-Check -Name "package_finished event missing package_session row" -Status "PASS" -Detail "0"
+    } else {
+        Write-Check -Name "package_finished event missing package_session row" -Status "FAIL" -Detail $pfMissing
+    }
+}
+
+Check-Zero `
+    -Name "package_sessions orphan package_order_id" `
+    -Query "SELECT count(*) FROM mes.package_sessions s LEFT JOIN mes.work_orders w ON w.order_id = s.package_order_id WHERE w.order_id IS NULL;"
+
 Write-Host ""
 Write-Host "Recent work_order_events" -ForegroundColor White
 $recent = docker exec $PostgresContainer psql -U $DbUser -d $DbName -c "SELECT event_at, event_type, order_id, external_ref FROM mes.work_order_events ORDER BY event_at DESC NULLS LAST, event_pk DESC LIMIT 20;" 2>&1

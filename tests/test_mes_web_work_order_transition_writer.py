@@ -381,6 +381,81 @@ class WorkOrderTransitionWriterTests(unittest.TestCase):
 
         self.assertIsNone(params["completed_at"])
 
+    def test_execute_transition_write_upserts_station_queue_when_table_exists(self) -> None:
+        class Cursor:
+            def __init__(self) -> None:
+                self.executed: list[tuple[str, dict | None]] = []
+                self.rowcount = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def execute(self, sql, params=None):
+                self.executed.append((str(sql), params))
+
+            def fetchone(self):
+                return ("mes.station_queue",)
+
+        class Connection:
+            def __init__(self) -> None:
+                self.cursor_obj = Cursor()
+                self.committed = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def cursor(self):
+                return self.cursor_obj
+
+            def commit(self):
+                self.committed = True
+
+        connection = Connection()
+        current_rows = [
+            {
+                "order_id": "WO-ASM-1",
+                "erp_type": "FERP",
+                "status": "queued",
+                "product_code": "BOX-RED",
+                "target_quantity": 1,
+                "started_at": None,
+                "completed_at": None,
+                "source_system": "mes_web",
+                "source_file": "ferp_work_orders.json",
+                "external_ref": "WO-ASM-1",
+                "payload": {},
+                "metadata": {"station_code": "ASSEMBLY_01", "queue_rank": 0},
+            }
+        ]
+
+        with patch.object(work_order_transition_writer, "database_connection", return_value=connection), patch.object(
+            work_order_transition_writer,
+            "_jsonb",
+            side_effect=lambda value: value,
+        ):
+            stats = work_order_transition_writer._execute_transition_write(
+                AppConfig(db_enabled=True),
+                current_rows,
+                [],
+                replace_current=False,
+            )
+
+        station_queue_writes = [
+            params for sql, params in connection.cursor_obj.executed if "INSERT INTO mes.station_queue" in sql
+        ]
+        self.assertEqual(stats["current_row_count"], 1)
+        self.assertEqual(len(station_queue_writes), 1)
+        self.assertEqual(station_queue_writes[0]["station_code"], "ASSEMBLY_01")
+        self.assertEqual(station_queue_writes[0]["order_id"], "WO-ASM-1")
+        self.assertEqual(station_queue_writes[0]["queue_rank"], 0)
+        self.assertTrue(connection.committed)
+
     def test_replace_current_empty_reset_still_attempts_delete_and_event(self) -> None:
         captured = {}
         empty_state = {"lastUpdatedAt": "2026-06-16T09:20:00+00:00", "workOrders": {"ordersById": {}, "source": {}}}

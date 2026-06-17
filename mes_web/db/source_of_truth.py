@@ -10,13 +10,13 @@ DB_SOURCE_OF_TRUTH = frozenset(
     {
         "mes.work_orders",
         "mes.work_order_events",
+        "mes.station_queue",
         "mes.package_component_wip",
     }
 )
 
 DB_READINESS_NEXT = frozenset(
     {
-        "mes.station_queue",
         "mes.package_sessions",
     }
 )

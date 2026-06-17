@@ -109,6 +109,34 @@ Check-Zero `
     -Query "SELECT count(*) FROM (SELECT COALESCE(NULLIF(metadata->>'station_code', ''), 'UNKNOWN') AS station_code FROM mes.work_orders WHERE status IN ('active', 'pending_approval') GROUP BY 1 HAVING count(*) > 1) d;"
 
 Check-Zero `
+    -Name "station_queue duplicate station/order" `
+    -Query "SELECT count(*) FROM (SELECT station_code, order_id FROM mes.station_queue GROUP BY station_code, order_id HAVING count(*) > 1) d;"
+
+Check-Zero `
+    -Name "station_queue duplicate active rank" `
+    -Query "SELECT count(*) FROM (SELECT station_code, queue_rank FROM mes.station_queue WHERE status IN ('queued', 'active', 'pending_approval') GROUP BY station_code, queue_rank HAVING count(*) > 1) d;"
+
+Check-Zero `
+    -Name "station_queue orphan order_id" `
+    -Query "SELECT count(*) FROM mes.station_queue q LEFT JOIN mes.work_orders w ON w.order_id = q.order_id WHERE w.order_id IS NULL;"
+
+Check-Zero `
+    -Name "queued work_orders missing station_queue row" `
+    -Query "SELECT count(*) FROM mes.work_orders w LEFT JOIN mes.station_queue q ON q.order_id = w.order_id AND q.station_code = COALESCE(NULLIF(w.metadata->>'station_code', ''), w.payload->>'stationCode') WHERE w.status = 'queued' AND COALESCE(NULLIF(w.metadata->>'station_code', ''), w.payload->>'stationCode') IS NOT NULL AND q.order_id IS NULL;"
+
+Check-Zero `
+    -Name "station_queue status mismatch" `
+    -Query "SELECT count(*) FROM mes.station_queue q JOIN mes.work_orders w ON w.order_id = q.order_id WHERE q.status <> w.status;"
+
+Check-Zero `
+    -Name "station_queue blank station_code" `
+    -Query "SELECT count(*) FROM mes.station_queue WHERE COALESCE(btrim(station_code), '') = '';"
+
+Check-Zero `
+    -Name "station_queue null queue_rank" `
+    -Query "SELECT count(*) FROM mes.station_queue WHERE queue_rank IS NULL;"
+
+Check-Zero `
     -Name "consumed WIP missing consumed_by_package_id" `
     -Query "SELECT count(*) FROM mes.package_component_wip WHERE status = 'consumed' AND COALESCE(btrim(consumed_by_package_id), '') = '';"
 

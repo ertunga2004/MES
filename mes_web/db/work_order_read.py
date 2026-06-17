@@ -65,6 +65,19 @@ WORK_ORDER_READ_FIELDS = (
     "updated_at",
 )
 
+STATION_QUEUE_READ_SQL = """
+SELECT
+    station_code,
+    order_id,
+    queue_rank,
+    status,
+    source,
+    metadata,
+    updated_at
+FROM mes.station_queue
+ORDER BY station_code, queue_rank, updated_at DESC NULLS LAST, order_id
+"""
+
 ACTIVE_STATUSES = {"active", "pending_approval"}
 
 
@@ -240,6 +253,30 @@ def _ordered_ids(fallback_work_orders: JsonObject, orders_by_id: JsonObject) -> 
     return ordered
 
 
+def _station_queue_ordered_ids(queue_rows: list[JsonObject], orders_by_id: JsonObject) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    normalized_rows = sorted(
+        queue_rows,
+        key=lambda row: (
+            _text(row.get("station_code")),
+            _safe_int(row.get("queue_rank")) if _safe_int(row.get("queue_rank")) is not None else 999999,
+            _timestamp_text(row.get("updated_at")) or "",
+            _text(row.get("order_id")),
+        ),
+    )
+    for row in normalized_rows:
+        order_id = _text(row.get("order_id"))
+        if order_id and order_id in orders_by_id and order_id not in seen:
+            ordered.append(order_id)
+            seen.add(order_id)
+    for order_id in orders_by_id:
+        if order_id not in seen:
+            ordered.append(order_id)
+            seen.add(order_id)
+    return ordered
+
+
 def _active_order_id(fallback_work_orders: JsonObject, orders_by_id: JsonObject, ordered_ids: list[str]) -> str:
     fallback_active_id = _text(fallback_work_orders.get("activeOrderId"))
     fallback_active_order = orders_by_id.get(fallback_active_id)
@@ -290,7 +327,12 @@ def _state_with_drift_metadata(fallback_state: JsonObject, *, active_order_id: s
     return state
 
 
-def _overlay_work_orders(fallback_state: JsonObject, rows: list[JsonObject]) -> JsonObject:
+def _overlay_work_orders(
+    fallback_state: JsonObject,
+    rows: list[JsonObject],
+    *,
+    station_queue_rows: list[JsonObject] | None = None,
+) -> JsonObject:
     state = copy.deepcopy(fallback_state)
     fallback_work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
     work_orders = copy.deepcopy(fallback_work_orders)
@@ -306,7 +348,8 @@ def _overlay_work_orders(fallback_state: JsonObject, rows: list[JsonObject]) -> 
     if not orders_by_id:
         return state
 
-    ordered_ids = _ordered_ids(fallback_work_orders, orders_by_id)
+    queue_rows = station_queue_rows if isinstance(station_queue_rows, list) else []
+    ordered_ids = _station_queue_ordered_ids(queue_rows, orders_by_id) if queue_rows else _ordered_ids(fallback_work_orders, orders_by_id)
     work_orders["ordersById"] = orders_by_id
     work_orders["orderSequence"] = ordered_ids
     work_orders["activeOrderId"] = _active_order_id(fallback_work_orders, orders_by_id, ordered_ids)
@@ -318,6 +361,7 @@ def _overlay_work_orders(fallback_state: JsonObject, rows: list[JsonObject]) -> 
         ),
         "system": WORK_ORDER_READ_SOURCE,
         "table": "mes.work_orders",
+        "queue_table": "mes.station_queue" if queue_rows else "",
         "mode": "db_read_work_orders",
     }
     state["workOrders"] = work_orders
@@ -331,6 +375,37 @@ def _fetch_work_order_rows(config: AppConfig) -> list[JsonObject]:
         with connection.cursor() as cursor:
             cursor.execute(WORK_ORDER_READ_SQL)
             return [_row_mapping(row) for row in cursor.fetchall()]
+
+
+def _fetch_station_queue_rows(config: AppConfig) -> list[JsonObject]:
+    with database_connection(config) as connection:
+        if connection is None:
+            return []
+        with connection.cursor() as cursor:
+            cursor.execute(STATION_QUEUE_READ_SQL)
+            rows: list[JsonObject] = []
+            for row in cursor.fetchall():
+                if isinstance(row, Mapping):
+                    rows.append({str(key): value for key, value in row.items()})
+                else:
+                    values = list(row) if isinstance(row, (list, tuple)) else []
+                    rows.append(
+                        dict(
+                            zip(
+                                (
+                                    "station_code",
+                                    "order_id",
+                                    "queue_rank",
+                                    "status",
+                                    "source",
+                                    "metadata",
+                                    "updated_at",
+                                ),
+                                values,
+                            )
+                        )
+                    )
+            return rows
 
 
 def state_with_db_work_orders(
@@ -372,7 +447,14 @@ def state_with_db_work_orders(
     if not rows:
         return WorkOrderDbReadResult("fallback_empty", True, 0, "runtime", fallback_state, "No DB work orders")
 
-    state = _overlay_work_orders(fallback_state, rows)
+    station_queue_rows: list[JsonObject] = []
+    try:
+        station_queue_rows = _fetch_station_queue_rows(config)
+    except Exception as exc:
+        if config.db_log_failures and logger is not None:
+            logger.warning("Station queue DB read failed; using runtime queue fallback: %s", exc)
+
+    state = _overlay_work_orders(fallback_state, rows, station_queue_rows=station_queue_rows)
     work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
     orders_by_id = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
     if not orders_by_id:

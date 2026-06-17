@@ -6,6 +6,7 @@ Bu MVP fazinda tam enterprise SOT hedeflenmiyor. Kontrollu gecis icin su tablola
 
 - `mes.work_orders`: work order current-state mirror/read kaynagi.
 - `mes.work_order_events`: start, finish, accept, cancel, reorder ve package process transition log.
+- `mes.station_queue`: istasyon bazli is emri sirasi ve queue current-state projeksiyonu.
 - `mes.package_component_wip`: paketleme komponent uygunluk, reserve, consume ve reset kontrol kaydi.
 - `mes.production_completions`: uretilen item completion hook kaydi.
 - `mes.item_station_events`: station tracking hook kaydi.
@@ -18,7 +19,7 @@ Kod ici SOT siniri: `mes_web/db/source_of_truth.py`.
 Runtime fallback bilincli olarak korunur:
 
 - `oee_runtime_state.json`
-- `workOrders.orderSequence`
+- `workOrders.orderSequence` DB read hata/bos/eksik station_queue durumunda fallback siradir.
 - `workOrders.activeOrderId` ve `workOrders.activeOrderByStation`
 - `workOrders.packagingSessions`
 - shift/OEE transient state
@@ -32,7 +33,7 @@ DB read hata, bos sonuc veya runtime active drift durumunda work order okuma run
 
 ### station_queue
 
-Mevcut kaynak: runtime `workOrders.orderSequence`.
+Mevcut kaynak: `mes.station_queue`; fallback kaynak runtime `workOrders.orderSequence`.
 
 Onerilen minimal schema:
 
@@ -40,11 +41,18 @@ Onerilen minimal schema:
 - `order_id text not null`
 - `queue_rank integer not null`
 - `status text not null`
+- `source text not null`
+- `payload jsonb not null default '{}'::jsonb`
+- `metadata jsonb not null default '{}'::jsonb`
 - `updated_at timestamptz not null default now()`
 - unique: `(station_code, order_id)`
-- index: `(station_code, queue_rank)`
+- unique/index: `(station_code, queue_rank)` aktif queue durumlari icin
+- index: `(station_code, status, queue_rank)`
 
-Faz 2D-mini notu: migration yazilmadi. `mes.work_orders.metadata.queue_rank` ve `metadata.station_code` DB-readiness icin doldurulur.
+Faz 2E notu: additive migration eklendi. Work order transition hook `mes.work_orders`
+current-state satirlarindan `mes.station_queue` upsert eder. Read path `station_queue`
+okuyabilirse station board/kiosk sirasi DB'den gelir; tablo/okuma hatasinda runtime
+`orderSequence` fallback korunur.
 
 ### package_sessions
 
@@ -70,6 +78,7 @@ Faz 2D-mini notu: migration yazilmadi. `package_started` ve `package_finished` o
 
 - `mes.work_orders` current-state satirlarini upsert eder.
 - `mes.work_order_events` idempotent event yazar.
+- `mes.station_queue` station/order/rank/status projeksiyonunu upsert eder.
 - status, target quantity, started/completed timestamp ve full payload korunur.
 - station ownership ve queue rank `metadata` icinde tutulur.
 
@@ -94,7 +103,7 @@ Sonraki kontrollu faz:
 
 Minimum hedef:
 
-- `station_queue` migration ve read path.
-- reorder endpointinin queue_rank DB write/read kullanmasi.
+- runtime deploy oncesi `006_station_queue.sql` migration uygulama karari.
+- reorder/start/finish/cancel sonrasi DB station_queue compare/smoke.
 - `activeOrderByStation` bilgisinin DB read tarafinda deterministic hesaplanmasi.
 - `package_sessions` icin migration taslagi ve shadow-write.

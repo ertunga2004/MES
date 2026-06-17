@@ -1390,6 +1390,158 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(work_order["transitionReason"], "Makine temizlik ve operator bekleme")
             self.assertIn("Kalan", result["summary"])
 
+    def test_station_scoped_active_order_blocks_only_same_station(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            manager.import_work_orders(
+                [
+                    {"order_id": "WO-ASM-1", "stock_code": "BOX-RED", "qty": 1, "stationCode": "ASSEMBLY_01"},
+                    {"order_id": "WO-ASM-2", "stock_code": "BOX-BLUE", "qty": 1, "stationCode": "ASSEMBLY_01"},
+                    {"order_id": "WO-PKG-1", "stock_code": "PKG_BLUE_3", "stock_name": "Blue Package", "qty": 1, "stationCode": "PACKAGING_01"},
+                ],
+                now=datetime(2026, 4, 2, 8, 0, 0),
+            )
+
+            manager.start_work_order("WO-ASM-1", now=datetime(2026, 4, 2, 8, 1, 0))
+            with self.assertRaisesRegex(ValueError, "ACTIVE_WORK_ORDER_EXISTS"):
+                manager.start_work_order("WO-ASM-2", now=datetime(2026, 4, 2, 8, 2, 0))
+
+            state = manager.read_state()
+            state["workOrders"]["packagingBuffer"] = {
+                "itemsById": {
+                    "BUF-BLUE-1": {
+                        "item_id": "BUF-BLUE-1",
+                        "status": "available",
+                        "classification": "GOOD",
+                        "color": "blue",
+                        "product_code": "BLUE_BOX",
+                    }
+                },
+                "availableItemIds": ["BUF-BLUE-1"],
+            }
+            manager.write_state(state)
+
+            result = manager.start_package_flow("WO-PKG-1", now=datetime(2026, 4, 2, 8, 3, 0))
+
+            state = result["state"]
+            self.assertEqual(state["workOrders"]["activeOrderByStation"]["ASSEMBLY_01"], "WO-ASM-1")
+            self.assertEqual(state["workOrders"]["activeOrderByStation"]["PACKAGING_01"], "WO-PKG-1")
+            self.assertEqual(state["workOrders"]["ordersById"]["WO-PKG-1"]["status"], "active")
+
+            state["workOrders"]["packagingBuffer"]["itemsById"]["BUF-BLUE-2"] = {
+                "item_id": "BUF-BLUE-2",
+                "status": "available",
+                "classification": "GOOD",
+                "color": "blue",
+                "product_code": "BLUE_BOX",
+            }
+            state["workOrders"]["packagingBuffer"]["availableItemIds"].append("BUF-BLUE-2")
+            state["workOrders"]["ordersById"]["WO-PKG-2"] = {
+                "orderId": "WO-PKG-2",
+                "stockCode": "PKG_BLUE_3",
+                "stockName": "Blue Package",
+                "productCode": "PKG_BLUE_3",
+                "productColor": "blue",
+                "quantity": 1,
+                "completedQty": 0,
+                "remainingQty": 1,
+                "status": "queued",
+                "stationCode": "PACKAGING_01",
+            }
+            state["workOrders"]["orderSequence"].append("WO-PKG-2")
+            manager.write_state(state)
+            with self.assertRaisesRegex(ValueError, "ACTIVE_WORK_ORDER_EXISTS"):
+                manager.start_package_flow("WO-PKG-2", now=datetime(2026, 4, 2, 8, 4, 0))
+
+    def test_accept_active_work_order_with_explicit_order_id_and_station_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            manager.reset_work_orders()
+            manager.import_work_orders([
+                {
+                    "order_id": "WO-RED-ASSM",
+                    "stock_code": "BOX-RED",
+                    "qty": 1,
+                    "stationCode": "ASSEMBLY_01",
+                    "status": "queued",
+                },
+                {
+                    "order_id": "WO-BLU-PKG",
+                    "stock_code": "PKG_BLUE_3",
+                    "stock_name": "Blue Package",
+                    "qty": 1,
+                    "stationCode": "PACKAGING_01",
+                    "status": "pending_approval",
+                    "completedQty": 1,
+                },
+            ])
+            state = manager.read_state()
+            package_order = state["workOrders"]["ordersById"]["WO-BLU-PKG"]
+            package_order["status"] = "pending_approval"
+            package_order["completedQty"] = 1
+            package_order["remainingQty"] = 0
+            package_order["stationCode"] = "PACKAGING_01"
+            state["workOrders"]["activeOrderByStation"] = {"PACKAGING_01": "WO-BLU-PKG"}
+            manager.write_state(state)
+            manager.start_work_order(order_id="WO-RED-ASSM")
+
+            state = manager.read_state()
+            work_orders = state["workOrders"]
+            self.assertEqual(work_orders["activeOrderByStation"]["ASSEMBLY_01"], "WO-RED-ASSM")
+
+            # Accept PACKAGING_01 with explicit order_id
+            manager.accept_active_work_order(order_id="WO-BLU-PKG", station_code="PACKAGING_01")
+
+            state_after = manager.read_state()
+            work_orders_after = state_after["workOrders"]
+            self.assertEqual(work_orders_after["activeOrderByStation"]["ASSEMBLY_01"], "WO-RED-ASSM")
+            self.assertNotIn("PACKAGING_01", work_orders_after["activeOrderByStation"])
+            self.assertEqual(work_orders_after["ordersById"]["WO-BLU-PKG"]["status"], "completed")
+
+            # Check errors
+            with self.assertRaises(ValueError) as context:
+                manager.accept_active_work_order(order_id="WO-RED-ASSM", station_code="PACKAGING_01")
+            self.assertEqual(str(context.exception), "WORK_ORDER_STATION_MISMATCH")
+
+            with self.assertRaises(ValueError) as context:
+                manager.accept_active_work_order(order_id="WO-RED-ASSM", station_code="ASSEMBLY_01")
+            self.assertEqual(str(context.exception), "ACTIVE_WORK_ORDER_NOT_PENDING_APPROVAL")
+
+    def test_accept_assembly_pending_preserves_packaging_active_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            manager.import_work_orders(
+                [
+                    {"order_id": "WO-ASM-PENDING", "stock_code": "BOX-RED", "qty": 1, "stationCode": "ASSEMBLY_01"},
+                    {"order_id": "WO-PKG-ACTIVE", "stock_code": "PKG_BLUE_3", "stock_name": "Blue Package", "qty": 1, "stationCode": "PACKAGING_01"},
+                ]
+            )
+            manager.start_work_order("WO-ASM-PENDING", station_code="ASSEMBLY_01", now=datetime(2026, 4, 2, 8, 0, 0))
+            manager.apply_mega_log(
+                "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=812|MEASURE_ID=81|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=4500|PENDING=1",
+                "2026-04-02T08:00:30+03:00",
+            )
+            manager.apply_mega_log(
+                "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=812|MEASURE_ID=81|TRIGGER=TIMER",
+                "2026-04-02T08:01:00+03:00",
+            )
+            state = manager.read_state()
+            state["workOrders"]["ordersById"]["WO-PKG-ACTIVE"]["status"] = "active"
+            state["workOrders"]["ordersById"]["WO-PKG-ACTIVE"]["startedAt"] = "2026-04-02T08:00:00+03:00"
+            state["workOrders"]["activeOrderByStation"] = {
+                "ASSEMBLY_01": "WO-ASM-PENDING",
+                "PACKAGING_01": "WO-PKG-ACTIVE",
+            }
+            manager.write_state(state)
+
+            manager.accept_active_work_order(order_id="WO-ASM-PENDING", station_code="ASSEMBLY_01")
+
+            updated = manager.read_state()["workOrders"]
+            self.assertEqual(updated["ordersById"]["WO-ASM-PENDING"]["status"], "completed")
+            self.assertEqual(updated["ordersById"]["WO-PKG-ACTIVE"]["status"], "active")
+            self.assertEqual(updated["activeOrderByStation"]["PACKAGING_01"], "WO-PKG-ACTIVE")
+            self.assertNotIn("ASSEMBLY_01", updated["activeOrderByStation"])
+
     def test_mixed_color_work_order_completes_across_multiple_requirements(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")

@@ -395,6 +395,18 @@ class KioskAppTests(unittest.TestCase):
             ]
         )
         state = manager.read_state()
+        state["workOrders"]["ordersById"]["WO-000"] = {
+            "orderId": "WO-000",
+            "stockCode": "BOX-RED",
+            "stockName": "Kirmizi Kutu",
+            "productCode": "BOX-RED",
+            "productColor": "red",
+            "quantity": 1,
+            "completedQty": 1,
+            "remainingQty": 0,
+            "status": "completed",
+            "stationCode": "ASSEMBLY_01",
+        }
         state["workOrders"]["lastCompletedOrderId"] = "WO-000"
         state["workOrders"]["lastCompletedAt"] = "2026-04-02T08:00:00+03:00"
         state["workOrders"]["toleranceMs"] = 5 * 60 * 1000
@@ -540,6 +552,57 @@ class KioskAppTests(unittest.TestCase):
         self.assertEqual(len(package_orders), 1)
         self.assertEqual(package_orders[0]["package_bom"]["package_stock_code"], "PKG_BLUE_3")
         self.assertEqual(package_orders[0]["package_bom"]["components"][0]["available_qty"], 3)
+
+    def test_kiosk_bootstrap_active_order_is_scoped_by_station(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {
+                    "order_id": "WO-ASM-ACTIVE",
+                    "stock_code": "BOX-RED",
+                    "qty": 1,
+                    "stationCode": "ASSEMBLY_01",
+                },
+                {
+                    "order_id": "WO-PKG-ACTIVE",
+                    "stock_code": "PKG_BLUE_3",
+                    "stock_name": "Mavi Uclu Paket",
+                    "qty": 1,
+                    "stationCode": "PACKAGING_01",
+                },
+            ]
+        )
+        state = manager.read_state()
+        state["workOrders"]["packagingBuffer"] = {
+            "itemsById": {
+                "BUF-BLUE-1": {
+                    "item_id": "BUF-BLUE-1",
+                    "status": "available",
+                    "classification": "GOOD",
+                    "color": "blue",
+                    "product_code": "BLUE_BOX",
+                }
+            },
+            "availableItemIds": ["BUF-BLUE-1"],
+        }
+        manager.write_state(state)
+        manager.start_work_order("WO-ASM-ACTIVE", station_code="ASSEMBLY_01")
+        manager.start_package_flow("WO-PKG-ACTIVE", station_code="PACKAGING_01")
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        assembly_snapshot = client.get(
+            f"/api/modules/{config.module_id}/kiosk/bootstrap",
+            params={"device_id": "kiosk-assembly-01", "station_code": "ASSEMBLY_01"},
+        ).json()
+        packaging_snapshot = client.get(
+            f"/api/modules/{config.module_id}/kiosk/bootstrap",
+            params={"device_id": "kiosk-packaging-01", "station_code": "PACKAGING_01"},
+        ).json()
+
+        self.assertEqual(assembly_snapshot["work_orders"]["active_order"]["order_id"], "WO-ASM-ACTIVE")
+        self.assertEqual(packaging_snapshot["work_orders"]["active_order"]["order_id"], "WO-PKG-ACTIVE")
+        self.assertEqual(assembly_snapshot["station_work_orders"]["PACKAGING_01"]["active_order_id"], "WO-PKG-ACTIVE")
+        self.assertEqual(packaging_snapshot["station_work_orders"]["ASSEMBLY_01"]["active_order_id"], "WO-ASM-ACTIVE")
 
     def test_kiosk_package_start_reserves_phase2_components_when_available(self) -> None:
         client, config, manager, store, _runtime_service = self._build_client()

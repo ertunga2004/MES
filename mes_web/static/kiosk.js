@@ -714,7 +714,16 @@ async function performAction(callback) {
   try {
     await callback();
   } catch (error) {
-    window.alert(String(error.message || error));
+    const detail = error.detail;
+    const code = detail && typeof detail === 'object' ? String(detail.code || '') : '';
+    if (code === 'PACKAGE_COMPONENTS_NOT_AVAILABLE') {
+      const missing = (detail.components || [])
+        .map((component) => `- ${component.component_stock_code}: ${component.missing_qty} adet eksik`)
+        .join("\\n");
+      window.alert(`Paketleme icin gerekli bilesenler yetersiz:\\n\\n${missing}`);
+    } else {
+      window.alert(String(error.message || error));
+    }
   } finally {
     state.busy = false;
     render();
@@ -781,9 +790,19 @@ async function handleBigAction() {
     } else if (action === "work_order_start_next") {
       await requestWorkOrderStart("");
     } else if (action === "work_order_accept") {
+      const activeOrder = ((snapshot.work_orders || {}).active_order || {});
+      const activeOrderId = String(activeOrder.order_id || "").trim();
+
+      if (!activeOrderId) {
+        throw new Error("ACTIVE_WORK_ORDER_NOT_FOUND_IN_SNAPSHOT");
+      }
+
       await fetchJson(`/api/modules/${state.moduleId}/kiosk/work-orders/accept-active`, {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          ...currentActorPayload(),
+          order_id: activeOrderId,
+        }),
       });
     } else if (action === "package_start") {
       const payload = (snapshot.big_action || {}).payload || {};

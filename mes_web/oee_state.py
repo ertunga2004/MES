@@ -66,6 +66,7 @@ def default_work_order_state() -> dict[str, Any]:
         "ordersById": {},
         "orderSequence": [],
         "activeOrderId": "",
+        "activeOrderByStation": {},
         "lastCompletedOrderId": "",
         "lastCompletedAt": "",
         "inventoryByProduct": {},
@@ -1459,6 +1460,8 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         "cycleTimeMs": cycle_time_ms,
         "cycleTimeSec": _seconds_from_ms(cycle_time_ms),
         "shiftCode": _text_or_default(entry.get("shift_code") or entry.get("shiftCode") or entry.get("vardiya") or entry.get("lblMMFB4_SHIFT_TYPE") or current.get("shiftCode")),
+        "stationCode": _text_or_default(entry.get("station_code") or entry.get("stationCode") or current.get("stationCode")),
+        "_metadata": dict(entry.get("_metadata") if isinstance(entry.get("_metadata"), dict) else current.get("_metadata") if isinstance(current.get("_metadata"), dict) else {}),
         "productCode": product_code or stock_code or order_id,
         "productColor": color,
         "matchKey": _text_or_default(entry.get("matchKey") or current.get("matchKey"), color or product_code or stock_code or order_id),
@@ -1734,6 +1737,8 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
                 active_order_id = order_id
                 break
     base["workOrders"]["activeOrderId"] = active_order_id
+    base["workOrders"]["activeOrderByStation"] = dict(work_orders.get("activeOrderByStation") or {})
+    _rebuild_station_active_map(base["workOrders"])
     base["workOrders"]["lastCompletedOrderId"] = str(work_orders.get("lastCompletedOrderId") or "").strip()
     base["workOrders"]["lastCompletedAt"] = str(work_orders.get("lastCompletedAt") or "")
     inventory = work_orders.get("inventoryByProduct") if isinstance(work_orders.get("inventoryByProduct"), dict) else {}
@@ -1907,6 +1912,7 @@ def _work_orders_state(state: dict[str, Any]) -> dict[str, Any]:
     )
     work_orders["toleranceMinutes"] = _minutes_from_ms(work_orders["toleranceMs"])
     work_orders["activeOrderId"] = str(work_orders.get("activeOrderId") or "").strip()
+    _station_active_map(work_orders)
     work_orders["lastCompletedOrderId"] = str(work_orders.get("lastCompletedOrderId") or "").strip()
     work_orders["lastCompletedAt"] = str(work_orders.get("lastCompletedAt") or "")
     return work_orders
@@ -2014,6 +2020,113 @@ def _sync_work_order_row(order: dict[str, Any]) -> None:
     order["productionQty"] = min(quantity, max(0, round(_numeric(order.get("productionQty")))))
     order["remainingQty"] = max(0, quantity - order["completedQty"])
 
+
+def _normalize_station_code(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _work_order_station_code(order: dict[str, Any] | None, station_code: Any = "") -> str:
+    explicit = _normalize_station_code(station_code)
+    if explicit:
+        return explicit
+    if not isinstance(order, dict):
+        return ""
+    for key in ("stationCode", "station_code", "workStationCode", "work_station_code"):
+        value = _normalize_station_code(order.get(key))
+        if value:
+            return value
+    metadata = order.get("_metadata") if isinstance(order.get("_metadata"), dict) else {}
+    value = _normalize_station_code(metadata.get("station_code"))
+    if value:
+        return value
+    if _is_package_work_order(order.get("orderId"), order):
+        return "PACKAGING_01"
+    return "ASSEMBLY_01"
+
+
+def _station_active_map(work_orders: dict[str, Any]) -> dict[str, str]:
+    active_by_station = work_orders.get("activeOrderByStation")
+    if not isinstance(active_by_station, dict):
+        active_by_station = {}
+        work_orders["activeOrderByStation"] = active_by_station
+    cleaned = {
+        _normalize_station_code(station): str(order_id or "").strip()
+        for station, order_id in active_by_station.items()
+        if _normalize_station_code(station) and str(order_id or "").strip()
+    }
+    if cleaned != active_by_station:
+        work_orders["activeOrderByStation"] = cleaned
+    return work_orders["activeOrderByStation"]
+
+
+def _get_station_active_order_id(work_orders: dict[str, Any], station_code: Any) -> str:
+    station = _normalize_station_code(station_code)
+    if not station:
+        return ""
+    return str(_station_active_map(work_orders).get(station) or "").strip()
+
+
+def _set_station_active_order_id(work_orders: dict[str, Any], station_code: Any, order_id: Any) -> None:
+    station = _normalize_station_code(station_code)
+    normalized_order_id = str(order_id or "").strip()
+    if station and normalized_order_id:
+        _station_active_map(work_orders)[station] = normalized_order_id
+    if normalized_order_id and not str(work_orders.get("activeOrderId") or "").strip():
+        work_orders["activeOrderId"] = normalized_order_id
+
+
+def _clear_station_active_order_id(work_orders: dict[str, Any], station_code: Any, order_id: Any = "") -> None:
+    station = _normalize_station_code(station_code)
+    normalized_order_id = str(order_id or "").strip()
+    active_by_station = _station_active_map(work_orders)
+    if station:
+        current = str(active_by_station.get(station) or "").strip()
+        if not normalized_order_id or current == normalized_order_id:
+            active_by_station.pop(station, None)
+    elif normalized_order_id:
+        for key, value in list(active_by_station.items()):
+            if str(value or "").strip() == normalized_order_id:
+                active_by_station.pop(key, None)
+    if normalized_order_id and str(work_orders.get("activeOrderId") or "").strip() == normalized_order_id:
+        work_orders["activeOrderId"] = ""
+
+
+def _assert_same_station(order: dict[str, Any], station_code: Any) -> str:
+    requested = _normalize_station_code(station_code)
+    resolved = _work_order_station_code(order, requested)
+    existing = _work_order_station_code(order)
+    if requested and existing and existing != requested:
+        raise ValueError("WORK_ORDER_STATION_MISMATCH")
+    return resolved
+
+
+def _assert_station_can_start(work_orders: dict[str, Any], station_code: Any, order_id: Any) -> None:
+    station = _normalize_station_code(station_code)
+    normalized_order_id = str(order_id or "").strip()
+    if not station:
+        if str(work_orders.get("activeOrderId") or "").strip():
+            raise ValueError("ACTIVE_WORK_ORDER_EXISTS")
+        return
+    active_order_id = _get_station_active_order_id(work_orders, station)
+    if active_order_id and active_order_id != normalized_order_id:
+        raise ValueError("ACTIVE_WORK_ORDER_EXISTS")
+
+
+def _rebuild_station_active_map(work_orders: dict[str, Any]) -> None:
+    orders = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+    sequence = work_orders.get("orderSequence") if isinstance(work_orders.get("orderSequence"), list) else list(orders)
+    active_by_station: dict[str, str] = {}
+    for raw_order_id in list(sequence) + [order_id for order_id in orders if order_id not in sequence]:
+        order_id = str(raw_order_id or "").strip()
+        order = orders.get(order_id)
+        if not order_id or not isinstance(order, dict):
+            continue
+        if str(order.get("status") or "") not in WORK_ORDER_BLOCKING_STATUSES:
+            continue
+        station = _work_order_station_code(order)
+        if station and station not in active_by_station:
+            active_by_station[station] = order_id
+    work_orders["activeOrderByStation"] = active_by_station
 
 def _reset_work_order_operational_fields(order: dict[str, Any]) -> None:
     order["status"] = "queued"
@@ -2277,7 +2390,10 @@ def _mark_work_order_pending_approval_if_ready(state: dict[str, Any], order: dic
     order["autoCompletedAt"] = stamp
     order["completedAt"] = ""
     work_orders = _work_orders_state(state)
-    work_orders["activeOrderId"] = str(order.get("orderId") or "")
+    order_id = str(order.get("orderId") or "")
+    station_code = _work_order_station_code(order)
+    order["stationCode"] = station_code
+    _set_station_active_order_id(work_orders, station_code, order_id)
     metrics = _persist_work_order_metrics(state, order, now=now)
     work_orders["transitionLog"] = _prepend_capped(
         work_orders["transitionLog"],
@@ -2376,7 +2492,7 @@ def _route_completed_item_to_work_orders(
     inventory = _work_order_inventory(state)
     item_color = _normalize_order_color(item.get("final_color"), item.get("color"), item.get("sensor_color"))
     item_id = str(item.get("item_id") or resolved_key)
-    active_order_id = str(work_orders.get("activeOrderId") or "")
+    active_order_id = _get_station_active_order_id(work_orders, "ASSEMBLY_01") or str(work_orders.get("activeOrderId") or "")
     active_order = orders.get(active_order_id) if active_order_id else None
     item["inventoryAction"] = ""
     item["work_order_id"] = ""
@@ -3158,7 +3274,7 @@ def _dry_run_production_completion_hook(item: dict[str, Any]) -> None:
         classification = str(item.get("classification") or "")
         inventory_action = str(item.get("inventoryAction") or "")
         work_order_match_key = str(item.get("work_order_match_key") or "")
-        
+
         if not order_id:
             status = "OFF_ORDER"
             natural_key = "N/A"
@@ -3171,7 +3287,7 @@ def _dry_run_production_completion_hook(item: dict[str, Any]) -> None:
         else:
             status = "APPLY_SAFE"
             natural_key = f"{order_id}_{item_id}"
-            
+
         print(f"[DRY_RUN:production_completions] status={status} item_id={item_id} order_id={order_id} external_ref={natural_key} classification={classification} completed_at={completed_at} inventoryAction={inventory_action} work_order_match_key={work_order_match_key}")
 
     except Exception as exc:
@@ -4217,6 +4333,7 @@ class OeeRuntimeStateManager:
             }
         if str(work_orders.get("activeOrderId") or "") not in next_orders:
             work_orders["activeOrderId"] = ""
+        _rebuild_station_active_map(work_orders)
         if str(work_orders.get("lastCompletedOrderId") or "") not in next_orders:
             work_orders["lastCompletedOrderId"] = ""
             work_orders["lastCompletedAt"] = ""
@@ -4258,14 +4375,20 @@ class OeeRuntimeStateManager:
         )
 
     @_state_locked
-    def reorder_work_orders(self, ordered_ids: Any, *, now: datetime | None = None) -> dict[str, Any]:
+    def reorder_work_orders(self, ordered_ids: Any, *, station_code: str = "", now: datetime | None = None) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
         state = self.read_state()
         work_orders = _work_orders_state(state)
         sequence = _work_order_sequence(state)
         orders = _work_order_orders(state)
         requested = [str(value or "").strip() for value in (ordered_ids if isinstance(ordered_ids, list) else [])]
-        queued_current = [order_id for order_id in sequence if str(orders.get(order_id, {}).get("status") or "") == "queued"]
+        requested_station = _normalize_station_code(station_code)
+        queued_current = [
+            order_id
+            for order_id in sequence
+            if str(orders.get(order_id, {}).get("status") or "") == "queued"
+            and (not requested_station or _work_order_station_code(orders.get(order_id)) == requested_station)
+        ]
         queued_set = {order_id for order_id in queued_current}
         requested_set = {order_id for order_id in requested if order_id}
         if queued_set != requested_set:
@@ -4310,6 +4433,7 @@ class OeeRuntimeStateManager:
         operator_name: str = "",
         transition_reason: str = "",
         started_at: str = "",
+        station_code: str = "",
         now: datetime | None = None,
     ) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
@@ -4322,8 +4446,10 @@ class OeeRuntimeStateManager:
         order = orders.get(normalized_order_id)
         if not isinstance(order, dict):
             raise ValueError("WORK_ORDER_NOT_FOUND")
-        if str(work_orders.get("activeOrderId") or "").strip():
-            raise ValueError("ACTIVE_WORK_ORDER_EXISTS")
+
+        resolved_station_code = _assert_same_station(order, station_code)
+        _assert_station_can_start(work_orders, resolved_station_code, normalized_order_id)
+
         if str(order.get("status") or "") == "completed":
             raise ValueError("WORK_ORDER_ALREADY_COMPLETED")
 
@@ -4337,8 +4463,13 @@ class OeeRuntimeStateManager:
         )
         last_completed_order_id = str(work_orders.get("lastCompletedOrderId") or "").strip()
         last_completed_at = _parse_iso(str(work_orders.get("lastCompletedAt") or ""))
+        last_completed_order = orders.get(last_completed_order_id) if last_completed_order_id else None
+        same_station_last_completed = (
+            isinstance(last_completed_order, dict)
+            and _work_order_station_code(last_completed_order) == resolved_station_code
+        )
         cleaned_reason = str(transition_reason or "").strip()
-        if last_completed_order_id and last_completed_at is not None and tolerance_ms > 0:
+        if same_station_last_completed and last_completed_order_id and last_completed_at is not None and tolerance_ms > 0:
             elapsed_ms = max(0, int((start_dt - last_completed_at).total_seconds() * 1000))
             if elapsed_ms > tolerance_ms and not cleaned_reason:
                 raise WorkOrderTransitionReasonRequired(
@@ -4355,7 +4486,8 @@ class OeeRuntimeStateManager:
         order["startedBy"] = str(operator_code or "").strip() or "OPERATOR"
         order["startedByName"] = str(operator_name or "").strip()
         order["transitionReason"] = cleaned_reason
-        work_orders["activeOrderId"] = normalized_order_id
+        order["stationCode"] = resolved_station_code
+        _set_station_active_order_id(work_orders, resolved_station_code, normalized_order_id)
         inventory_used = _consume_inventory_for_order(state, order, now=start_dt)
         _persist_work_order_metrics(state, order, now=start_dt)
         work_orders["transitionLog"] = _prepend_capped(
@@ -4396,6 +4528,7 @@ class OeeRuntimeStateManager:
         operator_code: str = "",
         operator_name: str = "",
         device_id: str = "",
+        station_code: str = "PACKAGING_01",
         now: datetime | None = None,
     ) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
@@ -4414,6 +4547,8 @@ class OeeRuntimeStateManager:
             raise ValueError("PACKAGE_ORDER_REQUIRED")
         if str(order.get("status") or "") == "completed":
             raise ValueError("PACKAGE_ORDER_ALREADY_COMPLETED")
+        resolved_station_code = _assert_same_station(order, station_code or "PACKAGING_01")
+        _assert_station_can_start(work_orders, resolved_station_code, normalized_order_id)
 
         package_color = _package_order_match_color(order)
         if not package_color:
@@ -4468,8 +4603,8 @@ class OeeRuntimeStateManager:
             order["startedBy"] = str(operator_code or "").strip() or "KIOSK"
             order["startedByName"] = str(operator_name or "").strip()
             order["transitionReason"] = "package_flow"
-            if not str(work_orders.get("activeOrderId") or "").strip():
-                work_orders["activeOrderId"] = normalized_order_id
+        order["stationCode"] = resolved_station_code
+        _set_station_active_order_id(work_orders, resolved_station_code, normalized_order_id)
         _sync_work_order_row(order)
 
         session = {
@@ -4521,6 +4656,7 @@ class OeeRuntimeStateManager:
         operator_code: str = "",
         operator_name: str = "",
         device_id: str = "",
+        station_code: str = "",
         now: datetime | None = None,
     ) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
@@ -4546,6 +4682,7 @@ class OeeRuntimeStateManager:
             raise ValueError("PACKAGE_ORDER_REQUIRED")
         if str(order.get("status") or "") == "completed":
             raise ValueError("PACKAGE_ORDER_ALREADY_COMPLETED")
+        _assert_same_station(order, station_code or "PACKAGING_01")
 
         buffer = _packaging_buffer_state(state)
         buffer_items = buffer["itemsById"]
@@ -4700,7 +4837,7 @@ class OeeRuntimeStateManager:
         }
 
     @_state_locked
-    def accept_active_work_order(self, *, now: datetime | None = None) -> dict[str, Any]:
+    def accept_active_work_order(self, *, order_id: str = "", station_code: str = "", now: datetime | None = None) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
         if stamp.tzinfo is None:
             stamp = stamp.astimezone()
@@ -4708,16 +4845,29 @@ class OeeRuntimeStateManager:
         state = self.read_state()
         work_orders = _work_orders_state(state)
         orders = _work_order_orders(state)
-        active_order_id = str(work_orders.get("activeOrderId") or "").strip()
+
+        active_order_id = str(order_id or "").strip()
+        requested_station = _normalize_station_code(station_code)
+        if not active_order_id and requested_station:
+            active_order_id = _get_station_active_order_id(work_orders, requested_station)
+        if not active_order_id:
+            active_order_id = str(work_orders.get("activeOrderId") or "").strip()
+
         order = orders.get(active_order_id)
-        if not active_order_id or not isinstance(order, dict) or str(order.get("status") or "") != "pending_approval":
-            raise ValueError("WORK_ORDER_PENDING_APPROVAL_NOT_FOUND")
+        if not active_order_id or not isinstance(order, dict):
+            raise ValueError("WORK_ORDER_NOT_FOUND")
+
+        resolved_station_code = _assert_same_station(order, requested_station)
+
+        if str(order.get("status") or "") != "pending_approval":
+            raise ValueError("ACTIVE_WORK_ORDER_NOT_PENDING_APPROVAL")
 
         order["status"] = "completed"
         order["completedAt"] = accepted_text
         if not str(order.get("autoCompletedAt") or "").strip():
             order["autoCompletedAt"] = str(order.get("lastAllocationAt") or accepted_text)
-        work_orders["activeOrderId"] = ""
+
+        _clear_station_active_order_id(work_orders, resolved_station_code, active_order_id)
         work_orders["lastCompletedOrderId"] = active_order_id
         work_orders["lastCompletedAt"] = accepted_text
         metrics = _persist_work_order_metrics(state, order, now=stamp)
@@ -4749,7 +4899,7 @@ class OeeRuntimeStateManager:
         }
 
     @_state_locked
-    def rollback_active_work_order(self, *, now: datetime | None = None) -> dict[str, Any]:
+    def rollback_active_work_order(self, *, order_id: str = "", station_code: str = "", now: datetime | None = None) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
         if stamp.tzinfo is None:
             stamp = stamp.astimezone()
@@ -4757,10 +4907,16 @@ class OeeRuntimeStateManager:
         state = self.read_state()
         work_orders = _work_orders_state(state)
         orders = _work_order_orders(state)
-        active_order_id = str(work_orders.get("activeOrderId") or "").strip()
+        requested_station = _normalize_station_code(station_code)
+        active_order_id = str(order_id or "").strip()
+        if not active_order_id and requested_station:
+            active_order_id = _get_station_active_order_id(work_orders, requested_station)
+        if not active_order_id:
+            active_order_id = str(work_orders.get("activeOrderId") or "").strip()
         order = orders.get(active_order_id)
         if not active_order_id or not isinstance(order, dict) or str(order.get("status") or "") not in WORK_ORDER_BLOCKING_STATUSES:
             raise ValueError("ACTIVE_WORK_ORDER_NOT_FOUND")
+        resolved_station_code = _assert_same_station(order, requested_station)
 
         _sync_work_order_row(order)
         log_order = dict(order)
@@ -4845,7 +5001,7 @@ class OeeRuntimeStateManager:
         order["startedByName"] = ""
         order["transitionReason"] = ""
         order["lastAllocationAt"] = ""
-        work_orders["activeOrderId"] = ""
+        _clear_station_active_order_id(work_orders, resolved_station_code, active_order_id)
         _sync_work_order_row(order)
         _persist_work_order_metrics(state, order, now=stamp)
 
@@ -4924,6 +5080,7 @@ class OeeRuntimeStateManager:
         work_orders["ordersById"] = orders_by_id
         work_orders["orderSequence"] = order_sequence
         work_orders["activeOrderId"] = ""
+        work_orders["activeOrderByStation"] = {}
         work_orders["lastCompletedOrderId"] = ""
         work_orders["lastCompletedAt"] = ""
         work_orders["inventoryByProduct"] = {}
@@ -5352,7 +5509,10 @@ class OeeRuntimeStateManager:
                         order["status"] = "active"
                         order["autoCompletedAt"] = ""
                         order["completedAt"] = ""
-                        _work_orders_state(state)["activeOrderId"] = work_order_id
+                        active_work_orders = _work_orders_state(state)
+                        station_code = _work_order_station_code(order)
+                        order["stationCode"] = station_code
+                        _set_station_active_order_id(active_work_orders, station_code, work_order_id)
                         inventory_used = _consume_inventory_for_order(state, order, now=stamp, reason="quality_override_recovery")
                         if str(order.get("status") or "") == "pending_approval":
                             work_order_note = f" {work_order_id} yeniden otomatik tamamlandi ve operator onayi bekliyor."

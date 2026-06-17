@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from mes_web.config import AppConfig
@@ -137,6 +138,36 @@ class WorkOrderMirrorTests(unittest.TestCase):
         self.assertEqual(row["source_file"], "ferp_work_orders.json")
         self.assertEqual(row["metadata"]["runtime_order_key"], "WO-1")
         self.assertEqual(row["metadata"]["state_file"], "logs/oee_runtime_state.json")
+        self.assertEqual(row["metadata"]["station_code"], "PACKAGING_01")
+        self.assertEqual(row["metadata"]["queue_rank"], None)
+
+    def test_station_code_is_inferred_for_package_and_assembly_orders(self) -> None:
+        state = {
+            "workOrders": {
+                "orderSequence": ["WO-PKT-RED-001", "TEST-FERP-REWORK"],
+                "ordersById": {
+                    "WO-PKT-RED-001": {
+                        "orderId": "WO-PKT-RED-001",
+                        "status": "active",
+                        "stockCode": "PKG_RED_3",
+                        "quantity": 1,
+                    },
+                    "TEST-FERP-REWORK": {
+                        "orderId": "TEST-FERP-REWORK",
+                        "status": "active",
+                        "stockCode": "BOX-YEL",
+                        "quantity": 1,
+                    },
+                },
+            }
+        }
+
+        rows = {row["order_id"]: row for row in build_work_order_mirror_rows(state)}
+
+        self.assertEqual(rows["WO-PKT-RED-001"]["metadata"]["station_code"], "PACKAGING_01")
+        self.assertEqual(rows["TEST-FERP-REWORK"]["metadata"]["station_code"], "ASSEMBLY_01")
+        self.assertEqual(rows["WO-PKT-RED-001"]["metadata"]["queue_rank"], 0)
+        self.assertEqual(rows["TEST-FERP-REWORK"]["metadata"]["queue_rank"], 1)
 
     def test_upsert_sql_targets_only_work_orders(self) -> None:
         lowered = UPSERT_WORK_ORDER_SQL.lower()
@@ -189,6 +220,64 @@ class WorkOrderMirrorTests(unittest.TestCase):
         self.assertEqual(reset["requirements"][0]["quantity"], 3)
         self.assertEqual(reset["requirements"][0]["remainingQty"], 3)
         self.assertEqual(reset["requirements"][0]["completedQty"], 0)
+
+    def test_db_operational_reset_patches_station_metadata(self) -> None:
+        class Cursor:
+            def __init__(self) -> None:
+                self.params = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def execute(self, sql, params=None):
+                if str(sql).strip().lower().startswith("update"):
+                    self.params.append(params)
+
+            def fetchall(self):
+                return [
+                    ("WO-PKT-RED-001", {"orderId": "WO-PKT-RED-001", "stockCode": "PKG_RED_3", "quantity": 1}),
+                    ("TEST-FERP-REWORK", {"orderId": "TEST-FERP-REWORK", "stockCode": "BOX-YEL", "quantity": 1}),
+                ]
+
+        class Connection:
+            def __init__(self) -> None:
+                self.cursor_obj = Cursor()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def cursor(self):
+                return self.cursor_obj
+
+            def commit(self):
+                return None
+
+        connection = Connection()
+
+        with patch.object(work_order_mirror, "database_connection", return_value=connection), patch.object(
+            work_order_mirror,
+            "_jsonb",
+            side_effect=lambda value: value,
+        ):
+            result = work_order_mirror.reset_work_order_operational_state(AppConfig(db_enabled=True))
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(connection.cursor_obj.params[0]["metadata_patch"]["station_code"], "PACKAGING_01")
+        self.assertEqual(connection.cursor_obj.params[1]["metadata_patch"]["station_code"], "ASSEMBLY_01")
+
+    def test_consistency_script_reports_missing_active_station_metadata(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "tools" / "check_mes_db_consistency.ps1"
+        script = script_path.read_text(encoding="utf-8")
+
+        self.assertIn("active/pending missing metadata.station_code", script)
+        self.assertIn("COALESCE(NULLIF(metadata->>'station_code', ''), 'UNKNOWN')", script)
+        self.assertIn("Active/pending rows missing metadata.station_code", script)
 
 
 if __name__ == "__main__":

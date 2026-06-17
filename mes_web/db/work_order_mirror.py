@@ -102,6 +102,10 @@ def _nullable_text(value: Any) -> str | None:
     return text or None
 
 
+def _upper(value: Any) -> str:
+    return _text(value).upper()
+
+
 def _first_text(row: JsonObject, *names: str) -> str | None:
     for name in names:
         value = _nullable_text(row.get(name))
@@ -122,9 +126,37 @@ def _first_int(row: JsonObject, *names: str) -> int | None:
     return None
 
 
-def _station_code(row: JsonObject) -> str | None:
+def _is_package_order(order_id: str, row: JsonObject) -> bool:
+    if _upper(order_id).startswith("WO-PKT-"):
+        return True
+    marker = " ".join(
+        _upper(value)
+        for value in (
+            row.get("erpType"),
+            row.get("erp_type"),
+            row.get("ferpScreen"),
+            row.get("ferp_screen"),
+            row.get("stockCode"),
+            row.get("stock_code"),
+            row.get("stockName"),
+            row.get("stock_name"),
+            row.get("productCode"),
+            row.get("product_code"),
+        )
+    )
+    return "PAKET" in marker or "PACKAGE" in marker or "PKG_" in marker or "PKT-" in marker
+
+
+def _station_code(row: JsonObject, order_id: str = "") -> str:
     metadata = row.get("_metadata") if isinstance(row.get("_metadata"), dict) else {}
-    return _first_text(row, "stationCode", "station_code") or _nullable_text(metadata.get("station_code"))
+    explicit = _first_text(row, "stationCode", "station_code") or _nullable_text(metadata.get("station_code"))
+    if explicit:
+        return explicit.upper()
+    if _is_package_order(order_id, row):
+        return "PACKAGING_01"
+    if order_id or row:
+        return "ASSEMBLY_01"
+    return "UNKNOWN"
 
 
 def _timestamp_or_none(value: Any) -> str | None:
@@ -162,7 +194,7 @@ def build_work_order_mirror_rows(state: JsonObject, *, state_file: Path | str | 
             "state_file": str(state_file or ""),
             "source_folder": _nullable_text(source.get("folder")) if isinstance(source, dict) else None,
             "source_loaded_at": _nullable_text(source.get("loadedAt")) if isinstance(source, dict) else None,
-            "station_code": _station_code(raw_order),
+            "station_code": _station_code(raw_order, order_id),
             "queue_rank": queue_rank_by_id.get(order_id),
             "completed_quantity": _first_int(raw_order, "completedQty", "completed_quantity"),
             "remaining_quantity": _first_int(raw_order, "remainingQty", "remaining_quantity"),
@@ -296,6 +328,7 @@ def reset_work_order_operational_state(
                             started_at = NULL,
                             completed_at = NULL,
                             payload = %(payload)s,
+                            metadata = metadata || %(metadata_patch)s,
                             updated_at = now()
                         WHERE order_id = %(order_id)s
                         """,
@@ -304,6 +337,7 @@ def reset_work_order_operational_state(
                             "product_code": product_code,
                             "target_quantity": target_quantity,
                             "payload": _jsonb(_reset_payload_operational_fields(planned_payload)),
+                            "metadata_patch": _jsonb({"station_code": _station_code(planned_payload if isinstance(planned_payload, dict) else {}, order_key)}),
                         },
                     )
             commit = getattr(connection, "commit", None)

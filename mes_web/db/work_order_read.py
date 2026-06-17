@@ -88,6 +88,10 @@ def _nullable_text(value: Any) -> str | None:
     return text or None
 
 
+def _upper(value: Any) -> str:
+    return _text(value).upper()
+
+
 def _first_text(row: JsonObject, *names: str) -> str | None:
     for name in names:
         value = _nullable_text(row.get(name))
@@ -126,6 +130,39 @@ def _payload_dict(value: Any) -> JsonObject:
     return copy.deepcopy(value) if isinstance(value, dict) else {}
 
 
+def _is_package_order(order_id: str, order: JsonObject) -> bool:
+    if _upper(order_id).startswith("WO-PKT-"):
+        return True
+    marker = " ".join(
+        _upper(value)
+        for value in (
+            order.get("erpType"),
+            order.get("erp_type"),
+            order.get("ferpScreen"),
+            order.get("ferp_screen"),
+            order.get("stockCode"),
+            order.get("stock_code"),
+            order.get("stockName"),
+            order.get("stock_name"),
+            order.get("productCode"),
+            order.get("product_code"),
+        )
+    )
+    return "PAKET" in marker or "PACKAGE" in marker or "PKG_" in marker or "PKT-" in marker
+
+
+def _station_code(order_id: str, order: JsonObject, metadata: JsonObject) -> str:
+    explicit = (
+        _first_text(order, "stationCode", "station_code")
+        or _nullable_text(metadata.get("station_code"))
+    )
+    if explicit:
+        return explicit.upper()
+    if _is_package_order(order_id, order):
+        return "PACKAGING_01"
+    return "ASSEMBLY_01" if order_id else "UNKNOWN"
+
+
 def _order_from_db_row(row: JsonObject) -> tuple[str, JsonObject] | None:
     payload = _payload_dict(row.get("payload"))
     order = copy.deepcopy(payload)
@@ -162,6 +199,14 @@ def _order_from_db_row(row: JsonObject) -> tuple[str, JsonObject] | None:
         order.setdefault("completedAt", completed_at)
 
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    station_code = _station_code(order_id, order, metadata)
+    if station_code:
+        if not _text(order.get("stationCode")):
+            order["stationCode"] = station_code
+        order.setdefault("_metadata", {})
+        if isinstance(order.get("_metadata"), dict):
+            if not _text(order["_metadata"].get("station_code")):
+                order["_metadata"]["station_code"] = station_code
     source_file = _nullable_text(row.get("source_file"))
     source_system = _nullable_text(row.get("source_system"))
     external_ref = _nullable_text(row.get("external_ref"))

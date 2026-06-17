@@ -66,6 +66,18 @@ function Check-Zero {
     }
 }
 
+function Write-PsqlRows {
+    param([string]$Title, [string]$Query)
+    Write-Host ""
+    Write-Host $Title -ForegroundColor White
+    $rows = docker exec $PostgresContainer psql -U $DbUser -d $DbName -c $Query 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host ($rows | Out-String)
+    } else {
+        Write-Check -Name $Title -Status "FAIL" -Detail ($rows | Out-String).Trim()
+    }
+}
+
 Write-Host ""
 Write-Host "MES SQL MVP - DB Consistency Check" -ForegroundColor Cyan
 Write-Host (Get-Date -Format "yyyy-MM-dd HH:mm:ss") -ForegroundColor DarkGray
@@ -79,9 +91,22 @@ Check-Zero `
     -Name "eligible WIP missing source_work_order_id" `
     -Query "SELECT count(*) FROM mes.package_component_wip WHERE status = 'available' AND quality_status = 'GOOD' AND COALESCE(btrim(source_work_order_id), '') = '';"
 
+$missingStationQuery = "SELECT count(*) FROM mes.work_orders WHERE status IN ('active', 'pending_approval') AND COALESCE(btrim(metadata->>'station_code'), '') = '';"
+$missingStation = Invoke-PsqlScalar $missingStationQuery
+if ($null -eq $missingStation -or $missingStation -eq "") {
+    Write-Check -Name "active/pending missing metadata.station_code" -Status "FAIL" -Detail "query failed"
+} elseif ([int]$missingStation -eq 0) {
+    Write-Check -Name "active/pending missing metadata.station_code" -Status "PASS" -Detail "0"
+} else {
+    Write-Check -Name "active/pending missing metadata.station_code" -Status "FAIL" -Detail $missingStation
+    Write-PsqlRows `
+        -Title "Active/pending rows missing metadata.station_code" `
+        -Query "SELECT order_id, status, payload->>'stationCode' AS payload_station_code, metadata->>'station_code' AS metadata_station_code, updated_at FROM mes.work_orders WHERE status IN ('active', 'pending_approval') AND COALESCE(btrim(metadata->>'station_code'), '') = '' ORDER BY updated_at DESC;"
+}
+
 Check-Zero `
     -Name "station active/pending conflicts" `
-    -Query "SELECT count(*) FROM (SELECT COALESCE(payload->>'stationCode', payload->>'station_code', metadata->>'station_code', 'UNKNOWN') AS station_code FROM mes.work_orders WHERE status IN ('active', 'pending_approval') GROUP BY 1 HAVING count(*) > 1) d;"
+    -Query "SELECT count(*) FROM (SELECT COALESCE(NULLIF(metadata->>'station_code', ''), 'UNKNOWN') AS station_code FROM mes.work_orders WHERE status IN ('active', 'pending_approval') GROUP BY 1 HAVING count(*) > 1) d;"
 
 Check-Zero `
     -Name "consumed WIP missing consumed_by_package_id" `

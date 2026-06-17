@@ -91,7 +91,7 @@ class WorkOrderReadTests(unittest.TestCase):
                 "order_id": "WO-DB-1",
                 "erp_type": "FERP",
                 "status": "active",
-                "product_code": "PKT-RED",
+                "product_code": "STK-RED",
                 "target_quantity": 3,
                 "started_at": "2026-06-16T09:05:00+00:00",
                 "completed_at": None,
@@ -132,7 +132,57 @@ class WorkOrderReadTests(unittest.TestCase):
         self.assertEqual(order["status"], "active")
         self.assertEqual(order["quantity"], 3)
         self.assertEqual(order["stockCode"], "STK-RED")
+        self.assertEqual(order["stationCode"], "ASSEMBLY_01")
+        self.assertEqual(order["_metadata"]["station_code"], "ASSEMBLY_01")
         self.assertEqual(work_orders["packagingBuffer"], {"itemsById": {"42": {"item_id": "42"}}})
+
+    def test_db_read_infers_station_code_when_metadata_is_missing(self) -> None:
+        rows = [
+            {
+                "order_id": "WO-PKT-RED-001",
+                "erp_type": "FERP",
+                "status": "active",
+                "product_code": "PKG_RED_3",
+                "target_quantity": 1,
+                "started_at": "2026-06-16T09:05:00+00:00",
+                "completed_at": None,
+                "source_system": "mes_web",
+                "source_file": "ferp_work_orders.json",
+                "external_ref": "WO-PKT-RED-001",
+                "payload": {"orderId": "WO-PKT-RED-001", "status": "active", "stockCode": "PKG_RED_3"},
+                "metadata": {},
+                "created_at": "2026-06-16T09:04:00+00:00",
+                "updated_at": "2026-06-16T09:05:00+00:00",
+            },
+            {
+                "order_id": "TEST-FERP-REWORK",
+                "erp_type": "FERP",
+                "status": "queued",
+                "product_code": "BOX-YEL",
+                "target_quantity": 1,
+                "started_at": None,
+                "completed_at": None,
+                "source_system": "mes_web",
+                "source_file": "ferp_work_orders.json",
+                "external_ref": "TEST-FERP-REWORK",
+                "payload": {"orderId": "TEST-FERP-REWORK", "status": "queued", "stockCode": "BOX-YEL"},
+                "metadata": {},
+                "created_at": "2026-06-16T09:04:00+00:00",
+                "updated_at": "2026-06-16T09:05:00+00:00",
+            },
+        ]
+        connection = _Connection(rows)
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(work_order_read, "database_connection", fake_connection):
+            result = state_with_db_work_orders(AppConfig(db_enabled=True, db_read_work_orders=True), _fallback_state())
+
+        orders = result.state["workOrders"]["ordersById"]
+        self.assertEqual(orders["WO-PKT-RED-001"]["stationCode"], "PACKAGING_01")
+        self.assertEqual(orders["TEST-FERP-REWORK"]["stationCode"], "ASSEMBLY_01")
 
     def test_db_read_empty_result_falls_back_to_runtime_state(self) -> None:
         connection = _Connection([])

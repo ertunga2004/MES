@@ -119,6 +119,23 @@ def _package_process_state(event_type: str) -> dict:
     return state
 
 
+def _state_without_explicit_station(order_id: str, stock_code: str, status: str = "active") -> dict:
+    state = _state(status)
+    work_orders = state["workOrders"]
+    work_orders["activeOrderId"] = order_id if status in {"active", "pending_approval"} else ""
+    work_orders["orderSequence"] = [order_id]
+    base = work_orders["ordersById"].pop("WO-1")
+    base["orderId"] = order_id
+    base["stockCode"] = stock_code
+    base["productCode"] = stock_code
+    base.pop("stationCode", None)
+    work_orders["ordersById"] = {order_id: base}
+    for log_name in ("transitionLog", "completionLog"):
+        for row in work_orders.get(log_name) or []:
+            row["orderId"] = order_id
+    return state
+
+
 class WorkOrderTransitionWriterTests(unittest.TestCase):
     def test_read_flag_does_not_trigger_transition_writer(self) -> None:
         with patch.object(
@@ -229,8 +246,55 @@ class WorkOrderTransitionWriterTests(unittest.TestCase):
         self.assertEqual(result.reason, "written")
         self.assertEqual(captured["current_rows"][0]["status"], "completed")
         self.assertEqual(captured["current_rows"][0]["completed_at"], "2026-06-16T09:10:00+00:00")
+        self.assertEqual(captured["current_rows"][0]["metadata"]["station_code"], "PACKAGING_01")
         self.assertEqual(captured["event_rows"][0].event_type, "completed")
         self.assertFalse(captured["replace_current"])
+
+    def test_package_started_infers_packaging_station_for_wo_pkt_order(self) -> None:
+        state = _state_without_explicit_station("WO-PKT-RED-001", "PKG_RED_3", "active")
+        state["workOrders"]["transitionLog"].insert(
+            0,
+            {
+                "eventType": "package_started",
+                "time": "2026-06-16T09:02:00+00:00",
+                "orderId": "WO-PKT-RED-001",
+                "sessionId": "SESSION-1",
+                "packageProcessStartedAt": "2026-06-16T09:02:00+00:00",
+            },
+        )
+        captured = {}
+
+        def fake_execute(_config, current_rows, event_rows, *, replace_current):
+            captured["current_rows"] = current_rows
+            captured["event_rows"] = event_rows
+            return {"current_row_count": len(current_rows), "event_row_count": len(event_rows), "deleted_current_rows": 0}
+
+        with patch.object(work_order_transition_writer, "_execute_transition_write", side_effect=fake_execute):
+            mirror_work_order_transition_from_state(
+                AppConfig(db_enabled=True, db_hook_work_order_transitions=True),
+                state,
+                event_type="package_started",
+            )
+
+        self.assertEqual(captured["current_rows"][0]["metadata"]["station_code"], "PACKAGING_01")
+        self.assertEqual(captured["event_rows"][0].event_type, "package_started")
+
+    def test_started_infers_assembly_station_for_test_ferp_order(self) -> None:
+        state = _state_without_explicit_station("TEST-FERP-REWORK", "BOX-YEL", "active")
+        captured = {}
+
+        def fake_execute(_config, current_rows, event_rows, *, replace_current):
+            captured["current_rows"] = current_rows
+            return {"current_row_count": len(current_rows), "event_row_count": len(event_rows), "deleted_current_rows": 0}
+
+        with patch.object(work_order_transition_writer, "_execute_transition_write", side_effect=fake_execute):
+            mirror_work_order_transition_from_state(
+                AppConfig(db_enabled=True, db_hook_work_order_transitions=True),
+                state,
+                event_type="started",
+            )
+
+        self.assertEqual(captured["current_rows"][0]["metadata"]["station_code"], "ASSEMBLY_01")
 
     def test_rollback_writes_queued_current_state(self) -> None:
         captured = {}

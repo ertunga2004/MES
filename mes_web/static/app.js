@@ -497,6 +497,17 @@ function setWorkOrderFeedback(message, tone = "neutral") {
   els.workOrderFeedback.dataset.tone = tone;
 }
 
+function apiErrorMessage(payload, status) {
+  const detail = payload && typeof payload === "object" ? payload.detail : null;
+  if (detail && typeof detail === "object") return detail.message || detail.code || `HTTP ${status}`;
+  return detail || `HTTP ${status}`;
+}
+
+function mesqlWorkOrderBlocked() {
+  const mesql = (((state.snapshot || {}).integrations || {}).mesql) || {};
+  return Boolean(mesql.enabled) && String(mesql.status || "") !== "ok";
+}
+
 function syncInputValue(input, value) {
   if (document.activeElement === input) return;
   input.value = value === null || value === undefined || value === "" ? "" : String(value);
@@ -1295,7 +1306,7 @@ function stationOrderActions(order, stationCode, slot) {
   if (slot === "pending") {
     return `
       <div class="station-order-actions">
-        <button class="oee-choice-button" type="button" data-station-work-order-accept="${orderId}" data-station-code="${stationCode}" ${state.workOrderBusy ? "disabled" : ""}>Onayla</button>
+        <button class="oee-choice-button" type="button" data-station-work-order-accept="${orderId}" data-station-code="${stationCode}" ${state.workOrderBusy || mesqlWorkOrderBlocked() ? "disabled" : ""}>Onayla</button>
         <button class="oee-danger-button" type="button" data-station-work-order-cancel="${orderId}" data-station-code="${stationCode}" ${state.workOrderBusy ? "disabled" : ""}>Iptal</button>
       </div>
     `;
@@ -1355,7 +1366,7 @@ function renderStationQueue(stationCode, queue) {
         </div>
       </div>
       <div class="station-queue-actions">
-        <button class="oee-choice-button" type="button" data-station-work-order-start="${order.order_id}" data-station-code="${stationCode}" ${state.workOrderBusy ? "disabled" : ""}>Baslat</button>
+        <button class="oee-choice-button" type="button" data-station-work-order-start="${order.order_id}" data-station-code="${stationCode}" ${state.workOrderBusy || mesqlWorkOrderBlocked() ? "disabled" : ""}>Baslat</button>
         <button class="oee-choice-button" type="button" data-station-work-order-move="${order.order_id}" data-station-code="${stationCode}" data-direction="up" ${state.workOrderBusy || index === 0 ? "disabled" : ""}>Yukari</button>
         <button class="oee-choice-button" type="button" data-station-work-order-move="${order.order_id}" data-station-code="${stationCode}" data-direction="down" ${state.workOrderBusy || index === rows.length - 1 ? "disabled" : ""}>Asagi</button>
         <button class="oee-danger-button" type="button" data-station-work-order-cancel="${order.order_id}" data-station-code="${stationCode}" ${state.workOrderBusy ? "disabled" : ""}>Iptal</button>
@@ -1421,6 +1432,10 @@ function renderWorkOrders(snapshot) {
   const resetArmed = Boolean(state.workOrderDrafts.pendingReset);
 
   renderStationWorkOrderBoard(snapshot);
+  const mesql = ((snapshot.integrations || {}).mesql) || {};
+  if (mesql.enabled && String(mesql.status || "") !== "ok") {
+    setWorkOrderFeedback(`MESQL kullanilamiyor: ${mesql.lastError || mesql.status || "baglanti yok"}`, "error");
+  }
 
   syncInputValue(els.workOrderTolerance, effectiveWorkOrderToleranceValue(controls.tolerance_minutes));
   els.workOrderTolerance.disabled = state.workOrderBusy;
@@ -1478,7 +1493,7 @@ function renderWorkOrders(snapshot) {
             class="oee-primary-button"
             type="button"
             data-work-order-accept="${activeOrder.order_id}"
-            ${state.workOrderBusy || controls.can_accept === false ? "disabled" : ""}
+            ${state.workOrderBusy || controls.can_accept === false || mesqlWorkOrderBlocked() ? "disabled" : ""}
           >Operator Onayi Ver</button>
           ` : ""}
           <button
@@ -1627,7 +1642,7 @@ function renderWorkOrders(snapshot) {
           <div class="work-order-row-actions">
             <button class="oee-choice-button" type="button" data-work-order-move="${order.order_id}" data-direction="up" ${state.workOrderBusy || index === 0 ? "disabled" : ""}>Yukari</button>
             <button class="oee-choice-button" type="button" data-work-order-move="${order.order_id}" data-direction="down" ${state.workOrderBusy || index === queue.length - 1 ? "disabled" : ""}>Asagi</button>
-            <button class="oee-primary-button" type="button" data-work-order-start="${order.order_id}" ${state.workOrderBusy || !controls.can_start ? "disabled" : ""}>Baslat</button>
+            <button class="oee-primary-button" type="button" data-work-order-start="${order.order_id}" ${state.workOrderBusy || !controls.can_start || mesqlWorkOrderBlocked() ? "disabled" : ""}>Baslat</button>
           </div>
         </article>
       `)
@@ -1804,7 +1819,7 @@ async function sendCommand(kind, value) {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload.detail || `HTTP ${response.status}`);
+      throw new Error(apiErrorMessage(payload, response.status));
     }
     setFeedback(`Komut gonderildi: ${value}`, "success");
   } catch (error) {
@@ -1826,7 +1841,7 @@ async function sendOeeControl(action, value = null, options = {}) {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload.detail || `HTTP ${response.status}`);
+      throw new Error(apiErrorMessage(payload, `HTTP ${response.status}`));
     }
     setOeeFeedback(payload.summary || `OEE aksiyonu gonderildi: ${action}`, "success");
   } catch (error) {
@@ -1854,7 +1869,7 @@ async function sendQualityOverride(itemId, classification, options = {}) {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload.detail || `HTTP ${response.status}`);
+      throw new Error(apiErrorMessage(payload, `HTTP ${response.status}`));
     }
     setOeeFeedback(payload.summary || `Kalite guncellendi: ${itemId}`, "success");
   } catch (error) {
@@ -2021,7 +2036,7 @@ async function sendStationWorkOrderStart(stationCode, orderId, transitionReason 
         }
         throw new Error("Sebep girilmedi.");
       }
-      throw new Error(payload.detail || `HTTP ${response.status}`);
+      throw new Error(apiErrorMessage(payload, `HTTP ${response.status}`));
     }
     setWorkOrderFeedback(payload.summary || `${orderId} baslatildi.`, "success");
     const snapshot = await fetchDashboard();
@@ -2054,7 +2069,7 @@ async function sendStationWorkOrderFinish(stationCode, orderId) {
       }),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(apiErrorMessage(payload, response.status));
     setWorkOrderFeedback(payload.summary || `${orderId} bitirildi.`, "success");
     const snapshot = await fetchDashboard();
     state.snapshot = snapshot;
@@ -2142,7 +2157,7 @@ async function sendStationWorkOrderAccept(stationCode, orderId) {
       body: JSON.stringify({ station_code: stationCode, order_id: orderId }),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(apiErrorMessage(payload, response.status));
     setWorkOrderFeedback(payload.summary || `${orderId} onaylandi.`, "success");
     const snapshot = await fetchDashboard();
     state.snapshot = snapshot;
@@ -2218,7 +2233,7 @@ async function sendWorkOrderStart(orderId, transitionReason = "") {
         renderWorkOrderReasonPanel();
         throw new Error("Gecis toleransi asildi. Neden girilmesi gerekiyor.");
       }
-      throw new Error(payload.detail || `HTTP ${response.status}`);
+      throw new Error(apiErrorMessage(payload, response.status));
     }
     state.workOrderDrafts.pendingStart = null;
     state.workOrderDrafts.pendingReason = "";
@@ -2247,7 +2262,7 @@ async function sendWorkOrderAccept(orderId) {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload.detail || `HTTP ${response.status}`);
+      throw new Error(apiErrorMessage(payload, `HTTP ${response.status}`));
     }
     setWorkOrderFeedback(payload.summary || `${orderId} operator onayi ile kapatildi.`, "success");
   } catch (error) {

@@ -1,4 +1,6 @@
 from __future__ import annotations
+import asyncio
+import contextlib
 import copy
 import logging
 from datetime import datetime, timezone
@@ -24,11 +26,14 @@ from .db.package_sessions import (
     upsert_package_session_finished,
     upsert_package_session_started,
 )
+from .db.health import check_database_health
+from .db.mesql_queue import upsert_mesql_queue
 from .db.work_order_mirror import load_work_order_planning_snapshot, mirror_work_orders_from_state, reset_work_order_operational_state
 from .db.work_order_read import state_with_db_work_orders
 from .db.work_order_transition_writer import mirror_work_order_transition_from_state
 from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
 from .masterdata import load_kiosk_masterdata
+from .mesql_client import MesqlClient, MesqlConflictError, MesqlError, MesqlUnavailableError, queue_plans
 from .oee_state import WorkOrderTransitionReasonRequired, build_work_order_snapshot
 from .parsers import normalize_color
 from .runtime import RuntimeService, SnapshotHub
@@ -458,6 +463,8 @@ def _build_station_work_order_board(module_id: str) -> dict[str, Any]:
 def _build_dashboard_snapshot(module_id: str) -> dict[str, Any]:
     snapshot = copy.deepcopy(store.get_dashboard_snapshot(module_id))
     snapshot["station_work_orders"] = _build_station_work_order_board(module_id)
+    state = oee_state_manager.read_state()
+    snapshot["integrations"] = copy.deepcopy(state.get("integrations") if isinstance(state.get("integrations"), dict) else {})
     return snapshot
 
 
@@ -726,6 +733,7 @@ def _build_kiosk_snapshot(module_id: str, device_id: str, station_code: str = ""
         "packaging": packaging_state,
         "recent_items": recent_items,
         "quality_options": ["GOOD", "REWORK", "SCRAP"],
+        "integrations": copy.deepcopy(state.get("integrations") if isinstance(state.get("integrations"), dict) else {}),
         "operational_state": operational_state,
         "active_fault": copy.deepcopy(state.get("activeFault")),
         "help_request": copy.deepcopy(active_help_request),
@@ -971,6 +979,8 @@ def create_app() -> FastAPI:
     app = FastAPI(title="MES Web", version="0.1.0")
     static_dir = Path(config.static_dir)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    mesql_client = MesqlClient(config.mesql_api_base_url, timeout_sec=config.mesql_timeout_sec)
+    mesql_refresh_task: asyncio.Task[None] | None = None
 
     def sync_work_order_runtime(
         state: dict[str, Any] | None = None,
@@ -979,7 +989,7 @@ def create_app() -> FastAPI:
         actor_id: str = "",
         replace_current: bool = False,
         mirror_current: bool = True,
-    ) -> None:
+    ) -> Any:
         runtime_state = state if isinstance(state, dict) else oee_state_manager.read_state()
         runtime_service.excel_sink.record_work_order_state(runtime_state, utc_now_text())
         try:
@@ -1004,6 +1014,7 @@ def create_app() -> FastAPI:
                 if mirror_result.status == "error":
                     logger.warning("Work order DB mirror failed: %s", mirror_result.message)
         store.refresh_oee_runtime_state(config.module_id, force=True)
+        return transition_result
 
     def _ferp_export_acceptance_result(result: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -1130,22 +1141,353 @@ def create_app() -> FastAPI:
         event_type: str = "runtime_sync",
         actor_id: str = "",
         replace_current: bool = False,
-    ) -> None:
+    ) -> Any:
         store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(state, event_type=event_type, actor_id=actor_id, replace_current=replace_current)
+        return sync_work_order_runtime(state, event_type=event_type, actor_id=actor_id, replace_current=replace_current)
+
+    def _mesql_detail(code: str, message: str, **extra: Any) -> dict[str, Any]:
+        return {"code": code, "message": message, **extra}
+
+    def _reject_mesql_unsupported(action: str) -> None:
+        if config.mesql_enabled:
+            raise HTTPException(
+                status_code=409,
+                detail=_mesql_detail(
+                    "MESQL_ACTION_UNSUPPORTED",
+                    f"{action} islemi Faz 1 MESQL kontratinda desteklenmiyor.",
+                ),
+            )
+
+    def _raise_mesql_error(exc: MesqlError) -> None:
+        status_code = 503 if isinstance(exc, MesqlUnavailableError) else (exc.status_code or 502)
+        raise HTTPException(
+            status_code=status_code,
+            detail=_mesql_detail(exc.code, exc.message, remote_detail=exc.detail),
+        ) from exc
+
+    def _require_mesql_local_db() -> None:
+        if not config.db_enabled or not config.db_hook_work_order_transitions:
+            raise HTTPException(
+                status_code=503,
+                detail=_mesql_detail(
+                    "MES_LOCAL_DB_NOT_READY",
+                    "MESQL islemi icin kalici MES DB ve work-order transition hook acik olmalidir.",
+                ),
+            )
+        health = check_database_health(config)
+        if str(health.get("status") or "") != "ok":
+            raise HTTPException(
+                status_code=503,
+                detail=_mesql_detail("MES_LOCAL_DB_UNAVAILABLE", "Kalici MES veritabanina ulasilamiyor."),
+            )
+
+    async def _sync_mesql_queue(station_code: str, *, include_done: bool = False, required: bool = False) -> list[Any]:
+        if not config.mesql_enabled:
+            return []
+        normalized_station = str(station_code or "").strip().upper()
+        if not normalized_station:
+            if required:
+                raise HTTPException(status_code=400, detail="WORK_ORDER_STATION_REQUIRED")
+            return []
+        try:
+            payload = await mesql_client.get_station_queue(normalized_station, include_done=include_done)
+            plans = queue_plans(payload, station_code=normalized_station)
+        except MesqlError as exc:
+            with contextlib.suppress(OSError):
+                oee_state_manager.set_mesql_status("unavailable", error=exc.message)
+            if required:
+                _raise_mesql_error(exc)
+            return []
+        write_result = upsert_mesql_queue(config, plans)
+        if not write_result.success:
+            error_suffix = f" ({write_result.error_type})" if write_result.error_type else ""
+            message = f"MESQL queue yerel DB'ye yazilamadi: {write_result.reason}{error_suffix}"
+            with contextlib.suppress(OSError):
+                oee_state_manager.set_mesql_status("unavailable", error=message)
+            if required:
+                raise HTTPException(
+                    status_code=503,
+                    detail=_mesql_detail(
+                        "MES_LOCAL_DB_QUEUE_WRITE_FAILED",
+                        message,
+                        db_error_type=write_result.error_type,
+                        db_error_message=write_result.error_message,
+                    ),
+                )
+            return []
+        try:
+            oee_state_manager.merge_mesql_queue_plans(plans)
+        except OSError as exc:
+            if required:
+                raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+            return []
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        return plans
+
+    async def _mesql_refresh_loop() -> None:
+        while True:
+            for station_code in config.mesql_station_codes:
+                await _sync_mesql_queue(station_code)
+            await asyncio.sleep(max(1.0, config.mesql_queue_refresh_sec))
+
+    def _queue_plan_for_order(plans: list[Any], order_id: str, station_code: str) -> Any | None:
+        normalized_order = str(order_id or "").strip()
+        normalized_station = str(station_code or "").strip().upper()
+        return next(
+            (
+                plan
+                for plan in plans
+                if plan.order_id == normalized_order and plan.station_code == normalized_station
+            ),
+            None,
+        )
+
+    def _local_work_order_context(order_id: str, station_code: str) -> tuple[str, str]:
+        normalized_order = str(order_id or "").strip()
+        normalized_station = str(station_code or "").strip().upper()
+        state = oee_state_manager.read_state()
+        work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
+        if not normalized_order:
+            normalized_order = str(work_orders.get("activeOrderId") or "").strip()
+        orders_by_id = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+        order = orders_by_id.get(normalized_order) if isinstance(orders_by_id.get(normalized_order), dict) else {}
+        if not normalized_station:
+            metadata = order.get("_metadata") if isinstance(order.get("_metadata"), dict) else {}
+            mesql_metadata = order.get("_mesql") if isinstance(order.get("_mesql"), dict) else {}
+            normalized_station = str(
+                order.get("stationCode")
+                or order.get("workStationCode")
+                or metadata.get("station_code")
+                or mesql_metadata.get("station_code")
+                or ""
+            ).strip().upper()
+        return normalized_order, normalized_station
+
+    def _operation_no(order: dict[str, Any], plan: Any | None = None) -> int:
+        raw = getattr(plan, "operation_no", None) if plan is not None else None
+        if raw in (None, ""):
+            raw = order.get("operationNo")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 0
+        if value <= 0:
+            raise HTTPException(status_code=400, detail=_mesql_detail("MESQL_OPERATION_NO_REQUIRED", "MESQL operation_no bulunamadi."))
+        return value
+
+    def _mark_reconciliation(action: str, *, order_id: str, operation_no: int, station_code: str, remote: dict[str, Any], error: BaseException) -> None:
+        action_key = f"{action}:{order_id}:{operation_no}"
+        payload = {
+            "action": action,
+            "order_id": order_id,
+            "operation_no": operation_no,
+            "station_code": station_code,
+            "recorded_at": utc_now_text(),
+            "remote": copy.deepcopy(remote),
+            "local_error": f"{type(error).__name__}: {error}",
+        }
+        logger.error("MESQL reconciliation required: %s", payload)
+        with contextlib.suppress(OSError):
+            oee_state_manager.mark_mesql_reconciliation_required(action_key, payload)
+
+    def _pending_reconciliation(action: str, order_id: str, station_code: str) -> tuple[str, dict[str, Any]] | None:
+        state = oee_state_manager.read_state()
+        mesql = ((state.get("integrations") or {}).get("mesql") if isinstance(state.get("integrations"), dict) else {}) or {}
+        rows = mesql.get("reconciliationRequired") if isinstance(mesql.get("reconciliationRequired"), dict) else {}
+        for action_key, raw in rows.items():
+            if not isinstance(raw, dict):
+                continue
+            if str(raw.get("action") or "") != action or str(raw.get("order_id") or "") != order_id:
+                continue
+            record_station = str(raw.get("station_code") or "").strip().upper()
+            if station_code and record_station and record_station != station_code:
+                continue
+            return str(action_key), raw
+        return None
+
+    def _reconcile_local_transition(
+        action: str,
+        *,
+        action_key: str,
+        order_id: str,
+        station_code: str,
+        plan: Any,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        state = oee_state_manager.read_state()
+        work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
+        orders = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+        order = orders.get(order_id) if isinstance(orders.get(order_id), dict) else {}
+        local_status = str(order.get("status") or "").lower()
+        remote_status = {
+            str(getattr(plan, "remote_order_status", "") or "").lower(),
+            str(getattr(plan, "remote_queue_status", "") or "").lower(),
+        }
+        if action == "start":
+            confirmed = local_status == "active" and bool(remote_status & {"started", "in_progress", "active"})
+            event_type = "started"
+        else:
+            confirmed = local_status == "completed" and bool(remote_status & {"completed", "done"})
+            event_type = "completed"
+            snapshot = build_work_order_snapshot(state, order)
+            remote_good = getattr(plan, "remote_good_quantity", None)
+            remote_scrap = getattr(plan, "remote_scrap_quantity", None)
+            confirmed = confirmed and remote_good is not None and remote_scrap is not None
+            if confirmed and (
+                abs(float(remote_good) - float(snapshot.get("goodQty") or 0)) > 1e-9
+                or abs(float(remote_scrap) - float(snapshot.get("scrapQty") or 0)) > 1e-9
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=_mesql_detail(
+                        "MESQL_COMPLETION_QUANTITY_MISMATCH",
+                        "MESQL tamamlanma miktarlari yerel GOOD/SCRAP degerleriyle eslesmiyor.",
+                    ),
+                )
+        if not confirmed:
+            raise HTTPException(
+                status_code=409,
+                detail=_mesql_detail(
+                    "MESQL_RECONCILIATION_NOT_CONFIRMED",
+                    "Merkezi MESQL durumu yerel reconciliation icin dogrulanamadi.",
+                ),
+            )
+        transition_result = sync_work_order_runtime(state, event_type=event_type, actor_id=actor_id)
+        try:
+            _ensure_local_transition_written(transition_result)
+        except RuntimeError as exc:
+            _mark_reconciliation(action, order_id=order_id, operation_no=_operation_no(order, plan), station_code=station_code, remote={"status": next(iter(remote_status), "")}, error=exc)
+            raise HTTPException(
+                status_code=500,
+                detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "Yerel DB reconciliation tekrar basarisiz oldu."),
+            ) from exc
+        oee_state_manager.clear_mesql_reconciliation_required(action_key)
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        return {
+            "status": "accepted",
+            "summary": f"{order_id} yerel MES DB ile uzlastirildi.",
+            "order_id": order_id,
+            "reconciled": True,
+        }
+
+    def _ensure_local_transition_written(result: Any) -> None:
+        if result is None or not bool(getattr(result, "success", False)):
+            reason = str(getattr(result, "reason", "missing_result"))
+            raise RuntimeError(f"LOCAL_DB_TRANSITION_FAILED:{reason}")
+
+    def _remote_status_tokens(value: Any) -> set[str]:
+        if isinstance(value, dict):
+            values = [value.get("status"), value.get("message"), value.get("code")]
+        else:
+            values = [value]
+        return {str(item or "").strip().lower() for item in values if str(item or "").strip()}
+
+    async def _call_mesql_start(
+        self_order_id: str,
+        *,
+        operation_no: int,
+        operator_id: str,
+        station_code: str,
+        started_at: str,
+    ) -> dict[str, Any]:
+        try:
+            return await mesql_client.start_operation(
+                order_id=self_order_id,
+                operation_no=operation_no,
+                operator_id=operator_id,
+                station_code=station_code,
+                started_at=started_at,
+            )
+        except MesqlConflictError as exc:
+            tokens = _remote_status_tokens(exc.detail)
+            possible_idempotent = any(token in {"already_started", "started", "in_progress", "active"} for token in tokens)
+            if possible_idempotent:
+                plans = await _sync_mesql_queue(station_code, required=True)
+                plan = _queue_plan_for_order(plans, self_order_id, station_code)
+                remote_tokens = {
+                    str(getattr(plan, "remote_order_status", "") or "").lower(),
+                    str(getattr(plan, "remote_queue_status", "") or "").lower(),
+                }
+                if plan is not None and remote_tokens & {"started", "in_progress", "active"}:
+                    return {"status": "in_progress", "idempotent": True}
+            _raise_mesql_error(exc)
+        except MesqlError as exc:
+            _raise_mesql_error(exc)
+        raise AssertionError("unreachable")
+
+    async def _call_mesql_complete(
+        self_order_id: str,
+        *,
+        operation_no: int,
+        operator_id: str,
+        station_code: str,
+        good_quantity: float,
+        scrap_quantity: float,
+        uom_code: str,
+        completed_at: str,
+    ) -> dict[str, Any]:
+        try:
+            return await mesql_client.complete_operation(
+                order_id=self_order_id,
+                operation_no=operation_no,
+                operator_id=operator_id,
+                station_code=station_code,
+                good_quantity=good_quantity,
+                scrap_quantity=scrap_quantity,
+                uom_code=uom_code,
+                completed_at=completed_at,
+            )
+        except MesqlConflictError as exc:
+            tokens = _remote_status_tokens(exc.detail)
+            if "already_completed" in tokens:
+                plans = await _sync_mesql_queue(station_code, include_done=True, required=True)
+                plan = _queue_plan_for_order(plans, self_order_id, station_code)
+                if plan is not None:
+                    remote_status = {
+                        str(plan.remote_order_status or "").lower(),
+                        str(plan.remote_queue_status or "").lower(),
+                    }
+                    if remote_status & {"completed", "done"}:
+                        remote_good = getattr(plan, "remote_good_quantity", None)
+                        remote_scrap = getattr(plan, "remote_scrap_quantity", None)
+                        if remote_good is None or remote_scrap is None or abs(float(remote_good) - good_quantity) > 1e-9 or abs(float(remote_scrap) - scrap_quantity) > 1e-9:
+                            raise HTTPException(
+                                status_code=409,
+                                detail=_mesql_detail(
+                                    "MESQL_COMPLETION_QUANTITY_MISMATCH",
+                                    "MESQL tamamlanma miktarlari yerel GOOD/SCRAP degerleriyle eslesmiyor.",
+                                ),
+                            ) from exc
+                        return {"status": "completed", "idempotent": True}
+            _raise_mesql_error(exc)
+        except MesqlError as exc:
+            _raise_mesql_error(exc)
+        raise AssertionError("unreachable")
 
     @app.on_event("startup")
     async def on_startup() -> None:
+        nonlocal mesql_refresh_task
         install_windows_connection_reset_filter()
         await runtime_service.start()
+        if config.mesql_enabled:
+            mesql_refresh_task = asyncio.create_task(_mesql_refresh_loop())
 
     @app.on_event("shutdown")
     async def on_shutdown() -> None:
+        if mesql_refresh_task is not None:
+            mesql_refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await mesql_refresh_task
         await runtime_service.stop()
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok", "time": utc_now_text()}
+    async def health() -> dict[str, Any]:
+        if not config.mesql_enabled:
+            return {"status": "ok", "time": utc_now_text()}
+        state = oee_state_manager.read_state()
+        mesql = ((state.get("integrations") or {}).get("mesql") if isinstance(state.get("integrations"), dict) else {}) or {}
+        degraded = config.mesql_enabled and str(mesql.get("status") or "") not in {"ok"}
+        return {"status": "degraded" if degraded else "ok", "time": utc_now_text(), "mesql": copy.deepcopy(mesql)}
 
     @app.get("/")
     async def index() -> FileResponse:
@@ -1234,6 +1576,9 @@ def create_app() -> FastAPI:
     @app.get("/api/modules/{module_id}/dashboard")
     async def get_dashboard(module_id: str) -> dict[str, Any]:
         try:
+            if config.mesql_enabled:
+                for station_code in config.mesql_station_codes:
+                    await _sync_mesql_queue(station_code)
             return _build_dashboard_snapshot(module_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND") from exc
@@ -1243,6 +1588,8 @@ def create_app() -> FastAPI:
         _ensure_module(module_id)
         if not str(device_id or "").strip():
             raise HTTPException(status_code=400, detail="DEVICE_ID_REQUIRED")
+        if config.mesql_enabled:
+            await _sync_mesql_queue(station_code or config.mesql_station_codes[0])
         store.refresh_oee_runtime_state(module_id, force=True)
         return _build_kiosk_snapshot(module_id, str(device_id).strip(), station_code)
 
@@ -1757,12 +2104,16 @@ def create_app() -> FastAPI:
     async def kiosk_start_work_order(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         _ensure_module(module_id)
         actor = _resolve_kiosk_actor(payload)
+        station_code = str(payload.get("station_code") or "").strip().upper()
+        mesql_plans: list[Any] = []
+        if config.mesql_enabled:
+            _require_mesql_local_db()
+            mesql_plans = await _sync_mesql_queue(station_code, required=True)
         current_state = oee_state_manager.read_state()
         if str(current_state.get("operationalState") or "") != "shift_active_running":
             raise HTTPException(status_code=400, detail="KIOSK_WORK_ORDER_START_BLOCKED")
         work_orders = current_state.get("workOrders") if isinstance(current_state.get("workOrders"), dict) else {}
         orders_by_id = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
-        station_code = str(payload.get("station_code") or "").strip()
         queued_order_ids = _queued_order_ids(
             orders_by_id,
             work_orders.get("orderSequence") if isinstance(work_orders.get("orderSequence"), list) else [],
@@ -1791,7 +2142,45 @@ def create_app() -> FastAPI:
                     "priority_order_id": top_queue_order_id,
                 },
             )
+        action_now = datetime.now().astimezone()
+        remote_result: dict[str, Any] | None = None
+        operation_no = 0
         try:
+            if config.mesql_enabled:
+                plan = _queue_plan_for_order(mesql_plans, order_id, station_code)
+                if plan is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=_mesql_detail("MESQL_QUEUE_ORDER_NOT_FOUND", "Is emri MESQL istasyon kuyrugunda bulunamadi."),
+                    )
+                pending_reconciliation = _pending_reconciliation("start", order_id, station_code)
+                if pending_reconciliation is not None:
+                    return _reconcile_local_transition(
+                        "start",
+                        action_key=pending_reconciliation[0],
+                        order_id=order_id,
+                        station_code=station_code,
+                        plan=plan,
+                        actor_id=actor["operator_code"] or actor["operator_id"],
+                    )
+                validation = oee_state_manager.validate_start_work_order(
+                    order_id,
+                    station_code=station_code,
+                    transition_reason=transition_reason,
+                    started_at=str(payload.get("started_at") or payload.get("startedAt") or ""),
+                    now=action_now,
+                )
+                operation_no = _operation_no(validation["order"], plan)
+                operator_id = actor["operator_code"] or actor["operator_id"]
+                if not operator_id:
+                    raise HTTPException(status_code=400, detail=_mesql_detail("MESQL_OPERATOR_REQUIRED", "MESQL start icin operator gereklidir."))
+                remote_result = await _call_mesql_start(
+                    order_id,
+                    operation_no=operation_no,
+                    operator_id=operator_id,
+                    station_code=station_code,
+                    started_at=validation["started_at_text"],
+                )
             result = oee_state_manager.start_work_order(
                 order_id,
                 station_code=station_code,
@@ -1799,8 +2188,12 @@ def create_app() -> FastAPI:
                 operator_name=actor["operator_name"],
                 transition_reason=transition_reason,
                 started_at=str(payload.get("started_at") or payload.get("startedAt") or ""),
+                now=action_now,
             )
         except WorkOrderTransitionReasonRequired as exc:
+            if remote_result is not None:
+                _mark_reconciliation("start", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL start basarili, yerel transition basarisiz.")) from exc
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -1813,18 +2206,39 @@ def create_app() -> FastAPI:
                     "tolerance_minutes": round(exc.tolerance_minutes, 1),
                 },
             ) from exc
+        except HTTPException:
+            raise
         except ValueError as exc:
+            if remote_result is not None:
+                _mark_reconciliation("start", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL start basarili, yerel transition basarisiz.")) from exc
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
+            if remote_result is not None:
+                _mark_reconciliation("start", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL start basarili, yerel state yazimi basarisiz.")) from exc
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
         stamp = utc_now_text()
         updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
-        _refresh_after_kiosk_write(
-            module_id,
-            updated_state,
-            event_type="started",
-            actor_id=actor["operator_code"] or actor["operator_id"],
-        )
+        try:
+            transition_result = _refresh_after_kiosk_write(
+                module_id,
+                updated_state,
+                event_type="started",
+                actor_id=actor["operator_code"] or actor["operator_id"],
+            )
+        except Exception as exc:
+            if config.mesql_enabled:
+                _mark_reconciliation("start", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result or {}, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL start basarili, yerel senkronizasyon basarisiz.")) from exc
+            raise
+        if config.mesql_enabled:
+            try:
+                _ensure_local_transition_written(transition_result)
+            except RuntimeError as exc:
+                _mark_reconciliation("start", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result or {}, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL start basarili, yerel DB transition basarisiz.")) from exc
+            await _sync_mesql_queue(station_code)
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
         store.append_system_log(
             module_id,
@@ -1842,22 +2256,87 @@ def create_app() -> FastAPI:
     async def kiosk_accept_active_work_order(module_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         _ensure_module(module_id)
         request_payload = payload if isinstance(payload, dict) else {}
-        station_code = str(request_payload.get("station_code") or request_payload.get("stationCode") or "").strip()
+        station_code = str(request_payload.get("station_code") or request_payload.get("stationCode") or "").strip().upper()
         order_id = str(request_payload.get("order_id") or request_payload.get("orderId") or "").strip()
+        actor = _optional_kiosk_actor(request_payload)
+        action_now = datetime.now().astimezone()
+        remote_result: dict[str, Any] | None = None
+        operation_no = 0
         try:
-            result = oee_state_manager.accept_active_work_order(station_code=station_code, order_id=order_id)
+            if config.mesql_enabled:
+                order_id, station_code = _local_work_order_context(order_id, station_code)
+                _require_mesql_local_db()
+                pending_reconciliation = _pending_reconciliation("complete", order_id, station_code)
+                plans = await _sync_mesql_queue(station_code, include_done=pending_reconciliation is not None, required=True)
+                plan = _queue_plan_for_order(plans, order_id, station_code)
+                if plan is None:
+                    raise HTTPException(status_code=409, detail=_mesql_detail("MESQL_QUEUE_ORDER_NOT_FOUND", "Aktif is emri MESQL kuyrugunda bulunamadi."))
+                if pending_reconciliation is not None:
+                    return _reconcile_local_transition(
+                        "complete",
+                        action_key=pending_reconciliation[0],
+                        order_id=order_id,
+                        station_code=station_code,
+                        plan=plan,
+                        actor_id=actor["operator_code"] or actor["operator_id"] or "KIOSK",
+                    )
+                validation = oee_state_manager.validate_accept_active_work_order(
+                    station_code=station_code,
+                    order_id=order_id,
+                    now=action_now,
+                    require_resolved_rework=True,
+                )
+                order_id = validation["order_id"]
+                station_code = validation["station_code"]
+                operation_no = _operation_no(validation["order"], plan)
+                snapshot = validation["snapshot"]
+                operator_id = actor["operator_code"] or actor["operator_id"] or str(validation["order"].get("startedBy") or "").strip()
+                if not operator_id:
+                    raise HTTPException(status_code=400, detail=_mesql_detail("MESQL_OPERATOR_REQUIRED", "MESQL complete icin operator gereklidir."))
+                remote_result = await _call_mesql_complete(
+                    order_id,
+                    operation_no=operation_no,
+                    operator_id=operator_id,
+                    station_code=station_code,
+                    good_quantity=float(snapshot.get("goodQty") or 0),
+                    scrap_quantity=float(snapshot.get("scrapQty") or 0),
+                    uom_code=str(validation["order"].get("unit") or getattr(plan, "uom_code", "") or "ea"),
+                    completed_at=validation["accepted_at_text"],
+                )
+            result = oee_state_manager.accept_active_work_order(station_code=station_code, order_id=order_id, now=action_now)
+        except HTTPException:
+            raise
         except ValueError as exc:
+            if remote_result is not None:
+                _mark_reconciliation("complete", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL complete basarili, yerel transition basarisiz.")) from exc
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
+            if remote_result is not None:
+                _mark_reconciliation("complete", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL complete basarili, yerel state yazimi basarisiz.")) from exc
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
         stamp = utc_now_text()
         updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
-        _refresh_after_kiosk_write(
-            module_id,
-            updated_state,
-            event_type="completed",
-            actor_id="KIOSK",
-        )
+        try:
+            transition_result = _refresh_after_kiosk_write(
+                module_id,
+                updated_state,
+                event_type="completed",
+                actor_id=actor["operator_code"] or actor["operator_id"] or "KIOSK",
+            )
+        except Exception as exc:
+            if config.mesql_enabled:
+                _mark_reconciliation("complete", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result or {}, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL complete basarili, yerel senkronizasyon basarisiz.")) from exc
+            raise
+        if config.mesql_enabled:
+            try:
+                _ensure_local_transition_written(transition_result)
+            except RuntimeError as exc:
+                _mark_reconciliation("complete", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result or {}, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL complete basarili, yerel DB transition basarisiz.")) from exc
+            await _sync_mesql_queue(station_code, include_done=True)
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
         ferp_export = _ferp_export_acceptance_result(result)
         store.append_system_log(
@@ -2158,6 +2637,7 @@ def create_app() -> FastAPI:
     async def import_work_orders(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if module_id != config.module_id:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+        _reject_mesql_unsupported("work_order_import")
 
         orders = payload.get("orders")
         replace_existing = bool(payload.get("replace_existing", True))
@@ -2188,6 +2668,7 @@ def create_app() -> FastAPI:
     async def reload_work_orders(module_id: str) -> dict[str, Any]:
         if module_id != config.module_id:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+        _reject_mesql_unsupported("work_order_reload")
 
         candidates = sorted(config.work_orders_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
         if not candidates:
@@ -2249,6 +2730,7 @@ def create_app() -> FastAPI:
     async def reorder_work_orders(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if module_id != config.module_id:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+        _reject_mesql_unsupported("work_order_reorder")
 
         ordered_ids = payload.get("ordered_order_ids") or payload.get("orderedOrderIds") or payload.get("order_ids") or payload.get("orderIds")
         station_code = str(payload.get("station_code") or payload.get("stationCode") or "").strip()
@@ -2280,17 +2762,62 @@ def create_app() -> FastAPI:
     async def start_work_order(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if module_id != config.module_id:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
-
+        order_id = str(payload.get("order_id") or payload.get("orderId") or "").strip()
+        station_code = str(payload.get("station_code") or payload.get("stationCode") or "").strip().upper()
+        operator_code = str(payload.get("operator_code") or payload.get("operatorCode") or "").strip()
+        transition_reason = str(payload.get("transition_reason") or payload.get("transitionReason") or "").strip()
+        started_at = str(payload.get("started_at") or payload.get("startedAt") or "").strip()
+        action_now = datetime.now().astimezone()
+        remote_result: dict[str, Any] | None = None
+        operation_no = 0
         try:
+            if config.mesql_enabled:
+                order_id, station_code = _local_work_order_context(order_id, station_code)
+                _require_mesql_local_db()
+                plans = await _sync_mesql_queue(station_code, required=True)
+                plan = _queue_plan_for_order(plans, order_id, station_code)
+                if plan is None:
+                    raise HTTPException(status_code=409, detail=_mesql_detail("MESQL_QUEUE_ORDER_NOT_FOUND", "Is emri MESQL istasyon kuyrugunda bulunamadi."))
+                pending_reconciliation = _pending_reconciliation("start", order_id, station_code)
+                if pending_reconciliation is not None:
+                    return _reconcile_local_transition(
+                        "start",
+                        action_key=pending_reconciliation[0],
+                        order_id=order_id,
+                        station_code=station_code,
+                        plan=plan,
+                        actor_id=operator_code,
+                    )
+                validation = oee_state_manager.validate_start_work_order(
+                    order_id,
+                    station_code=station_code,
+                    transition_reason=transition_reason,
+                    started_at=started_at,
+                    now=action_now,
+                )
+                operation_no = _operation_no(validation["order"], plan)
+                if not operator_code:
+                    raise HTTPException(status_code=400, detail=_mesql_detail("MESQL_OPERATOR_REQUIRED", "MESQL start icin operator gereklidir."))
+                remote_result = await _call_mesql_start(
+                    order_id,
+                    operation_no=operation_no,
+                    operator_id=operator_code,
+                    station_code=station_code,
+                    started_at=validation["started_at_text"],
+                )
             result = oee_state_manager.start_work_order(
-                str(payload.get("order_id") or payload.get("orderId") or ""),
-                station_code=str(payload.get("station_code") or payload.get("stationCode") or ""),
-                operator_code=str(payload.get("operator_code") or payload.get("operatorCode") or ""),
+                order_id,
+                station_code=station_code,
+                operator_code=operator_code,
                 operator_name=str(payload.get("operator_name") or payload.get("operatorName") or ""),
-                transition_reason=str(payload.get("transition_reason") or payload.get("transitionReason") or ""),
-                started_at=str(payload.get("started_at") or payload.get("startedAt") or ""),
+                transition_reason=transition_reason,
+                started_at=started_at,
+                now=action_now,
             )
         except WorkOrderTransitionReasonRequired as exc:
+            if remote_result is not None:
+                _mark_reconciliation("start", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL start basarili, yerel transition basarisiz.")) from exc
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -2303,17 +2830,38 @@ def create_app() -> FastAPI:
                     "tolerance_minutes": round(exc.tolerance_minutes, 1),
                 },
             ) from exc
+        except HTTPException:
+            raise
         except ValueError as exc:
+            if remote_result is not None:
+                _mark_reconciliation("start", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL start basarili, yerel transition basarisiz.")) from exc
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
+            if remote_result is not None:
+                _mark_reconciliation("start", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL start basarili, yerel state yazimi basarisiz.")) from exc
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
-        store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(
-            result.get("state") if isinstance(result.get("state"), dict) else None,
-            event_type="started",
-            actor_id=str(payload.get("operator_code") or payload.get("operatorCode") or ""),
-        )
+        try:
+            store.refresh_oee_runtime_state(module_id, force=True)
+            transition_result = sync_work_order_runtime(
+                result.get("state") if isinstance(result.get("state"), dict) else None,
+                event_type="started",
+                actor_id=operator_code,
+            )
+        except Exception as exc:
+            if config.mesql_enabled:
+                _mark_reconciliation("start", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result or {}, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL start basarili, yerel senkronizasyon basarisiz.")) from exc
+            raise
+        if config.mesql_enabled:
+            try:
+                _ensure_local_transition_written(transition_result)
+            except RuntimeError as exc:
+                _mark_reconciliation("start", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result or {}, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL start basarili, yerel DB transition basarisiz.")) from exc
+            await _sync_mesql_queue(station_code)
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
         summary = str(result.get("summary") or "Is emri baslatildi.")
         store.append_system_log(
@@ -2333,19 +2881,97 @@ def create_app() -> FastAPI:
         if module_id != config.module_id:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
         request_payload = payload if isinstance(payload, dict) else {}
-
+        station_code = str(request_payload.get("station_code") or request_payload.get("stationCode") or "").strip().upper()
+        order_id = str(request_payload.get("order_id") or request_payload.get("orderId") or "").strip()
+        action_now = datetime.now().astimezone()
+        remote_result: dict[str, Any] | None = None
+        operation_no = 0
         try:
+            if config.mesql_enabled:
+                order_id, station_code = _local_work_order_context(order_id, station_code)
+                _require_mesql_local_db()
+                pending_reconciliation = _pending_reconciliation("complete", order_id, station_code)
+                plans = await _sync_mesql_queue(station_code, include_done=pending_reconciliation is not None, required=True)
+                plan = _queue_plan_for_order(plans, order_id, station_code)
+                if plan is None:
+                    raise HTTPException(status_code=409, detail=_mesql_detail("MESQL_QUEUE_ORDER_NOT_FOUND", "Aktif is emri MESQL kuyrugunda bulunamadi."))
+                if pending_reconciliation is not None:
+                    actor_id = str(
+                        request_payload.get("operator_id")
+                        or request_payload.get("operator_code")
+                        or request_payload.get("operatorCode")
+                        or ""
+                    ).strip()
+                    return _reconcile_local_transition(
+                        "complete",
+                        action_key=pending_reconciliation[0],
+                        order_id=order_id,
+                        station_code=station_code,
+                        plan=plan,
+                        actor_id=actor_id,
+                    )
+                validation = oee_state_manager.validate_accept_active_work_order(
+                    station_code=station_code,
+                    order_id=order_id,
+                    now=action_now,
+                    require_resolved_rework=True,
+                )
+                order_id = validation["order_id"]
+                station_code = validation["station_code"]
+                operation_no = _operation_no(validation["order"], plan)
+                snapshot = validation["snapshot"]
+                operator_id = str(
+                    request_payload.get("operator_id")
+                    or request_payload.get("operator_code")
+                    or request_payload.get("operatorCode")
+                    or validation["order"].get("startedBy")
+                    or ""
+                ).strip()
+                if not operator_id:
+                    raise HTTPException(status_code=400, detail=_mesql_detail("MESQL_OPERATOR_REQUIRED", "MESQL complete icin operator gereklidir."))
+                remote_result = await _call_mesql_complete(
+                    order_id,
+                    operation_no=operation_no,
+                    operator_id=operator_id,
+                    station_code=station_code,
+                    good_quantity=float(snapshot.get("goodQty") or 0),
+                    scrap_quantity=float(snapshot.get("scrapQty") or 0),
+                    uom_code=str(validation["order"].get("unit") or getattr(plan, "uom_code", "") or "ea"),
+                    completed_at=validation["accepted_at_text"],
+                )
             result = oee_state_manager.accept_active_work_order(
-                station_code=str(request_payload.get("station_code") or request_payload.get("stationCode") or ""),
-                order_id=str(request_payload.get("order_id") or request_payload.get("orderId") or ""),
+                station_code=station_code,
+                order_id=order_id,
+                now=action_now,
             )
+        except HTTPException:
+            raise
         except ValueError as exc:
+            if remote_result is not None:
+                _mark_reconciliation("complete", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL complete basarili, yerel transition basarisiz.")) from exc
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:
+            if remote_result is not None:
+                _mark_reconciliation("complete", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL complete basarili, yerel state yazimi basarisiz.")) from exc
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
 
-        store.refresh_oee_runtime_state(module_id, force=True)
-        sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None, event_type="completed")
+        try:
+            store.refresh_oee_runtime_state(module_id, force=True)
+            transition_result = sync_work_order_runtime(result.get("state") if isinstance(result.get("state"), dict) else None, event_type="completed")
+        except Exception as exc:
+            if config.mesql_enabled:
+                _mark_reconciliation("complete", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result or {}, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL complete basarili, yerel senkronizasyon basarisiz.")) from exc
+            raise
+        if config.mesql_enabled:
+            try:
+                _ensure_local_transition_written(transition_result)
+            except RuntimeError as exc:
+                _mark_reconciliation("complete", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result or {}, error=exc)
+                raise HTTPException(status_code=500, detail=_mesql_detail("MESQL_RECONCILIATION_REQUIRED", "MESQL complete basarili, yerel DB transition basarisiz.")) from exc
+            await _sync_mesql_queue(station_code, include_done=True)
         order = result.get("order") if isinstance(result.get("order"), dict) else {}
         summary = str(result.get("summary") or "Is emri operator onayi ile kapatildi.")
         ferp_export = _ferp_export_acceptance_result(result)
@@ -2409,6 +3035,7 @@ def create_app() -> FastAPI:
     async def cancel_work_order(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if module_id != config.module_id:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+        _reject_mesql_unsupported("work_order_cancel")
         order_id = str(payload.get("order_id") or payload.get("orderId") or "").strip()
         station_code = str(payload.get("station_code") or payload.get("stationCode") or "").strip()
         reason = str(payload.get("reason") or payload.get("transition_reason") or payload.get("transitionReason") or "").strip()
@@ -2482,6 +3109,7 @@ def create_app() -> FastAPI:
     async def rollback_active_work_order(module_id: str) -> dict[str, Any]:
         if module_id != config.module_id:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+        _reject_mesql_unsupported("work_order_rollback")
 
         try:
             result = oee_state_manager.rollback_active_work_order()
@@ -2513,6 +3141,7 @@ def create_app() -> FastAPI:
     async def reset_work_orders(module_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         if module_id != config.module_id:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND")
+        _reject_mesql_unsupported("work_order_reset")
         request_payload = payload if isinstance(payload, dict) else {}
         reset_wip = bool(request_payload.get("reset_wip", request_payload.get("resetWip", True)))
 

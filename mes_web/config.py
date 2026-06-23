@@ -30,6 +30,14 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    values = tuple(part.strip().upper() for part in raw.split(",") if part.strip())
+    return values or default
+
+
 def _safe_mqtt_client_token(value: str) -> str:
     token = re.sub(r"[^A-Za-z0-9_-]+", "-", value.strip())
     token = token.strip("-_")
@@ -106,6 +114,11 @@ class AppConfig:
     db_shadow_read_dashboard: bool = False
     db_read_dashboard: bool = False
     db_strict_timestamp_guard: bool = False
+    mesql_enabled: bool = False
+    mesql_api_base_url: str = "http://192.168.137.72:8090"
+    mesql_timeout_sec: float = 3.0
+    mesql_queue_refresh_sec: float = 5.0
+    mesql_station_codes: tuple[str, ...] = ("ASSEMBLY_01", "PACKAGING_01")
     allowed_presets: tuple[str, ...] = field(default_factory=lambda: ALLOWED_PRESET_COMMANDS)
 
     @property
@@ -281,4 +294,12 @@ class AppConfig:
             db_shadow_read_dashboard=_env_bool("MES_WEB_DB_SHADOW_READ_DASHBOARD", False),
             db_read_dashboard=_env_bool("MES_WEB_DB_READ_DASHBOARD", False),
             db_strict_timestamp_guard=_env_bool("MES_WEB_DB_STRICT_TIMESTAMP_GUARD", False),
+            mesql_enabled=_env_bool("MES_WEB_MESQL_ENABLED", False),
+            mesql_api_base_url=os.getenv("MES_WEB_MESQL_API_BASE_URL", "http://192.168.137.72:8090").rstrip("/"),
+            mesql_timeout_sec=float(os.getenv("MES_WEB_MESQL_TIMEOUT_SEC", "3")),
+            mesql_queue_refresh_sec=float(os.getenv("MES_WEB_MESQL_QUEUE_REFRESH_SEC", "5")),
+            mesql_station_codes=_env_csv(
+                "MES_WEB_MESQL_STATION_CODES",
+                ("ASSEMBLY_01", "PACKAGING_01"),
+            ),
         )

@@ -198,6 +198,17 @@ Onemli:
 
 ## Ortam Degiskenleri
 
+MESQL Faz 1 adapter (varsayilan kapali):
+
+- `MES_WEB_MESQL_ENABLED`
+- `MES_WEB_MESQL_API_BASE_URL`
+- `MES_WEB_MESQL_TIMEOUT_SEC`
+- `MES_WEB_MESQL_QUEUE_REFRESH_SEC`
+- `MES_WEB_MESQL_STATION_CODES`
+
+MESQL adapter acikken offline start/accept yoktur. Queue/start/complete erisimi
+kesilirse yerel pending/runtime state korunur ve yeni transition engellenir.
+
 Ag ve servis:
 
 - `MES_WEB_HOST`

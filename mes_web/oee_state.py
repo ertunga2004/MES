@@ -3652,13 +3652,20 @@ class OeeRuntimeStateManager:
         write_runtime_state_file(self.path, state)
 
     @_state_locked
-    def merge_mesql_queue_plans(self, plans: list[MesqlQueuePlan], *, now: datetime | None = None) -> dict[str, Any]:
+    def merge_mesql_queue_plans(
+        self,
+        plans: list[MesqlQueuePlan],
+        *,
+        active_station_orders: dict[str, str] | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
         state = self.read_state()
         work_orders = _work_orders_state(state)
         orders = _work_order_orders(state)
         sequence = _work_order_sequence(state)
         incoming_ids: list[str] = []
+        remote_active_by_station: dict[str, str] = {}
         for plan in sorted(plans, key=lambda row: (row.station_code, row.queue_rank, row.order_id)):
             incoming_ids.append(plan.order_id)
             incoming = plan.runtime_plan()
@@ -3678,9 +3685,36 @@ class OeeRuntimeStateManager:
                 current["_mesql"] = dict(incoming.get("_mesql") or {})
             if plan.order_id not in sequence:
                 sequence.append(plan.order_id)
+            remote_status = str(plan.remote_order_status or "").strip().lower()
+            remote_queue_status = str(plan.remote_queue_status or "").strip().lower()
+            if plan.station_code and not remote_active_by_station.get(plan.station_code) and (
+                remote_status in {"active", "in_progress", "started"}
+                or remote_queue_status in {"active", "in_progress", "started"}
+            ):
+                remote_active_by_station[plan.station_code] = plan.order_id
 
         rank_by_id = {plan.order_id: (plan.station_code, plan.queue_rank) for plan in plans}
         sequence.sort(key=lambda order_id: rank_by_id.get(str(order_id), ("ZZZ", 999999)))
+        existing_active_by_station = dict(_sync_station_active_orders(work_orders, orders, sequence))
+        restore_candidates = dict(remote_active_by_station)
+        restore_candidates.update({
+            str(station or "").strip().upper(): str(order_id or "").strip()
+            for station, order_id in (active_station_orders or {}).items()
+            if str(station or "").strip() and str(order_id or "").strip()
+        })
+        for station_code, order_id in restore_candidates.items():
+            if existing_active_by_station.get(station_code):
+                continue
+            order = orders.get(order_id)
+            if not isinstance(order, dict):
+                continue
+            if str(order.get("status") or "").strip() in {"completed", "cancelled"}:
+                continue
+            order["status"] = "active"
+            if not str(order.get("startedAt") or "").strip():
+                order["startedAt"] = _pseudo_iso_text(stamp)
+            _set_station_active_order(work_orders, orders, station_code, order_id, sequence)
+        _sync_station_active_orders(work_orders, orders, sequence)
         integrations = state.setdefault("integrations", {})
         mesql = integrations.setdefault("mesql", {})
         mesql.update({

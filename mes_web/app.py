@@ -1216,7 +1216,10 @@ def create_app() -> FastAPI:
                 )
             return []
         try:
-            oee_state_manager.merge_mesql_queue_plans(plans)
+            oee_state_manager.merge_mesql_queue_plans(
+                plans,
+                active_station_orders=write_result.active_station_orders,
+            )
         except OSError as exc:
             if required:
                 raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
@@ -1262,6 +1265,22 @@ def create_app() -> FastAPI:
                 or ""
             ).strip().upper()
         return normalized_order, normalized_station
+
+    def _local_active_start_result(order_id: str, station_code: str) -> dict[str, Any] | None:
+        state = oee_state_manager.read_state()
+        work_orders = state.get("workOrders") if isinstance(state.get("workOrders"), dict) else {}
+        orders_by_id = work_orders.get("ordersById") if isinstance(work_orders.get("ordersById"), dict) else {}
+        order = orders_by_id.get(str(order_id or "").strip())
+        if not isinstance(order, dict) or str(order.get("status") or "").strip() != "active":
+            return None
+        active_by_station = work_orders.get("activeOrderByStation") if isinstance(work_orders.get("activeOrderByStation"), dict) else {}
+        if str(active_by_station.get(str(station_code or "").strip().upper()) or "").strip() != str(order_id or "").strip():
+            return None
+        return {
+            "state": state,
+            "order": order,
+            "summary": f"{order_id} zaten aktif.",
+        }
 
     def _operation_no(order: dict[str, Any], plan: Any | None = None) -> int:
         raw = getattr(plan, "operation_no", None) if plan is not None else None
@@ -2181,15 +2200,21 @@ def create_app() -> FastAPI:
                     station_code=station_code,
                     started_at=validation["started_at_text"],
                 )
-            result = oee_state_manager.start_work_order(
-                order_id,
-                station_code=station_code,
-                operator_code=actor["operator_code"],
-                operator_name=actor["operator_name"],
-                transition_reason=transition_reason,
-                started_at=str(payload.get("started_at") or payload.get("startedAt") or ""),
-                now=action_now,
+            result = (
+                _local_active_start_result(order_id, station_code)
+                if config.mesql_enabled and isinstance(remote_result, dict) and remote_result.get("idempotent")
+                else None
             )
+            if result is None:
+                result = oee_state_manager.start_work_order(
+                    order_id,
+                    station_code=station_code,
+                    operator_code=actor["operator_code"],
+                    operator_name=actor["operator_name"],
+                    transition_reason=transition_reason,
+                    started_at=str(payload.get("started_at") or payload.get("startedAt") or ""),
+                    now=action_now,
+                )
         except WorkOrderTransitionReasonRequired as exc:
             if remote_result is not None:
                 _mark_reconciliation("start", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result, error=exc)
@@ -2805,15 +2830,21 @@ def create_app() -> FastAPI:
                     station_code=station_code,
                     started_at=validation["started_at_text"],
                 )
-            result = oee_state_manager.start_work_order(
-                order_id,
-                station_code=station_code,
-                operator_code=operator_code,
-                operator_name=str(payload.get("operator_name") or payload.get("operatorName") or ""),
-                transition_reason=transition_reason,
-                started_at=started_at,
-                now=action_now,
+            result = (
+                _local_active_start_result(order_id, station_code)
+                if config.mesql_enabled and isinstance(remote_result, dict) and remote_result.get("idempotent")
+                else None
             )
+            if result is None:
+                result = oee_state_manager.start_work_order(
+                    order_id,
+                    station_code=station_code,
+                    operator_code=operator_code,
+                    operator_name=str(payload.get("operator_name") or payload.get("operatorName") or ""),
+                    transition_reason=transition_reason,
+                    started_at=started_at,
+                    now=action_now,
+                )
         except WorkOrderTransitionReasonRequired as exc:
             if remote_result is not None:
                 _mark_reconciliation("start", order_id=order_id, operation_no=operation_no, station_code=station_code, remote=remote_result, error=exc)

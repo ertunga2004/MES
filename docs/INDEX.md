@@ -12,6 +12,11 @@ Bu indeks aktif dokumanlarin kanonik okuma haritasidir. Archive, raw kaynak ve D
 
 - [MESQL README](mesql/README.md)
 - [ERP/BOM-BOP/MES Data Exchange](mesql/erp_bombop_mes_data_exchange.md)
+- [DB Core Planning](mesql/db_core_planning.md)
+- [Runtime / Shared Schema Boundary](mesql/runtime_shared_schema_boundary.md)
+- [Migration Candidate Matrix](mesql/migration_candidate_matrix.md)
+- [Compatibility Report Plan](mesql/compatibility_report_plan.md)
+- [Target PC Deployment Plan](mesql/target_pc_deployment_plan.md)
 - [DB Pre-Plan Summary](mesql/db_pre_plan_summary.md)
 - [SQL Source of Truth](mesql/sql_source_of_truth.md)
 - [Natural Key Inventory](mesql/natural_key_inventory.md)

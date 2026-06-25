@@ -5,6 +5,11 @@ Bu klasor MESQL shared schema, payload versioning, validation ve ERP/BOM-BOP/MES
 ## Ana Dokumanlar
 
 - [ERP/BOM-BOP/MES Data Exchange](erp_bombop_mes_data_exchange.md)
+- [DB Core Planning](db_core_planning.md)
+- [Runtime / Shared Schema Boundary](runtime_shared_schema_boundary.md)
+- [Migration Candidate Matrix](migration_candidate_matrix.md)
+- [Compatibility Report Plan](compatibility_report_plan.md)
+- [Target PC Deployment Plan](target_pc_deployment_plan.md)
 - [DB Pre-Plan Summary](db_pre_plan_summary.md)
 - [SQL Source of Truth](sql_source_of_truth.md)
 - [Natural Key Inventory](natural_key_inventory.md)

@@ -84,11 +84,6 @@ function setConnectionState(text) {
   els.connectionState.textContent = text;
 }
 
-function mesqlWorkOrderBlocked() {
-  const mesql = (((state.snapshot || {}).integrations || {}).mesql) || {};
-  return Boolean(mesql.enabled) && String(mesql.status || "") !== "ok";
-}
-
 function pct(value) {
   if (value === null || value === undefined || value === "") {
     return "-";
@@ -393,9 +388,7 @@ function renderLineStatus() {
   const kpis = lineStatus.kpis || {};
   els.screenTitle.textContent = `${safeText(device.device_name, state.deviceId)} / ${safeText((snapshot.operator || {}).operator_name, "Operator sec")}`;
   els.lineStateText.textContent = safeText(header.state_summary, operationalLabel(snapshot.operational_state));
-  const mesql = ((snapshot.integrations || {}).mesql) || {};
-  const mesqlText = mesql.enabled ? ` | ${mesqlWorkOrderBlocked() ? "MESQL kullanilamiyor" : "MESQL bagli"}` : "";
-  els.deviceMetaText.textContent = `${operationalLabel(snapshot.operational_state)} | Istasyon ${safeText(device.bound_station_id, "-")}${mesqlText}`;
+  els.deviceMetaText.textContent = `${operationalLabel(snapshot.operational_state)} | Istasyon ${safeText(device.bound_station_id, "-")}`;
   els.metricOee.textContent = pct(kpis.oee);
   els.metricAvailability.textContent = pct(kpis.availability);
   els.metricPerformance.textContent = pct(kpis.performance);
@@ -448,8 +441,7 @@ function renderPrimaryPanel() {
 
   renderActiveOrderContents(displayOrder);
   els.bigActionButton.textContent = safeText(bigAction.label, "Hazirlaniyor");
-  const mesqlAction = ["work_order_start_next", "work_order_accept"].includes(String(bigAction.action || ""));
-  els.bigActionButton.disabled = state.busy || !Boolean(bigAction.enabled) || (mesqlAction && mesqlWorkOrderBlocked());
+  els.bigActionButton.disabled = state.busy || !Boolean(bigAction.enabled);
   els.systemStartButton.textContent = safeText(systemStart.label, "Sistem Start");
   els.systemStartButton.disabled = state.busy || !Boolean(systemStart.enabled);
 

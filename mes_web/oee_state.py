@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from .ferp_labels import FerpLabelRegistryError, validate_label_payload
-from .mesql_client import MesqlQueuePlan
 from .parsers import (
     normalize_color,
     parse_mega_event_from_log,
@@ -168,16 +167,6 @@ def default_runtime_state() -> dict[str, Any]:
         "helpRequest": default_help_request_state(),
         "deviceRegistry": {},
         "deviceSessions": {},
-        "integrations": {
-            "mesql": {
-                "enabled": False,
-                "status": "disabled",
-                "lastSuccessAt": "",
-                "lastError": "",
-                "stale": False,
-                "reconciliationRequired": {},
-            }
-        },
         "processedVisionEventKeys": [],
         "activeFault": None,
         "faultHistory": [],
@@ -1547,11 +1536,7 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         "description": _text_or_default(entry.get("description") or entry.get("aciklama") or entry.get("açıklama") or entry.get("lblMMFB0_DESC") or current.get("description")),
         "workCenterCode": _text_or_default(entry.get("work_center_code") or entry.get("workCenterCode") or entry.get("is_merkezi") or entry.get("iş_merkezi") or entry.get("lblMFW00_CODE") or current.get("workCenterCode")),
         "workStationCode": _text_or_default(entry.get("work_station_code") or entry.get("workStationCode") or entry.get("is_istasyonu") or entry.get("iş_istasyonu") or entry.get("lblMFW01_CODE") or current.get("workStationCode")),
-        "stationCode": _text_or_default(entry.get("station_code") or entry.get("stationCode") or current.get("stationCode")),
-        "revisionCode": _text_or_default(entry.get("revision_code") or entry.get("revisionCode") or current.get("revisionCode")),
-        "operationNo": max(0, round(_numeric(entry.get("operation_no") or entry.get("operationNo") or current.get("operationNo")))),
         "operationCode": _text_or_default(entry.get("operation_code") or entry.get("operationCode") or entry.get("operasyon") or entry.get("lblMFWO0_CODE") or current.get("operationCode")),
-        "operationName": _text_or_default(entry.get("operation_name") or entry.get("operationName") or current.get("operationName")),
         "setupTimeSec": max(0.0, _numeric(entry.get("setup_time_sec") or entry.get("setupTimeSec") or entry.get("hazirlik_suresi_sec") or entry.get("hazırlık_süresi_sn") or entry.get("lblMMFB4_SETUP_TIME") or current.get("setupTimeSec"))),
         "workerCount": max(0, round(_numeric(entry.get("worker_count") or entry.get("workerCount") or entry.get("isci_sayisi") or entry.get("işçi_sayısı") or entry.get("lblMMFB4_WORKER_COUNT") or current.get("workerCount")))),
         "cycleTimeSec": max(0.0, _numeric(entry.get("cycle_time_sec") or entry.get("cycleTimeSec") or entry.get("sure_sec") or entry.get("süre_saniye") or entry.get("lblMMFB4_TIME") or current.get("cycleTimeSec"))),
@@ -1571,23 +1556,12 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         "startedBy": _text_or_default(entry.get("startedBy") or entry.get("lblFCR00_ACC_CODE_PR") or current.get("startedBy")),
         "startedByName": _text_or_default(entry.get("startedByName") or entry.get("lblFCR00_NAME_PR") or current.get("startedByName")),
         "transitionReason": _text_or_default(entry.get("transitionReason") or current.get("transitionReason")),
-        "inventoryConsumedQty": max(0, round(_numeric(entry.get("inventoryConsumedQty") or current.get("inventoryConsumedQty")))),
-        "productionQty": max(0, round(_numeric(entry.get("productionQty") or current.get("productionQty")))),
-        "completedQty": max(0, round(_numeric(entry.get("completedQty") or current.get("completedQty")))),
-        "remainingQty": max(0, round(_numeric(entry.get("remainingQty") or current.get("remainingQty")))),
-        "goodQty": max(0, round(_numeric(entry.get("goodQty") or entry.get("good_quantity") or current.get("goodQty")))),
-        "reworkQty": max(0, round(_numeric(entry.get("reworkQty") or entry.get("rework_quantity") or current.get("reworkQty")))),
-        "scrapQty": max(0, round(_numeric(entry.get("scrapQty") or entry.get("scrap_quantity") or current.get("scrapQty")))),
-        "plannedDurationMs": max(0, round(_numeric(entry.get("plannedDurationMs") or current.get("plannedDurationMs")))),
-        "runtimeMs": max(0, round(_numeric(entry.get("runtimeMs") or current.get("runtimeMs")))),
-        "unplannedMs": max(0, round(_numeric(entry.get("unplannedMs") or current.get("unplannedMs")))),
-        "availability": entry.get("availability") if entry.get("availability") is not None else current.get("availability"),
-        "performance": entry.get("performance") if entry.get("performance") is not None else current.get("performance"),
-        "quality": entry.get("quality") if entry.get("quality") is not None else current.get("quality"),
-        "oee": entry.get("oee") if entry.get("oee") is not None else current.get("oee"),
+        "inventoryConsumedQty": 0,
+        "productionQty": 0,
+        "completedQty": 0,
+        "remainingQty": 0,
         "lastAllocationAt": _text_or_default(entry.get("lastAllocationAt") or current.get("lastAllocationAt")),
         "requirements": requirements,
-        "_mesql": dict(entry.get("_mesql") if isinstance(entry.get("_mesql"), dict) else current.get("_mesql") if isinstance(current.get("_mesql"), dict) else {}),
     }
     _sync_work_order_row(order)
     return order
@@ -1884,11 +1858,6 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     base["helpRequest"] = candidate.get("helpRequest") if isinstance(candidate.get("helpRequest"), dict) else default_help_request_state()
     base["deviceRegistry"] = candidate.get("deviceRegistry") if isinstance(candidate.get("deviceRegistry"), dict) else {}
     base["deviceSessions"] = candidate.get("deviceSessions") if isinstance(candidate.get("deviceSessions"), dict) else {}
-    integrations = candidate.get("integrations") if isinstance(candidate.get("integrations"), dict) else {}
-    mesql = integrations.get("mesql") if isinstance(integrations.get("mesql"), dict) else {}
-    base["integrations"]["mesql"].update(mesql)
-    if not isinstance(base["integrations"]["mesql"].get("reconciliationRequired"), dict):
-        base["integrations"]["mesql"]["reconciliationRequired"] = {}
     vision = candidate.get("vision") if isinstance(candidate.get("vision"), dict) else {}
     base["vision"]["healthState"] = str(vision.get("healthState") or "offline")
     base["vision"]["badWindows"] = max(0, round(_numeric(vision.get("badWindows"))))
@@ -3155,108 +3124,6 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
     }
 
 
-def _validate_start_work_order_state(
-    state: dict[str, Any],
-    order_id: str,
-    *,
-    station_code: str = "",
-    transition_reason: str = "",
-    started_at: str = "",
-    now: datetime | None = None,
-) -> dict[str, Any]:
-    stamp = now or datetime.now().astimezone()
-    if stamp.tzinfo is None:
-        stamp = stamp.astimezone()
-    work_orders = _work_orders_state(state)
-    sequence = _work_order_sequence(state)
-    orders = _work_order_orders(state)
-    normalized_order_id = str(order_id or "").strip()
-    order = orders.get(normalized_order_id)
-    if not isinstance(order, dict):
-        raise ValueError("WORK_ORDER_NOT_FOUND")
-    order_station = _work_order_station_code(normalized_order_id, order)
-    normalized_station = str(station_code or order_station).strip().upper()
-    if normalized_station and order_station and normalized_station != order_station:
-        raise ValueError("WORK_ORDER_STATION_MISMATCH")
-    if _station_active_order_id(work_orders, orders, normalized_station, sequence):
-        raise ValueError("ACTIVE_WORK_ORDER_EXISTS")
-    if str(order.get("status") or "") == "completed":
-        raise ValueError("WORK_ORDER_ALREADY_COMPLETED")
-    if str(order.get("status") or "") == "cancelled":
-        raise ValueError("WORK_ORDER_CANCELLED")
-
-    start_dt = _parse_iso(started_at) or stamp
-    if start_dt.tzinfo is None:
-        start_dt = start_dt.astimezone()
-    tolerance_ms = _duration_ms(
-        _first_present(work_orders.get("toleranceMs"), work_orders.get("toleranceMinutes")),
-        multiplier=60_000.0 if work_orders.get("toleranceMs") in (None, "") else 1.0,
-    )
-    last_completed_order_id = str(work_orders.get("lastCompletedOrderId") or "").strip()
-    last_completed_at = _parse_iso(str(work_orders.get("lastCompletedAt") or ""))
-    cleaned_reason = str(transition_reason or "").strip()
-    if last_completed_order_id and last_completed_at is not None and tolerance_ms > 0:
-        elapsed_ms = max(0, int((start_dt - last_completed_at).total_seconds() * 1000))
-        if elapsed_ms > tolerance_ms and not cleaned_reason:
-            raise WorkOrderTransitionReasonRequired(
-                order_id=normalized_order_id,
-                previous_order_id=last_completed_order_id,
-                elapsed_ms=elapsed_ms,
-                tolerance_ms=tolerance_ms,
-            )
-    return {
-        "state": state,
-        "work_orders": work_orders,
-        "sequence": sequence,
-        "orders": orders,
-        "order_id": normalized_order_id,
-        "order": order,
-        "station_code": normalized_station,
-        "started_at": start_dt,
-        "started_at_text": _pseudo_iso_text(start_dt),
-        "transition_reason": cleaned_reason,
-    }
-
-
-def _validate_accept_work_order_state(
-    state: dict[str, Any],
-    *,
-    station_code: str = "",
-    order_id: str = "",
-    now: datetime | None = None,
-    require_resolved_rework: bool = False,
-) -> dict[str, Any]:
-    stamp = now or datetime.now().astimezone()
-    if stamp.tzinfo is None:
-        stamp = stamp.astimezone()
-    work_orders = _work_orders_state(state)
-    orders = _work_order_orders(state)
-    sequence = _work_order_sequence(state)
-    normalized_station = str(station_code or "").strip().upper()
-    active_order_id = str(order_id or "").strip() or _station_active_order_id(work_orders, orders, normalized_station, sequence)
-    order = orders.get(active_order_id)
-    if not active_order_id or not isinstance(order, dict) or str(order.get("status") or "") != "pending_approval":
-        raise ValueError("WORK_ORDER_PENDING_APPROVAL_NOT_FOUND")
-    order_station = _work_order_station_code(active_order_id, order)
-    if normalized_station and order_station != normalized_station:
-        raise ValueError("WORK_ORDER_STATION_MISMATCH")
-    snapshot = build_work_order_snapshot(state, order, now=stamp)
-    if require_resolved_rework and int(snapshot.get("reworkQty") or 0) > 0:
-        raise ValueError("MESQL_REWORK_UNRESOLVED")
-    return {
-        "state": state,
-        "work_orders": work_orders,
-        "orders": orders,
-        "sequence": sequence,
-        "order_id": active_order_id,
-        "order": order,
-        "station_code": order_station,
-        "accepted_at": stamp,
-        "accepted_at_text": _pseudo_iso_text(stamp),
-        "snapshot": snapshot,
-    }
-
-
 def _system_log_line(kind: str, state: dict[str, Any], *, now: datetime) -> str:
     shift = state["shift"]
     if kind == "START":
@@ -3650,125 +3517,6 @@ class OeeRuntimeStateManager:
 
     def write_state(self, state: dict[str, Any]) -> None:
         write_runtime_state_file(self.path, state)
-
-    @_state_locked
-    def merge_mesql_queue_plans(self, plans: list[MesqlQueuePlan], *, now: datetime | None = None) -> dict[str, Any]:
-        stamp = now or datetime.now().astimezone()
-        state = self.read_state()
-        work_orders = _work_orders_state(state)
-        orders = _work_order_orders(state)
-        sequence = _work_order_sequence(state)
-        incoming_ids: list[str] = []
-        for plan in sorted(plans, key=lambda row: (row.station_code, row.queue_rank, row.order_id)):
-            incoming_ids.append(plan.order_id)
-            incoming = plan.runtime_plan()
-            current = orders.get(plan.order_id)
-            if not isinstance(current, dict):
-                current = _normalize_work_order_row(incoming, queued_at=_pseudo_iso_text(stamp))
-                current["status"] = "queued"
-                orders[plan.order_id] = current
-            else:
-                for key in (
-                    "productCode", "stockCode", "stockName", "revisionCode", "quantity",
-                    "targetQuantity", "unit", "stationCode", "workStationCode",
-                    "workCenterCode", "operationNo", "operationCode", "operationName", "sequenceNo",
-                ):
-                    if key in incoming and incoming[key] not in (None, ""):
-                        current[key] = incoming[key]
-                current["_mesql"] = dict(incoming.get("_mesql") or {})
-            if plan.order_id not in sequence:
-                sequence.append(plan.order_id)
-
-        rank_by_id = {plan.order_id: (plan.station_code, plan.queue_rank) for plan in plans}
-        sequence.sort(key=lambda order_id: rank_by_id.get(str(order_id), ("ZZZ", 999999)))
-        integrations = state.setdefault("integrations", {})
-        mesql = integrations.setdefault("mesql", {})
-        mesql.update({
-            "enabled": True,
-            "status": "ok",
-            "lastSuccessAt": _pseudo_iso_text(stamp),
-            "lastError": "",
-            "stale": False,
-        })
-        mesql.setdefault("reconciliationRequired", {})
-        self.write_state(state)
-        return {"state": state, "row_count": len(incoming_ids)}
-
-    @_state_locked
-    def set_mesql_status(self, status: str, *, error: str = "", now: datetime | None = None) -> dict[str, Any]:
-        stamp = now or datetime.now().astimezone()
-        state = self.read_state()
-        mesql = state.setdefault("integrations", {}).setdefault("mesql", {})
-        mesql.update({
-            "enabled": status != "disabled",
-            "status": str(status or "unknown"),
-            "lastError": str(error or ""),
-            "stale": status not in {"ok", "disabled"},
-        })
-        if status == "ok":
-            mesql["lastSuccessAt"] = _pseudo_iso_text(stamp)
-        mesql.setdefault("reconciliationRequired", {})
-        self.write_state(state)
-        return state
-
-    @_state_locked
-    def mark_mesql_reconciliation_required(self, action_key: str, payload: dict[str, Any]) -> dict[str, Any]:
-        state = self.read_state()
-        mesql = state.setdefault("integrations", {}).setdefault("mesql", {})
-        rows = mesql.setdefault("reconciliationRequired", {})
-        rows[str(action_key)] = dict(payload)
-        mesql["status"] = "reconciliation_required"
-        mesql["stale"] = True
-        self.write_state(state)
-        return state
-
-    @_state_locked
-    def clear_mesql_reconciliation_required(self, action_key: str) -> dict[str, Any]:
-        state = self.read_state()
-        mesql = state.setdefault("integrations", {}).setdefault("mesql", {})
-        rows = mesql.setdefault("reconciliationRequired", {})
-        rows.pop(str(action_key), None)
-        if not rows:
-            mesql["status"] = "ok"
-            mesql["stale"] = False
-        self.write_state(state)
-        return state
-
-    @_state_locked
-    def validate_start_work_order(
-        self,
-        order_id: str,
-        *,
-        station_code: str = "",
-        transition_reason: str = "",
-        started_at: str = "",
-        now: datetime | None = None,
-    ) -> dict[str, Any]:
-        return _validate_start_work_order_state(
-            self.read_state(),
-            order_id,
-            station_code=station_code,
-            transition_reason=transition_reason,
-            started_at=started_at,
-            now=now,
-        )
-
-    @_state_locked
-    def validate_accept_active_work_order(
-        self,
-        *,
-        station_code: str = "",
-        order_id: str = "",
-        now: datetime | None = None,
-        require_resolved_rework: bool = False,
-    ) -> dict[str, Any]:
-        return _validate_accept_work_order_state(
-            self.read_state(),
-            station_code=station_code,
-            order_id=order_id,
-            now=now,
-            require_resolved_rework=require_resolved_rework,
-        )
 
     @_state_locked
     def deactivate_active_shift_on_startup(self, *, now: datetime | None = None) -> bool:
@@ -4677,24 +4425,49 @@ class OeeRuntimeStateManager:
         started_at: str = "",
         now: datetime | None = None,
     ) -> dict[str, Any]:
-        validation = _validate_start_work_order_state(
-            self.read_state(),
-            order_id,
-            station_code=station_code,
-            transition_reason=transition_reason,
-            started_at=started_at,
-            now=now,
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        state = self.read_state()
+        work_orders = _work_orders_state(state)
+        sequence = _work_order_sequence(state)
+        orders = _work_order_orders(state)
+        normalized_order_id = str(order_id or "").strip()
+        order = orders.get(normalized_order_id)
+        if not isinstance(order, dict):
+            raise ValueError("WORK_ORDER_NOT_FOUND")
+        order_station = _work_order_station_code(normalized_order_id, order)
+        normalized_station = str(station_code or order_station).strip().upper()
+        if normalized_station and order_station and normalized_station != order_station:
+            raise ValueError("WORK_ORDER_STATION_MISMATCH")
+        station_active_order_id = _station_active_order_id(work_orders, orders, normalized_station, sequence)
+        if station_active_order_id:
+            raise ValueError("ACTIVE_WORK_ORDER_EXISTS")
+        if str(order.get("status") or "") == "completed":
+            raise ValueError("WORK_ORDER_ALREADY_COMPLETED")
+        if str(order.get("status") or "") == "cancelled":
+            raise ValueError("WORK_ORDER_CANCELLED")
+
+        start_dt = _parse_iso(started_at) or stamp
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.astimezone()
+        start_text = _pseudo_iso_text(start_dt)
+        tolerance_ms = _duration_ms(
+            _first_present(work_orders.get("toleranceMs"), work_orders.get("toleranceMinutes")),
+            multiplier=60_000.0 if work_orders.get("toleranceMs") in (None, "") else 1.0,
         )
-        state = validation["state"]
-        work_orders = validation["work_orders"]
-        sequence = validation["sequence"]
-        orders = validation["orders"]
-        normalized_order_id = validation["order_id"]
-        order = validation["order"]
-        normalized_station = validation["station_code"]
-        start_dt = validation["started_at"]
-        start_text = validation["started_at_text"]
-        cleaned_reason = validation["transition_reason"]
+        last_completed_order_id = str(work_orders.get("lastCompletedOrderId") or "").strip()
+        last_completed_at = _parse_iso(str(work_orders.get("lastCompletedAt") or ""))
+        cleaned_reason = str(transition_reason or "").strip()
+        if last_completed_order_id and last_completed_at is not None and tolerance_ms > 0:
+            elapsed_ms = max(0, int((start_dt - last_completed_at).total_seconds() * 1000))
+            if elapsed_ms > tolerance_ms and not cleaned_reason:
+                raise WorkOrderTransitionReasonRequired(
+                    order_id=normalized_order_id,
+                    previous_order_id=last_completed_order_id,
+                    elapsed_ms=elapsed_ms,
+                    tolerance_ms=tolerance_ms,
+                )
 
         order["status"] = "active"
         order["startedAt"] = start_text
@@ -5257,21 +5030,24 @@ class OeeRuntimeStateManager:
 
     @_state_locked
     def accept_active_work_order(self, *, station_code: str = "", order_id: str = "", now: datetime | None = None) -> dict[str, Any]:
-        validation = _validate_accept_work_order_state(
-            self.read_state(),
-            station_code=station_code,
-            order_id=order_id,
-            now=now,
-        )
-        stamp = validation["accepted_at"]
-        accepted_text = validation["accepted_at_text"]
-        state = validation["state"]
-        work_orders = validation["work_orders"]
-        orders = validation["orders"]
-        sequence = validation["sequence"]
-        active_order_id = validation["order_id"]
-        order = validation["order"]
-        order_station = validation["station_code"]
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        accepted_text = _pseudo_iso_text(stamp)
+        state = self.read_state()
+        work_orders = _work_orders_state(state)
+        orders = _work_order_orders(state)
+        sequence = _work_order_sequence(state)
+        normalized_station = str(station_code or "").strip().upper()
+        active_order_id = str(order_id or "").strip()
+        if not active_order_id:
+            active_order_id = _station_active_order_id(work_orders, orders, normalized_station, sequence)
+        order = orders.get(active_order_id)
+        if not active_order_id or not isinstance(order, dict) or str(order.get("status") or "") != "pending_approval":
+            raise ValueError("WORK_ORDER_PENDING_APPROVAL_NOT_FOUND")
+        order_station = _work_order_station_code(active_order_id, order)
+        if normalized_station and order_station != normalized_station:
+            raise ValueError("WORK_ORDER_STATION_MISMATCH")
 
         order["status"] = "completed"
         order["completedAt"] = accepted_text

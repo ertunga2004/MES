@@ -19,7 +19,7 @@ SELECT pg_advisory_xact_lock(hashtext(%(station_code)s))
 
 
 SELECT_EXISTING_LOCAL_QUEUE_RANK_SQL = """
-SELECT queue_rank, status
+SELECT queue_rank
 FROM mes.station_queue
 WHERE station_code = %(station_code)s
   AND order_id = %(order_id)s
@@ -77,7 +77,6 @@ class MesqlQueueWriteResult:
     reason: str
     error_type: str | None = None
     error_message: str | None = None
-    active_station_orders: dict[str, str] | None = None
 
 
 def _jsonb(value: Any) -> Any:
@@ -127,7 +126,6 @@ def upsert_mesql_queue(config: AppConfig, plans: list[MesqlQueuePlan]) -> MesqlQ
     if not config.db_enabled:
         return MesqlQueueWriteResult(False, False, 0, "db_disabled")
     current_plan: MesqlQueuePlan | None = None
-    active_station_orders: dict[str, str] = {}
     try:
         with database_connection(config) as connection:
             if connection is None:
@@ -149,9 +147,6 @@ def upsert_mesql_queue(config: AppConfig, plans: list[MesqlQueuePlan]) -> MesqlQ
                             local_queue_rank = int(next_rank[0] if next_rank and next_rank[0] is not None else 1)
                         else:
                             local_queue_rank = int(existing_rank[0])
-                            existing_status = str(existing_rank[1] if len(existing_rank) > 1 else "" or "").strip().lower()
-                            if existing_status in {"active", "pending_approval"} and plan.station_code not in active_station_orders:
-                                active_station_orders[plan.station_code] = plan.order_id
                         params = _params(plan, local_queue_rank=local_queue_rank)
                         cursor.execute(UPSERT_MESQL_WORK_ORDER_SQL, params)
                         cursor.execute(UPSERT_MESQL_STATION_QUEUE_SQL, params)
@@ -164,4 +159,4 @@ def upsert_mesql_queue(config: AppConfig, plans: list[MesqlQueuePlan]) -> MesqlQ
             exc,
         )
         return MesqlQueueWriteResult(True, False, 0, "db_error", type(exc).__name__, str(exc))
-    return MesqlQueueWriteResult(True, True, len(plans), "written", active_station_orders=active_station_orders)
+    return MesqlQueueWriteResult(True, True, len(plans), "written")

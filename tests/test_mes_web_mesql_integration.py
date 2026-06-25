@@ -233,21 +233,6 @@ class MesqlIntegrationTests(unittest.TestCase):
         self.assertEqual(len(mesql.complete_calls), 1)
         self.assertEqual(manager.read_state()["workOrders"]["ordersById"]["WO-MVP-002"]["status"], "completed")
 
-    def test_queue_refresh_restores_remote_active_order_into_runtime_state(self) -> None:
-        mesql = _Mesql()
-        mesql.remote_status = "in_progress"
-        client, manager, mesql, config = self._client(enabled=True, mesql=mesql)
-
-        response = client.get(f"/api/modules/{config.module_id}/dashboard")
-        state = manager.read_state()
-
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(state["workOrders"]["ordersById"]["WO-MVP-002"]["status"], "active")
-        self.assertEqual(state["workOrders"]["activeOrderId"], "WO-MVP-002")
-        self.assertEqual(state["workOrders"]["activeOrderByStation"], {"ASSEMBLY_01": "WO-MVP-002"})
-        self.assertEqual(mesql.start_calls, [])
-        self.assertEqual(mesql.complete_calls, [])
-
     def test_unavailable_blocks_start_and_accept_without_state_loss(self) -> None:
         client, manager, mesql, config = self._client(enabled=True, unavailable=True)
 

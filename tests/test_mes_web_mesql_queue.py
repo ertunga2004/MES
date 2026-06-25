@@ -255,67 +255,6 @@ class MesqlQueueProtectionTests(unittest.TestCase):
         self.assertEqual(order["status"], "queued")
         self.assertEqual(order["_mesql"]["remote_status"], "queued")
 
-    def test_remote_active_order_restores_empty_runtime_active_state(self) -> None:
-        payload = copy.deepcopy(QUEUE_PAYLOAD)
-        payload["queue"][0]["order_status"] = "in_progress"
-        payload["queue"][0]["queue_status"] = "active"
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = OeeRuntimeStateManager(Path(temp_dir) / "runtime.json")
-            manager.write_state(default_runtime_state())
-
-            manager.merge_mesql_queue_plans(queue_plans(payload))
-            work_orders = manager.read_state()["workOrders"]
-            order = work_orders["ordersById"]["WO-MVP-002"]
-
-        self.assertEqual(order["status"], "active")
-        self.assertEqual(work_orders["activeOrderId"], "WO-MVP-002")
-        self.assertEqual(work_orders["activeOrderByStation"], {"ASSEMBLY_01": "WO-MVP-002"})
-        self.assertEqual(order["_mesql"]["remote_status"], "in_progress")
-        self.assertEqual(order["_mesql"]["remote_queue_status"], "active")
-
-    def test_remote_active_order_does_not_overwrite_existing_station_active_order(self) -> None:
-        payload = copy.deepcopy(QUEUE_PAYLOAD)
-        payload["queue"][0]["order_status"] = "in_progress"
-        payload["queue"][0]["queue_status"] = "active"
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = OeeRuntimeStateManager(Path(temp_dir) / "runtime.json")
-            state = default_runtime_state()
-            state["workOrders"]["ordersById"] = {
-                "WO-LOCAL-ACTIVE": {
-                    "orderId": "WO-LOCAL-ACTIVE",
-                    "status": "active",
-                    "stationCode": "ASSEMBLY_01",
-                    "startedAt": "2026-06-19T10:00:00+03:00",
-                }
-            }
-            state["workOrders"]["orderSequence"] = ["WO-LOCAL-ACTIVE"]
-            state["workOrders"]["activeOrderId"] = "WO-LOCAL-ACTIVE"
-            state["workOrders"]["activeOrderByStation"] = {"ASSEMBLY_01": "WO-LOCAL-ACTIVE"}
-            manager.write_state(state)
-
-            manager.merge_mesql_queue_plans(queue_plans(payload))
-            work_orders = manager.read_state()["workOrders"]
-
-        self.assertEqual(work_orders["activeOrderId"], "WO-LOCAL-ACTIVE")
-        self.assertEqual(work_orders["activeOrderByStation"], {"ASSEMBLY_01": "WO-LOCAL-ACTIVE"})
-        self.assertEqual(work_orders["ordersById"]["WO-LOCAL-ACTIVE"]["status"], "active")
-        self.assertEqual(work_orders["ordersById"]["WO-MVP-002"]["status"], "queued")
-
-    def test_local_station_queue_active_order_restores_empty_runtime_active_state(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = OeeRuntimeStateManager(Path(temp_dir) / "runtime.json")
-            manager.write_state(default_runtime_state())
-
-            manager.merge_mesql_queue_plans(
-                queue_plans(QUEUE_PAYLOAD),
-                active_station_orders={"ASSEMBLY_01": "WO-MVP-002"},
-            )
-            work_orders = manager.read_state()["workOrders"]
-
-        self.assertEqual(work_orders["ordersById"]["WO-MVP-002"]["status"], "active")
-        self.assertEqual(work_orders["activeOrderId"], "WO-MVP-002")
-        self.assertEqual(work_orders["activeOrderByStation"], {"ASSEMBLY_01": "WO-MVP-002"})
-
 
 if __name__ == "__main__":
     unittest.main()

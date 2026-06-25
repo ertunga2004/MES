@@ -30,7 +30,9 @@
       "message": "F-ERP stock movement quantity label is not finalized.",
       "blocked_flow": "Official stock movement import finalization",
       "recommended_action": "Keep quantity as staging qty with warning until F-ERP quantity label decision closes."
-    },
+    }
+  ],
+  "holds": [
     {
       "code": "MESQL-VAL-0015",
       "name": "BOM_BOP_FIELD_MAPPING_UNKNOWN",

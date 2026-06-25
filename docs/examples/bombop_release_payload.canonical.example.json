@@ -80,14 +80,14 @@
   "operation_station_mapping": [
     {
       "operation_ref": "ASSEMBLY_01",
-      "station_code": "STATION-01",
+      "station_code": "ASSEMBLY_01",
       "work_center_code": "WC-ASSEMBLY",
       "mapping_status": "RELEASED",
       "validation_level": "PASS"
     },
     {
       "operation_ref": "PACKAGING_01",
-      "station_code": "STATION-02",
+      "station_code": "PACKAGING_01",
       "work_center_code": "WC-PACK",
       "mapping_status": "RELEASED",
       "validation_level": "PASS"
@@ -112,18 +112,10 @@
   "validation": {
     "validation_status": "PASS",
     "severity_summary": {
-      "PASS": 1,
+      "PASS": 0,
       "WARN": 0,
       "HOLD": 0,
       "FAIL": 0
-    },
-    "messages": [
-      {
-        "code": "MESQL-VAL-0000",
-        "name": "CANONICAL_EXAMPLE_PAYLOAD",
-        "severity": "PASS",
-        "message": "Example canonical payload is structurally complete."
-      }
-    ]
+    }
   }
 }

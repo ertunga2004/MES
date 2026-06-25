@@ -21,12 +21,13 @@ Icerik:
 - `README.md`
 - `docs/README.md`
 - `docs/AI_GUIDE.md`
-- `docs/architecture.md`
+- `docs/INDEX.md`
+- `docs/architecture/overview.md`
 - `docs/data-model.md`
-- `docs/mqtt-topics.md`
-- `docs/tablet_plan.md`
-- `docs/hardware.md`
-- `docs/field-test-plan.md`
+- `docs/runtime/mqtt-topics.md`
+- `docs/runtime/tablet_plan.md`
+- `docs/runtime/hardware.md`
+- `docs/runtime/field-test-plan.md`
 - `docs/archive/legacy_plans/roadmap.md` (arşivlendi; aktif referans için `docs/agent_memory/` kullanın)
 - `mes_web/README.md`
 - `raspberry/README.md`
@@ -57,8 +58,8 @@ Notebook URL:
 
 Icerik:
 
-- `docs/FERP_INTEGRATION.md`
-- `docs/FERP_JSON_CONTRACT.md`
+- `docs/erp/FERP_INTEGRATION.md`
+- `docs/erp/FERP_JSON_CONTRACT.md`
 - Excel dosyalarindan turetilmis Markdown/PDF label sozlukleri
 - workbook schema ozetleri
 - FERP label ve zorunlu alan dokumanlari

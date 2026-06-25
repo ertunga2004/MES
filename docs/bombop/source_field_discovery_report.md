@@ -6,17 +6,17 @@ Bu rapor 3E - BOM/BOP Source Field Discovery & v1 Readiness sprinti icin repo ve
 
 | Kaynak | Sonuc |
 |---|---|
-| `docs/bombop_field_mapping_contract.md` | Canonical alanlar var; tum `source_field` degerleri bilincli olarak `TBD`. |
-| `docs/bombop_release_importer_contract.md` | Canonical importer nesneleri var; gercek BOM/BOP JSON field adlari bilinmiyor. |
-| `docs/mesql_payload_versioning_policy.md` | `v0` draft/staging, `v1` contract-stable kurali var. |
+| `docs/bombop/field_mapping_contract.md` | Canonical alanlar var; tum `source_field` degerleri bilincli olarak `TBD`. |
+| `docs/bombop/release_importer_contract.md` | Canonical importer nesneleri var; gercek BOM/BOP JSON field adlari bilinmiyor. |
+| `docs/mesql/payload_versioning_policy.md` | `v0` draft/staging, `v1` contract-stable kurali var. |
 | `docs/examples/bombop_release_payload.canonical.example.json` | Canonical ornek; gercek BOM/BOP source payload degil. |
 | `docs/examples/bombop_validation_response.example.json` | Validation response ornegi; source field kaniti degil. |
 | `docs/examples/erp_preparation_staging_export.example.json` | ERP staging ornegi; source field kaniti degil. |
-| `docs/mesql_shared_schema_draft.md` | Shared schema canonical hedefleri var. |
-| `docs/mesql_shared_schema_open_questions.md` | Gercek BOM/BOP release JSON alan adlari acik olarak listelenmis. |
+| `docs/mesql/shared_schema_draft.md` | Shared schema canonical hedefleri var. |
+| `docs/mesql/shared_schema_open_questions.md` | Gercek BOM/BOP release JSON alan adlari acik olarak listelenmis. |
 | `db/drafts/mesql_shared_schema_draft.sql` | Draft SQL hedef kolonlari var; source field kaniti degil. |
-| `docs/FERP_INTEGRATION.md` | F-ERP label ve is emri/stok hareket sinirlari var. |
-| `docs/FERP_JSON_CONTRACT.md` | F-ERP label-first import/export sinirlari var. |
+| `docs/erp/FERP_INTEGRATION.md` | F-ERP label ve is emri/stok hareket sinirlari var. |
+| `docs/erp/FERP_JSON_CONTRACT.md` | F-ERP label-first import/export sinirlari var. |
 | `docs/agent_memory/10_db_pre_plan_summary.md` | Manufacturing master data on plan ozeti var. |
 | `docs/db_pre_plan/Manufacturing_Master_Data_Database_Detayli_Tasarim.xlsx` | Kavramsal manufacturing master data workbook'u; aday alanlar var, gercek BOM/BOP app field'i degil. |
 | `db/migrations/005_package_bom_wip.sql` | Mevcut MES runtime package BOM/WIP alanlari var; BOM/BOP source field kaniti degil. |

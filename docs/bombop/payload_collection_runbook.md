@@ -56,9 +56,9 @@ Bu runbook, kaynak BOM/BOP payload paketi geldikten sonra uygulanacak dokuman in
 
 Payload review tamamlaninca asagidaki dokumanlarin sonraki sprintte guncellenmesi beklenir:
 
-- `docs/bombop_source_field_discovery_report.md`
-- `docs/bombop_source_field_mapping_readiness.md`
-- `docs/bombop_v1_importer_contract_readiness.md`
+- `docs/bombop/source_field_discovery_report.md`
+- `docs/bombop/source_field_mapping_readiness.md`
+- `docs/bombop/v1_importer_contract_readiness.md`
 - Gerekirse source-to-canonical mapping ek dokumani
 
 Bu runbook tek basina v1 contract onayi vermez; sadece review akisini tanimlar.

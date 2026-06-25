@@ -63,10 +63,11 @@ Adresler:
 
 ## Dokuman Haritasi
 
-- [Genel Mimari](architecture.md)
+- [Docs Index](INDEX.md)
+- [Genel Mimari](architecture/overview.md)
 - [Veri Modeli](data-model.md)
-- [MQTT Topicleri](mqtt-topics.md)
-- [Tablet ve Teknisyen Kiosk Durumu](tablet_plan.md)
+- [MQTT Topicleri](runtime/mqtt-topics.md)
+- [Tablet ve Teknisyen Kiosk Durumu](runtime/tablet_plan.md)
 - [MES Web](../mes_web/README.md)
 - [Baslaticilar](../Baslaticilar/README.md)
 - [Raspberry](../raspberry/README.md)
@@ -77,6 +78,11 @@ Adresler:
 
 Bu klasordeki alt dizinler su amaclarla ayrilmistir:
 
+- **`architecture/`** - Sistem mimarisi ve genel bakis.
+- **`mesql/`** - MESQL shared schema, validation ve data exchange karar dokumanlari.
+- **`erp/`** - ERP/F-ERP entegrasyon ve label-first contract dokumanlari.
+- **`bombop/`** - BOM/BOP release, source payload ve readiness dokumanlari.
+- **`runtime/`** - MQTT, saha test, hardware, kiosk/tablet ve runbook dokumanlari.
 - **`agent_memory/`** — Ana mimari hafiza kaynagi. Yeni ajan veya gelistirici bu klasoru once okumalidur. Docker/PostgreSQL mimari kararlari, calisma sinirlarini ve sonraki adimlari ozetler.
 - **`postgres/`** — Aktif PostgreSQL gecis dokumanlari. Faz 4A plani ve veri grubu envanterleri buradadir.
 - **`db_pre_plan/`** — Veri tabani on analiz kaynakları (.xlsx, .docx). Tarihsel mimari kaynakcadir; silinmemelidir.

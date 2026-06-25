@@ -10,7 +10,7 @@ Bu dokuman `mesql.bombop_release.canonical.v0` payload'indan `v1` importer contr
 | Validation response ornegi | Var: `docs/examples/bombop_validation_response.example.json` |
 | ERP staging ornegi | Var: `docs/examples/erp_preparation_staging_export.example.json` |
 | Source field mapping | `TBD`; gercek BOM/BOP source field yok |
-| Version policy | Var: `docs/mesql_payload_versioning_policy.md` |
+| Version policy | Var: `docs/mesql/payload_versioning_policy.md` |
 | Production importer | Yok; bu sprintte yazilmadi |
 
 ## v1'e Gecis Icin Zorunlu Kararlar
@@ -40,7 +40,7 @@ Bu dokuman `mesql.bombop_release.canonical.v0` payload'indan `v1` importer contr
 | Kriter | Go kosulu |
 |---|---|
 | `errors` / `warnings` / `holds` ayrimi | Severity dictionary ile uyumlu |
-| Hata kodlari | Sadece `docs/mesql_validation_error_dictionary.md` icindeki kodlar |
+| Hata kodlari | Sadece `docs/mesql/validation_error_dictionary.md` icindeki kodlar |
 | Entity references | Product, revision, MBOM, BOP, mapping, package BOM icin standart |
 | Recommended actions | Her HOLD/FAIL icin zorunlu |
 | Source validation mapping | BOM/BOP kaynak warning/error formatindan MESQL kodlarina mapping |

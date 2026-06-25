@@ -71,8 +71,14 @@ Bu belge, repo uzerinde calisan ekip uyelerinin ChatGPT, Codex veya benzeri arac
 Bir AI aracina repo baglami verilirken su belgeler once okunmalidir:
 
 1. [README.md](README.md)
-2. [architecture.md](architecture.md)
-3. [data-model.md](data-model.md)
-4. [notebooklm/NOTEBOOK_INDEX.md](notebooklm/NOTEBOOK_INDEX.md)
-5. [mes_web/README.md](../mes_web/README.md)
-6. [mqtt-topics.md](mqtt-topics.md)
+2. [INDEX.md](INDEX.md)
+3. [architecture/overview.md](architecture/overview.md)
+4. [runtime/mqtt-topics.md](runtime/mqtt-topics.md)
+5. [notebooklm/NOTEBOOK_INDEX.md](notebooklm/NOTEBOOK_INDEX.md)
+6. [mes_web/README.md](../mes_web/README.md)
+
+MESQL, ERP/F-ERP ve BOM/BOP konularinda ilgili domain README'si once okunmalidir:
+
+- [MESQL](mesql/README.md)
+- [ERP / F-ERP](erp/README.md)
+- [BOM/BOP](bombop/README.md)

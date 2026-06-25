@@ -9,6 +9,8 @@ Bu klasor MESQL shared schema, payload versioning, validation ve ERP/BOM-BOP/MES
 - [Runtime / Shared Schema Boundary](runtime_shared_schema_boundary.md)
 - [Migration Candidate Matrix](migration_candidate_matrix.md)
 - [Compatibility Report Plan](compatibility_report_plan.md)
+- [Read-Only Compatibility Reports](read_only_compatibility_reports.md)
+- [Read-Only Compatibility Report Result Template](read_only_compatibility_report_result_template.md)
 - [Target PC Deployment Plan](target_pc_deployment_plan.md)
 - [DB Pre-Plan Summary](db_pre_plan_summary.md)
 - [SQL Source of Truth](sql_source_of_truth.md)

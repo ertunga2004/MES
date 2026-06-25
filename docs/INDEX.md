@@ -16,6 +16,8 @@ Bu indeks aktif dokumanlarin kanonik okuma haritasidir. Archive, raw kaynak ve D
 - [Runtime / Shared Schema Boundary](mesql/runtime_shared_schema_boundary.md)
 - [Migration Candidate Matrix](mesql/migration_candidate_matrix.md)
 - [Compatibility Report Plan](mesql/compatibility_report_plan.md)
+- [Read-Only Compatibility Reports](mesql/read_only_compatibility_reports.md)
+- [Read-Only Compatibility Report Result Template](mesql/read_only_compatibility_report_result_template.md)
 - [Target PC Deployment Plan](mesql/target_pc_deployment_plan.md)
 - [DB Pre-Plan Summary](mesql/db_pre_plan_summary.md)
 - [SQL Source of Truth](mesql/sql_source_of_truth.md)

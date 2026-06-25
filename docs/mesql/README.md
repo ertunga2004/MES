@@ -21,6 +21,7 @@ Bu klasor MESQL shared schema, payload versioning, validation ve ERP/BOM-BOP/MES
 - [Shared Schema Migration Review](shared_schema_migration_review.md)
 - [Shared Schema Open Questions](shared_schema_open_questions.md)
 - [Validation Error Dictionary](validation_error_dictionary.md)
+- [Target PC Execution Plan](target_pc_execution_plan.md)
 
 ## Bu Klasorde Ne Yapilmamali?
 

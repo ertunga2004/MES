@@ -28,6 +28,7 @@ Bu indeks aktif dokumanlarin kanonik okuma haritasidir. Archive, raw kaynak ve D
 - [Shared Schema Migration Review](mesql/shared_schema_migration_review.md)
 - [Shared Schema Open Questions](mesql/shared_schema_open_questions.md)
 - [Validation Error Dictionary](mesql/validation_error_dictionary.md)
+- [Target PC Execution Plan](mesql/target_pc_execution_plan.md)
 
 ## ERP / F-ERP
 

@@ -5,9 +5,11 @@ Bu klasor calisma, saha test, MQTT, donanim ve MVP runbook dokumanlarini tutar.
 ## Ana Dokumanlar
 
 - [Field Test Plan](field-test-plan.md)
+- [Feature Flags](feature_flags.md)
 - [Hardware Notes](hardware.md)
 - [MQTT Topics](mqtt-topics.md)
 - [MVP Runbook](MVP_RUNBOOK.md)
+- [Runtime Guardrails](runtime_guardrails.md)
 - [Tablet Plan](tablet_plan.md)
 
 ## Bu Klasorde Ne Yapilmamali?

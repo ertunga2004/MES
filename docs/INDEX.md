@@ -5,6 +5,7 @@ Bu indeks aktif dokumanlarin kanonik okuma haritasidir. Archive, raw kaynak ve D
 ## Architecture
 
 - [Architecture README](architecture/README.md)
+- [Roadmap](architecture/roadmap.md)
 - [System Architecture Overview](architecture/overview.md)
 
 ## MESQL
@@ -47,9 +48,11 @@ Bu indeks aktif dokumanlarin kanonik okuma haritasidir. Archive, raw kaynak ve D
 
 - [Runtime README](runtime/README.md)
 - [Field Test Plan](runtime/field-test-plan.md)
+- [Feature Flags](runtime/feature_flags.md)
 - [Hardware Notes](runtime/hardware.md)
 - [MQTT Topics](runtime/mqtt-topics.md)
 - [MVP Runbook](runtime/MVP_RUNBOOK.md)
+- [Runtime Guardrails](runtime/runtime_guardrails.md)
 - [Tablet Plan](runtime/tablet_plan.md)
 
 ## Examples

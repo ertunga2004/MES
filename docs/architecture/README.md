@@ -4,6 +4,7 @@ Bu klasor repo mimarisi ve sistem genel bakisi icindir.
 
 ## Ana Dokumanlar
 
+- [Roadmap](roadmap.md)
 - [System Architecture Overview](overview.md)
 
 ## Bu Klasorde Ne Yapilmamali?

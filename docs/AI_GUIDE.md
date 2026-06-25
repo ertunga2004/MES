@@ -73,9 +73,15 @@ Bir AI aracina repo baglami verilirken su belgeler once okunmalidir:
 1. [README.md](README.md)
 2. [INDEX.md](INDEX.md)
 3. [architecture/overview.md](architecture/overview.md)
-4. [runtime/mqtt-topics.md](runtime/mqtt-topics.md)
-5. [notebooklm/NOTEBOOK_INDEX.md](notebooklm/NOTEBOOK_INDEX.md)
-6. [mes_web/README.md](../mes_web/README.md)
+4. [runtime/runtime_guardrails.md](runtime/runtime_guardrails.md)
+5. [runtime/mqtt-topics.md](runtime/mqtt-topics.md)
+6. [notebooklm/NOTEBOOK_INDEX.md](notebooklm/NOTEBOOK_INDEX.md)
+7. [mes_web/README.md](../mes_web/README.md)
+
+DB gecis isi icin once [mesql/sql_source_of_truth.md](mesql/sql_source_of_truth.md) okunmalidir.
+Feature flag isi icin once [runtime/feature_flags.md](runtime/feature_flags.md) okunmalidir.
+Runtime isi icin once [runtime/runtime_guardrails.md](runtime/runtime_guardrails.md) okunmalidir.
+`docs/agent_memory/` tarihsel checkpoint alanidir; aktif dokumanlarin yerine gecmez.
 
 MESQL, ERP/F-ERP ve BOM/BOP konularinda ilgili domain README'si once okunmalidir:
 

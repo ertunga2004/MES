@@ -1,0 +1,56 @@
+{
+  "schema": "mesql.bombop_validation_response.v0",
+  "release_id": "REL-2026-06-25-0002",
+  "validation_status": "FAIL",
+  "severity_summary": {
+    "PASS": 6,
+    "WARN": 1,
+    "HOLD": 1,
+    "FAIL": 1
+  },
+  "errors": [
+    {
+      "code": "MESQL-VAL-0005",
+      "name": "RELEASED_OPERATION_MAPPING_MISSING",
+      "severity": "FAIL",
+      "entity_type": "operation_station_mapping",
+      "entity_ref": "operation:PACKAGING_01",
+      "message": "RELEASED operation has no station mapping.",
+      "blocked_flow": "MES distribution",
+      "recommended_action": "Add station_code/work_center_code mapping or move release_status out of RELEASED."
+    }
+  ],
+  "warnings": [
+    {
+      "code": "MESQL-VAL-0014",
+      "name": "FERP_QUANTITY_LABEL_MISSING",
+      "severity": "WARN",
+      "entity_type": "erp_preparation_staging",
+      "entity_ref": "ferp_documents",
+      "message": "F-ERP stock movement quantity label is not finalized.",
+      "blocked_flow": "Official stock movement import finalization",
+      "recommended_action": "Keep quantity as staging qty with warning until F-ERP quantity label decision closes."
+    },
+    {
+      "code": "MESQL-VAL-0015",
+      "name": "BOM_BOP_FIELD_MAPPING_UNKNOWN",
+      "severity": "HOLD",
+      "entity_type": "source_mapping",
+      "entity_ref": "source_field:TBD",
+      "message": "Real BOM/BOP source field names are not finalized.",
+      "blocked_flow": "Production importer",
+      "recommended_action": "Provide real BOM/BOP source payload and complete field mapping."
+    }
+  ],
+  "entity_refs": {
+    "product": "FIN-BLUE",
+    "product_revision": "FIN-BLUE:R1",
+    "bop_operation": "PACKAGING_01",
+    "source_system": "BOM_BOP"
+  },
+  "recommended_actions": [
+    "Complete operation/station mapping for PACKAGING_01 before MES distribution.",
+    "Keep ERP preparation export in staging mode until F-ERP quantity label is finalized.",
+    "Replace source_field:TBD mappings with real BOM/BOP source field names before production importer work."
+  ]
+}

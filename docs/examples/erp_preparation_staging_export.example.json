@@ -1,0 +1,112 @@
+{
+  "schema": "mesql.erp_preparation_staging.v0",
+  "export_id": "ERP-STAGE-2026-06-25-0001",
+  "source_system": "MESQL",
+  "target_system": "F-ERP",
+  "generated_at": "2026-06-25T10:00:00Z",
+  "products": [
+    {
+      "entity_ref": "FIN-BLUE",
+      "ferp_labels": {
+        "lblMTM00_CODE": "FIN-BLUE",
+        "lblMTM00_NAME": "Finished Blue Box",
+        "lblMTMT0_CODE": "FINISHED_GOOD",
+        "lblMUNT0_CODE": "AD"
+      },
+      "lifecycle_action": "create_candidate"
+    }
+  ],
+  "components": [
+    {
+      "entity_ref": "BLUE_BOX",
+      "ferp_labels": {
+        "lblMTM00_CODE": "BLUE_BOX",
+        "lblMTM00_NAME": "Blue Box Component",
+        "lblMTMT0_CODE": "COMPONENT",
+        "lblMUNT0_CODE": "AD"
+      },
+      "lifecycle_action": "map_or_create_candidate"
+    },
+    {
+      "entity_ref": "PACKAGING_01",
+      "ferp_labels": {
+        "lblMTM00_CODE": "PACKAGING_01",
+        "lblMTM00_NAME": "Packaging Material 01",
+        "lblMTMT0_CODE": "PACKAGING",
+        "lblMUNT0_CODE": "AD"
+      },
+      "lifecycle_action": "map_or_create_candidate"
+    }
+  ],
+  "routes": [
+    {
+      "route_ref": "FIN-BLUE:R1:BOP-R1",
+      "product_code": "FIN-BLUE",
+      "plant_code": "PLANT-01",
+      "operations": [
+        {
+          "operation_ref": "ASSEMBLY_01",
+          "ferp_labels": {
+            "lblMFWO0_CODE": "ASSEMBLY_01",
+            "lblMFW00_CODE": "WC-ASSEMBLY",
+            "lblMMFB4_SETUP_TIME": 30,
+            "lblMMFB4_TIME": 15
+          }
+        },
+        {
+          "operation_ref": "PACKAGING_01",
+          "ferp_labels": {
+            "lblMFWO0_CODE": "PACKAGING_01",
+            "lblMFW00_CODE": "WC-PACK",
+            "lblMMFB4_SETUP_TIME": 20,
+            "lblMMFB4_TIME": 10
+          }
+        }
+      ]
+    }
+  ],
+  "methods": [
+    {
+      "method_ref": "FIN-BLUE:R1:STD",
+      "product_code": "FIN-BLUE",
+      "route_ref": "FIN-BLUE:R1:BOP-R1",
+      "note": "Preparation staging only. Final F-ERP method import format is open."
+    }
+  ],
+  "package_boms": [
+    {
+      "package_bom_ref": "FIN-BLUE:R1:PKG-R1",
+      "package_product_code": "FIN-BLUE",
+      "lines": [
+        {
+          "component_code": "PACKAGING_01",
+          "required_quantity": 1,
+          "unit_code": "AD"
+        }
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "code": "MESQL-VAL-0014",
+      "name": "FERP_QUANTITY_LABEL_MISSING",
+      "severity": "WARN",
+      "message": "No finalized F-ERP stock movement quantity label is used in this staging export.",
+      "recommended_action": "Do not treat staging qty values as finalized stock movement import fields."
+    }
+  ],
+  "conflicts": [
+    {
+      "conflict_id": "CONFLICT-EXAMPLE-0001",
+      "entity_type": "component",
+      "mesql_code": "BLUE_BOX",
+      "erp_code": "BLUE_BOX",
+      "field_name": "unit_code",
+      "mesql_value": "AD",
+      "erp_value": "ADET",
+      "severity": "HOLD",
+      "recommended_action": "Review unit mapping before automatic ERP preparation import.",
+      "created_at": "2026-06-25T10:00:00Z"
+    }
+  ]
+}

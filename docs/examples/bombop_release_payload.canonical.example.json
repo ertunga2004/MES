@@ -1,0 +1,129 @@
+{
+  "schema": "mesql.bombop_release.canonical.v0",
+  "example_note": "Canonical example only. This is not a real BOM/BOP source-field payload.",
+  "release_id": "REL-2026-06-25-0001",
+  "source_system": "BOM_BOP",
+  "released_at": "2026-06-25T09:00:00Z",
+  "release_status": "RELEASED",
+  "product": {
+    "product_code": "FIN-BLUE",
+    "product_name": "Finished Blue Box",
+    "product_type": "FINISHED_GOOD",
+    "unit_code": "AD",
+    "source_system": "BOM_BOP"
+  },
+  "product_revision": {
+    "product_ref": "FIN-BLUE",
+    "revision_code": "R1",
+    "release_status": "RELEASED",
+    "valid_from": "2026-06-25T09:00:00Z",
+    "valid_to": null
+  },
+  "components": [
+    {
+      "component_code": "BLUE_BOX",
+      "component_name": "Blue Box Component",
+      "component_type": "COMPONENT",
+      "unit_code": "AD",
+      "source_system": "BOM_BOP"
+    },
+    {
+      "component_code": "PACKAGING_01",
+      "component_name": "Packaging Material 01",
+      "component_type": "PACKAGING",
+      "unit_code": "AD",
+      "source_system": "BOM_BOP"
+    }
+  ],
+  "mbom": {
+    "product_revision_ref": "FIN-BLUE:R1",
+    "mbom_revision": "MBOM-R1",
+    "plant_code": "PLANT-01",
+    "release_status": "RELEASED",
+    "valid_from": "2026-06-25T09:00:00Z",
+    "valid_to": null,
+    "lines": [
+      {
+        "line_no": 10,
+        "component_ref": "BLUE_BOX",
+        "required_quantity": 1,
+        "unit_code": "AD"
+      }
+    ]
+  },
+  "bop": {
+    "product_revision_ref": "FIN-BLUE:R1",
+    "bop_revision": "BOP-R1",
+    "plant_code": "PLANT-01",
+    "release_status": "RELEASED",
+    "valid_from": "2026-06-25T09:00:00Z",
+    "valid_to": null,
+    "operations": [
+      {
+        "operation_ref": "ASSEMBLY_01",
+        "operation_sequence": 10,
+        "operation_code": "ASSEMBLY_01",
+        "operation_name": "Assembly 01",
+        "setup_time_seconds": 30,
+        "cycle_time_seconds": 15
+      },
+      {
+        "operation_ref": "PACKAGING_01",
+        "operation_sequence": 20,
+        "operation_code": "PACKAGING_01",
+        "operation_name": "Packaging 01",
+        "setup_time_seconds": 20,
+        "cycle_time_seconds": 10
+      }
+    ]
+  },
+  "operation_station_mapping": [
+    {
+      "operation_ref": "ASSEMBLY_01",
+      "station_code": "STATION-01",
+      "work_center_code": "WC-ASSEMBLY",
+      "mapping_status": "RELEASED",
+      "validation_level": "PASS"
+    },
+    {
+      "operation_ref": "PACKAGING_01",
+      "station_code": "STATION-02",
+      "work_center_code": "WC-PACK",
+      "mapping_status": "RELEASED",
+      "validation_level": "PASS"
+    }
+  ],
+  "package_bom": {
+    "package_product_revision_ref": "FIN-BLUE:R1",
+    "package_bom_revision": "PKG-R1",
+    "plant_code": "PLANT-01",
+    "release_status": "RELEASED",
+    "valid_from": "2026-06-25T09:00:00Z",
+    "valid_to": null,
+    "lines": [
+      {
+        "line_no": 10,
+        "component_ref": "PACKAGING_01",
+        "required_quantity": 1,
+        "unit_code": "AD"
+      }
+    ]
+  },
+  "validation": {
+    "validation_status": "PASS",
+    "severity_summary": {
+      "PASS": 1,
+      "WARN": 0,
+      "HOLD": 0,
+      "FAIL": 0
+    },
+    "messages": [
+      {
+        "code": "MESQL-VAL-0000",
+        "name": "CANONICAL_EXAMPLE_PAYLOAD",
+        "severity": "PASS",
+        "message": "Example canonical payload is structurally complete."
+      }
+    ]
+  }
+}

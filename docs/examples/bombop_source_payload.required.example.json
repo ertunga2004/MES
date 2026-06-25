@@ -1,0 +1,90 @@
+{
+  "example_note": "This is a request template for real BOM/BOP source payload discovery. It is not a canonical MESQL payload.",
+  "requested_from": "BOM_BOP_SOURCE_OWNER",
+  "source_payload_status": "TBD",
+  "product": {
+    "source_field_for_product_code": "TBD",
+    "source_field_for_product_name": "TBD",
+    "source_field_for_product_type": "TBD",
+    "source_field_for_unit_code": "TBD",
+    "notes": "Provide one real product/master item record as exported by the BOM/BOP application."
+  },
+  "product_revision": {
+    "source_field_for_product_reference": "TBD",
+    "source_field_for_revision_code": "TBD",
+    "source_field_for_release_status": "TBD",
+    "source_field_for_valid_from": "TBD",
+    "source_field_for_valid_to": "TBD",
+    "notes": "Provide the real revision/version fields used by the source system."
+  },
+  "components": [
+    {
+      "source_field_for_component_code": "TBD",
+      "source_field_for_component_name": "TBD",
+      "source_field_for_component_type": "TBD",
+      "source_field_for_unit_code": "TBD",
+      "notes": "Provide at least two component records used by MBOM/package BOM."
+    }
+  ],
+  "mbom": {
+    "source_field_for_parent_product_or_revision": "TBD",
+    "source_field_for_mbom_revision": "TBD",
+    "source_field_for_plant_code": "TBD",
+    "source_field_for_release_status": "TBD",
+    "lines": [
+      {
+        "source_field_for_line_no": "TBD",
+        "source_field_for_component_reference": "TBD",
+        "source_field_for_required_quantity": "TBD",
+        "source_field_for_unit_code": "TBD"
+      }
+    ],
+    "notes": "Provide one full MBOM header with at least one line."
+  },
+  "bop": {
+    "source_field_for_product_or_revision": "TBD",
+    "source_field_for_bop_revision": "TBD",
+    "source_field_for_plant_code": "TBD",
+    "source_field_for_release_status": "TBD",
+    "operations": [
+      {
+        "source_field_for_operation_sequence": "TBD",
+        "source_field_for_operation_code": "TBD",
+        "source_field_for_operation_name": "TBD",
+        "source_field_for_setup_time_seconds": "TBD",
+        "source_field_for_cycle_time_seconds": "TBD"
+      }
+    ],
+    "notes": "Provide one full BOP/route with operation order."
+  },
+  "operation_station_mapping": [
+    {
+      "source_field_for_operation_reference": "TBD",
+      "source_field_for_station_code": "TBD",
+      "source_field_for_work_center_code": "TBD",
+      "source_field_for_mapping_status": "TBD",
+      "notes": "Provide the real operation to station/work-center relationship."
+    }
+  ],
+  "package_bom": {
+    "source_field_for_package_product_or_revision": "TBD",
+    "source_field_for_package_bom_revision": "TBD",
+    "source_field_for_plant_code": "TBD",
+    "source_field_for_release_status": "TBD",
+    "lines": [
+      {
+        "source_field_for_line_no": "TBD",
+        "source_field_for_component_reference": "TBD",
+        "source_field_for_required_quantity": "TBD",
+        "source_field_for_unit_code": "TBD"
+      }
+    ],
+    "notes": "Provide package BOM only if the BOM/BOP application owns package composition."
+  },
+  "notes": [
+    "Do not rename fields manually before sharing the sample.",
+    "Include real source field names and representative non-secret values.",
+    "Mask customer-sensitive descriptions if needed, but keep field names unchanged.",
+    "Include one RELEASED-like and one non-RELEASED-like example if the source supports statuses."
+  ]
+}

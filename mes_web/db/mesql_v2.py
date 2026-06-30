@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -117,6 +117,14 @@ def _jsonb(value: Any) -> Any:
     except ModuleNotFoundError:
         return safe_value
     return Jsonb(safe_value)
+
+
+def _transition_timestamp(value: Any | None = None) -> str:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if value not in (None, ""):
+        return _text(value)
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _field(row: Any, index: int, key: str) -> Any:
@@ -1085,21 +1093,22 @@ def start_operation_v2(
                 if queue_row["status"] not in {"queued", "ready", "active"}:
                     raise MesqlV2Error("QUEUE_ITEM_NOT_STARTABLE", status_code=409)
                 _assert_no_other_active_operation(cursor, operation)
+                transition_started_at = _transition_timestamp(started_at)
                 request_payload = {
                     "order_id": operation["order_id"],
                     "operation_no": operation["operation_no"],
                     "operator_id": actor_id or "operator_mvp",
                     "station_code": operation["station_code"],
-                    "started_at": started_at,
+                    "started_at": transition_started_at,
                 }
                 cursor.execute(
                     UPDATE_OPERATION_STARTED_SQL,
                     {
                         "work_order_operation_id": operation["work_order_operation_id"],
-                        "started_at": started_at,
+                        "started_at": transition_started_at,
                     },
                 )
-                cursor.execute(UPDATE_WORK_ORDER_STARTED_SQL, {"order_id": operation["order_id"], "started_at": started_at})
+                cursor.execute(UPDATE_WORK_ORDER_STARTED_SQL, {"order_id": operation["order_id"], "started_at": transition_started_at})
                 cursor.execute(
                     UPDATE_QUEUE_STARTED_SQL,
                     {
@@ -1108,7 +1117,7 @@ def start_operation_v2(
                     },
                 )
                 event_payload = {"operation": operation, "mesql_request": request_payload}
-                _insert_event(cursor, event_type="OPERATION_STARTED", event_at=started_at, actor_id=actor_id, operation=operation, payload=event_payload)
+                _insert_event(cursor, event_type="OPERATION_STARTED", event_at=transition_started_at, actor_id=actor_id, operation=operation, payload=event_payload)
                 outbox_id = _insert_outbox(
                     cursor,
                     event_type="operation_started",
@@ -1157,6 +1166,7 @@ def complete_operation_v2(
                 if operation["status"] not in ACTIVE_OPERATION_STATUSES | COMPLETED_OPERATION_STATUSES:
                     raise MesqlV2Error("OPERATION_NOT_COMPLETABLE", status_code=409)
                 queue_row = _operation_queue_from_cursor(cursor, operation)
+                transition_completed_at = _transition_timestamp(completed_at)
                 request_payload = {
                     "order_id": operation["order_id"],
                     "operation_no": operation["operation_no"],
@@ -1165,7 +1175,7 @@ def complete_operation_v2(
                     "good_quantity": good_quantity,
                     "scrap_quantity": scrap_quantity,
                     "uom_code": operation.get("uom_code"),
-                    "completed_at": completed_at,
+                    "completed_at": transition_completed_at,
                 }
                 cursor.execute(
                     UPDATE_OPERATION_COMPLETED_SQL,
@@ -1173,11 +1183,11 @@ def complete_operation_v2(
                         "work_order_operation_id": operation["work_order_operation_id"],
                         "good_quantity": good_quantity,
                         "scrap_quantity": scrap_quantity,
-                        "completed_at": completed_at,
+                        "completed_at": transition_completed_at,
                     },
                 )
                 cursor.execute(UPDATE_QUEUE_COMPLETED_SQL, {"station_queue_pk": queue_row["station_queue_pk"]})
-                cursor.execute(UPDATE_WORK_ORDER_COMPLETED_IF_ALL_DONE_SQL, {"order_id": operation["order_id"], "completed_at": completed_at})
+                cursor.execute(UPDATE_WORK_ORDER_COMPLETED_IF_ALL_DONE_SQL, {"order_id": operation["order_id"], "completed_at": transition_completed_at})
                 event_payload = {
                     "operation": operation,
                     "good_quantity": good_quantity,
@@ -1192,7 +1202,7 @@ def complete_operation_v2(
                         "order_id": operation["order_id"],
                         "item_id": operation["work_order_operation_id"],
                         "classification": classification,
-                        "completed_at": completed_at,
+                        "completed_at": transition_completed_at,
                         "source_system": SOURCE_SYSTEM,
                         "source_file": "mesql_v2",
                         "external_ref": f"v2:operation_completed:{operation['work_order_operation_id']}",
@@ -1200,7 +1210,7 @@ def complete_operation_v2(
                         "metadata": _jsonb({"source": "mesql_v2", **(metadata or {})}),
                     },
                 )
-                _insert_event(cursor, event_type="OPERATION_COMPLETED", event_at=completed_at, actor_id=actor_id, operation=operation, payload=event_payload)
+                _insert_event(cursor, event_type="OPERATION_COMPLETED", event_at=transition_completed_at, actor_id=actor_id, operation=operation, payload=event_payload)
                 outbox_id = _insert_outbox(
                     cursor,
                     event_type="operation_completed",

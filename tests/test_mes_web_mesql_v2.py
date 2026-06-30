@@ -118,6 +118,20 @@ def _assert_json_serializable_without_decimal(test_case: unittest.TestCase, valu
         test_case.assertNotIsInstance(value, Decimal)
 
 
+def _payload_for(executed_params: list[dict], event_type: str) -> dict:
+    for params in executed_params:
+        if params.get("event_type") == event_type:
+            payload = params.get("payload")
+            return dict(payload) if isinstance(payload, dict) else {}
+    return {}
+
+
+def _assert_iso_timestamp(test_case: unittest.TestCase, value) -> None:
+    test_case.assertIsInstance(value, str)
+    test_case.assertTrue(value)
+    datetime.fromisoformat(value)
+
+
 class _QueueConflictCursor:
     def __init__(self) -> None:
         self.executed: list[tuple[str, dict]] = []
@@ -421,10 +435,10 @@ class MesqlV2Tests(unittest.TestCase):
                 station_code="ASSEMBLY_01",
                 work_order_operation_id="11111111-1111-1111-1111-111111111111",
                 actor_id="OP-001",
-                started_at="2026-06-30T12:00:00+00:00",
             )
 
         executed_sql = "\n".join(sql.lower() for sql, _params in connection.cursor_instance.executed)
+        executed_params = [params for _sql, params in connection.cursor_instance.executed]
         self.assertEqual(result["operation_status"], "active")
         self.assertTrue(connection.transaction_entered)
         self.assertTrue(connection.committed)
@@ -433,6 +447,15 @@ class MesqlV2Tests(unittest.TestCase):
         self.assertIn("update mes.station_queue", executed_sql)
         self.assertIn("insert into mes.work_order_events", executed_sql)
         self.assertIn("insert into mes.integration_outbox", executed_sql)
+        outbox_payload = _payload_for(executed_params, "operation_started")
+        started_at = outbox_payload["mesql_request"]["started_at"]
+        _assert_iso_timestamp(self, started_at)
+        self.assertEqual(
+            [params["started_at"] for params in executed_params if "started_at" in params],
+            [started_at, started_at],
+        )
+        self.assertTrue(any(params.get("event_at") == started_at for params in executed_params))
+        _assert_json_serializable_without_decimal(self, outbox_payload)
 
     def test_complete_operation_writes_completion_event_and_outbox(self) -> None:
         connection = _Connection()
@@ -454,7 +477,6 @@ class MesqlV2Tests(unittest.TestCase):
                 scrap_quantity=Decimal("0"),
                 actor_id="OP-001",
                 metadata={"measured_weight": Decimal("1.25")},
-                completed_at="2026-06-30T12:05:00+00:00",
             )
 
         executed_sql = "\n".join(sql.lower() for sql, _params in connection.cursor_instance.executed)
@@ -467,9 +489,17 @@ class MesqlV2Tests(unittest.TestCase):
         self.assertTrue(json_payloads)
         for payload in json_payloads:
             _assert_json_serializable_without_decimal(self, payload)
+        outbox_payload = _payload_for(executed_params, "operation_completed")
+        completed_at = outbox_payload["mesql_request"]["completed_at"]
+        _assert_iso_timestamp(self, completed_at)
+        self.assertEqual(
+            [params["completed_at"] for params in executed_params if "completed_at" in params],
+            [completed_at, completed_at, completed_at],
+        )
+        self.assertTrue(any(params.get("event_at") == completed_at for params in executed_params))
 
     def test_push_dry_run_exposes_mesql_payload_without_http_call(self) -> None:
-        event = mesql_v2.PendingOutboxEvent(
+        start_event = mesql_v2.PendingOutboxEvent(
             outbox_id="22222222-2222-2222-2222-222222222222",
             event_type="operation_started",
             order_id="WO-E2E-MAVI-001",
@@ -488,14 +518,38 @@ class MesqlV2Tests(unittest.TestCase):
                 },
             },
         )
+        complete_event = mesql_v2.PendingOutboxEvent(
+            outbox_id="33333333-3333-3333-3333-333333333333",
+            event_type="operation_completed",
+            order_id="WO-E2E-MAVI-001",
+            work_order_operation_id="11111111-1111-1111-1111-111111111111",
+            station_code="ASSEMBLY_01",
+            dedupe_key="mesql:operation_completed:11111111-1111-1111-1111-111111111111",
+            payload={
+                "mesql_endpoint": "/api/v1/mes/operations/complete",
+                "mesql_request": {
+                    "order_id": "WO-E2E-MAVI-001",
+                    "operation_no": 10,
+                    "operator_id": "OP-001",
+                    "station_code": "ASSEMBLY_01",
+                    "good_quantity": Decimal("1.0"),
+                    "scrap_quantity": Decimal("0"),
+                    "completed_at": "2026-06-30T12:05:00+00:00",
+                },
+            },
+        )
 
-        with patch("mes_web.integration.mesql_push.pending_outbox_events", return_value=[event]):
+        with patch("mes_web.integration.mesql_push.pending_outbox_events", return_value=[start_event, complete_event]):
             result = push_mesql_outbox(AppConfig(db_enabled=True), dry_run=True)
 
-        self.assertEqual(result["read_count"], 1)
+        self.assertEqual(result["read_count"], 2)
         self.assertEqual(result["pushed_count"], 0)
         self.assertEqual(result["dry_run_payloads"][0]["payload"]["order_id"], "WO-E2E-MAVI-001")
         self.assertEqual(result["dry_run_payloads"][0]["payload"]["good_quantity"], 1)
+        self.assertEqual(result["dry_run_payloads"][0]["payload"]["started_at"], "2026-06-30T12:00:00+00:00")
+        self.assertEqual(result["dry_run_payloads"][1]["payload"]["completed_at"], "2026-06-30T12:05:00+00:00")
+        self.assertEqual(result["dry_run_payloads"][1]["payload"]["good_quantity"], 1)
+        self.assertEqual(result["dry_run_payloads"][1]["payload"]["scrap_quantity"], 0)
         _assert_json_serializable_without_decimal(self, result)
 
 

@@ -9,9 +9,8 @@ from .connection import database_connection
 from .safe_write import DatabaseWriteResult, safe_db_write
 from .station_queue import (
     STATION_QUEUE_EXISTS_SQL,
-    UPSERT_STATION_QUEUE_SQL,
-    station_queue_params,
     station_queue_rows_from_work_order_rows,
+    write_station_queue_row,
 )
 from .work_order_mirror import UPSERT_WORK_ORDER_SQL, build_work_order_mirror_rows
 
@@ -501,7 +500,7 @@ def _execute_transition_write(
                 table_ref = cursor.fetchone()
                 if table_ref and table_ref[0]:
                     for row in station_queue_rows:
-                        cursor.execute(UPSERT_STATION_QUEUE_SQL, station_queue_params(row, jsonb=_jsonb))
+                        write_station_queue_row(cursor, row, jsonb=_jsonb)
 
         commit = getattr(connection, "commit", None)
         if callable(commit):

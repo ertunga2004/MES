@@ -397,7 +397,10 @@ class WorkOrderTransitionWriterTests(unittest.TestCase):
                 self.executed.append((str(sql), params))
 
             def fetchone(self):
-                return ("mes.station_queue",)
+                last_sql = self.executed[-1][0].lower()
+                if "to_regclass('mes.station_queue')" in last_sql:
+                    return ("mes.station_queue",)
+                return None
 
         class Connection:
             def __init__(self) -> None:

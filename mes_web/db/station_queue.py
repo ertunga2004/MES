@@ -11,7 +11,27 @@ STATION_QUEUE_SOURCE = "mes_web_work_order_transition_hook"
 
 STATION_QUEUE_EXISTS_SQL = "SELECT to_regclass('mes.station_queue')"
 
-UPSERT_STATION_QUEUE_SQL = """
+ACTIVE_QUEUE_STATUSES = {"queued", "active", "pending_approval"}
+
+SELECT_STATION_QUEUE_ROW_SQL = """
+SELECT station_queue_pk, queue_rank, status
+FROM mes.station_queue
+WHERE station_code = %(station_code)s
+  AND order_id = %(order_id)s
+LIMIT 1
+"""
+
+SELECT_STATION_QUEUE_ACTIVE_RANK_SQL = """
+SELECT order_id
+FROM mes.station_queue
+WHERE station_code = %(station_code)s
+  AND queue_rank = %(queue_rank)s
+  AND order_id <> %(order_id)s
+  AND status IN ('queued', 'active', 'pending_approval')
+LIMIT 1
+"""
+
+INSERT_STATION_QUEUE_SQL = """
 INSERT INTO mes.station_queue (
     station_code,
     order_id,
@@ -31,13 +51,21 @@ INSERT INTO mes.station_queue (
     %(metadata)s,
     now()
 )
-ON CONFLICT (station_code, order_id) DO UPDATE SET
-    queue_rank = EXCLUDED.queue_rank,
-    status = EXCLUDED.status,
-    source = EXCLUDED.source,
-    payload = EXCLUDED.payload,
-    metadata = EXCLUDED.metadata,
+"""
+
+UPSERT_STATION_QUEUE_SQL = INSERT_STATION_QUEUE_SQL
+
+UPDATE_STATION_QUEUE_SQL = """
+UPDATE mes.station_queue
+SET
+    queue_rank = %(queue_rank)s,
+    status = %(status)s,
+    source = %(source)s,
+    payload = %(payload)s,
+    metadata = %(metadata)s,
     updated_at = now()
+WHERE station_code = %(station_code)s
+  AND order_id = %(order_id)s
 """
 
 
@@ -144,3 +172,43 @@ def station_queue_params(row: StationQueueRow, *, jsonb) -> JsonObject:
         "payload": jsonb(row.payload),
         "metadata": jsonb(row.metadata),
     }
+
+
+def _row_value(row: Any, index: int, key: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(key)
+    if isinstance(row, (list, tuple)) and len(row) > index:
+        return row[index]
+    return None
+
+
+def _active_rank_occupied(cursor: Any, params: JsonObject, queue_rank: int) -> bool:
+    check_params = dict(params)
+    check_params["queue_rank"] = queue_rank
+    cursor.execute(SELECT_STATION_QUEUE_ACTIVE_RANK_SQL, check_params)
+    return cursor.fetchone() is not None
+
+
+def write_station_queue_row(cursor: Any, row: StationQueueRow, *, jsonb) -> bool:
+    params = station_queue_params(row, jsonb=jsonb)
+    incoming_active = row.status in ACTIVE_QUEUE_STATUSES
+    cursor.execute(SELECT_STATION_QUEUE_ROW_SQL, params)
+    existing = cursor.fetchone()
+    if existing:
+        existing_rank = _safe_int(_row_value(existing, 1, "queue_rank"))
+        next_rank = row.queue_rank
+        if incoming_active and _active_rank_occupied(cursor, params, row.queue_rank):
+            next_rank = existing_rank if existing_rank is not None else row.queue_rank
+        next_status = row.status
+        if incoming_active and _active_rank_occupied(cursor, params, next_rank):
+            next_status = _text(_row_value(existing, 2, "status")) or row.status
+        update_params = dict(params)
+        update_params["queue_rank"] = next_rank
+        update_params["status"] = next_status
+        cursor.execute(UPDATE_STATION_QUEUE_SQL, update_params)
+        return True
+
+    if incoming_active and _active_rank_occupied(cursor, params, row.queue_rank):
+        return False
+    cursor.execute(INSERT_STATION_QUEUE_SQL, params)
+    return True

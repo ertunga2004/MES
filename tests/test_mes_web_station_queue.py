@@ -7,6 +7,7 @@ from mes_web.db.station_queue import (
     UPSERT_STATION_QUEUE_SQL,
     station_queue_params,
     station_queue_rows_from_work_order_rows,
+    write_station_queue_row,
 )
 
 
@@ -67,9 +68,41 @@ class StationQueueTests(unittest.TestCase):
         lowered = UPSERT_STATION_QUEUE_SQL.lower()
 
         self.assertIn("insert into mes.station_queue", lowered)
-        self.assertIn("on conflict (station_code, order_id) do update", lowered)
         for forbidden in ("delete", "truncate", "drop", "alter"):
             self.assertNotIn(forbidden, lowered)
+
+    def test_write_station_queue_row_skips_insert_when_active_rank_is_occupied(self) -> None:
+        class Cursor:
+            def __init__(self) -> None:
+                self.executed: list[tuple[str, dict | None]] = []
+
+            def execute(self, sql, params=None):
+                self.executed.append((str(sql), params))
+
+            def fetchone(self):
+                sql = self.executed[-1][0]
+                if "where station_code = %(station_code)s" in sql.lower() and "and order_id = %(order_id)s" in sql.lower():
+                    return None
+                if "and queue_rank = %(queue_rank)s" in sql.lower():
+                    return ("WO-OTHER",)
+                return None
+
+        row = station_queue_rows_from_work_order_rows(
+            [
+                {
+                    "order_id": "WO-1",
+                    "status": "queued",
+                    "payload": {},
+                    "metadata": {"station_code": "ASSEMBLY_01", "queue_rank": 0},
+                }
+            ]
+        )[0]
+        cursor = Cursor()
+
+        written = write_station_queue_row(cursor, row, jsonb=lambda value: value)
+
+        self.assertFalse(written)
+        self.assertFalse(any("insert into mes.station_queue" in sql.lower() for sql, _params in cursor.executed))
 
     def test_params_wrap_payload_and_metadata_as_jsonb(self) -> None:
         row = station_queue_rows_from_work_order_rows(

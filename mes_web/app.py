@@ -30,6 +30,7 @@ from .db.work_order_transition_writer import mirror_work_order_transition_from_s
 from .db.mesql_v2 import MesqlV2Error, complete_operation_v2, read_station_queue_v2, start_operation_v2
 from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
 from .integration.mesql_pull import pull_mesql_station_queues
+from .integration.mesql_push import push_mesql_outbox
 from .masterdata import load_kiosk_masterdata
 from .oee_state import WorkOrderTransitionReasonRequired, build_work_order_snapshot
 from .parsers import normalize_color
@@ -1256,6 +1257,18 @@ def create_app() -> FastAPI:
                 classification=str(request_payload.get("classification") or "good"),
                 metadata=request_payload.get("metadata") if isinstance(request_payload.get("metadata"), dict) else {},
                 completed_at=str(request_payload.get("completed_at") or "") or None,
+            )
+        except MesqlV2Error as exc:
+            _raise_mesql_v2_error(exc)
+
+    @app.post("/api/v2/integration/mesql/push")
+    async def api_v2_mesql_push(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        request_payload = payload if isinstance(payload, dict) else {}
+        try:
+            return push_mesql_outbox(
+                config,
+                limit=int(request_payload.get("limit") or 50),
+                dry_run=bool(request_payload.get("dry_run")),
             )
         except MesqlV2Error as exc:
             _raise_mesql_v2_error(exc)

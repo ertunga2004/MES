@@ -106,6 +106,10 @@ class AppConfig:
     db_shadow_read_dashboard: bool = False
     db_read_dashboard: bool = False
     db_strict_timestamp_guard: bool = False
+    mesql_api_base_url: str = "http://ferptop:8090"
+    mesql_stations: tuple[str, ...] = ("ASSEMBLY_01", "PACKAGING_01")
+    mesql_pull_timeout_sec: float = 10.0
+    mesql_push_timeout_sec: float = 10.0
     allowed_presets: tuple[str, ...] = field(default_factory=lambda: ALLOWED_PRESET_COMMANDS)
 
     @property
@@ -281,4 +285,12 @@ class AppConfig:
             db_shadow_read_dashboard=_env_bool("MES_WEB_DB_SHADOW_READ_DASHBOARD", False),
             db_read_dashboard=_env_bool("MES_WEB_DB_READ_DASHBOARD", False),
             db_strict_timestamp_guard=_env_bool("MES_WEB_DB_STRICT_TIMESTAMP_GUARD", False),
+            mesql_api_base_url=os.getenv("MESQL_API_BASE_URL", "http://ferptop:8090"),
+            mesql_stations=tuple(
+                station.strip().upper()
+                for station in os.getenv("MESQL_STATIONS", "ASSEMBLY_01,PACKAGING_01").split(",")
+                if station.strip()
+            ),
+            mesql_pull_timeout_sec=float(os.getenv("MESQL_PULL_TIMEOUT_SEC", "10")),
+            mesql_push_timeout_sec=float(os.getenv("MESQL_PUSH_TIMEOUT_SEC", "10")),
         )

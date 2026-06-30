@@ -27,7 +27,9 @@ from .db.package_sessions import (
 from .db.work_order_mirror import load_work_order_planning_snapshot, mirror_work_orders_from_state, reset_work_order_operational_state
 from .db.work_order_read import WORK_ORDER_READ_SOURCE, fetch_station_queue_order, state_with_db_work_orders
 from .db.work_order_transition_writer import mirror_work_order_transition_from_state
+from .db.mesql_v2 import MesqlV2Error, complete_operation_v2, read_station_queue_v2, start_operation_v2
 from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
+from .integration.mesql_pull import pull_mesql_station_queues
 from .masterdata import load_kiosk_masterdata
 from .oee_state import WorkOrderTransitionReasonRequired, build_work_order_snapshot
 from .parsers import normalize_color
@@ -1178,6 +1180,85 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "time": utc_now_text()}
+
+    def _raise_mesql_v2_error(exc: MesqlV2Error) -> None:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    @app.post("/api/v2/integration/mesql/pull")
+    async def api_v2_mesql_pull(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        request_payload = payload if isinstance(payload, dict) else {}
+        stations = request_payload.get("stations")
+        station_codes = stations if isinstance(stations, list) else None
+        dry_run = bool(request_payload.get("dry_run"))
+        try:
+            return pull_mesql_station_queues(config, stations=station_codes, dry_run=dry_run)
+        except MesqlV2Error as exc:
+            _raise_mesql_v2_error(exc)
+
+    @app.get("/api/v2/stations/{station_code}/queue")
+    async def api_v2_station_queue(station_code: str) -> dict[str, Any]:
+        try:
+            queue = read_station_queue_v2(config, station_code)
+        except MesqlV2Error as exc:
+            _raise_mesql_v2_error(exc)
+        return {
+            "station_code": station_code.upper(),
+            "count": len(queue),
+            "queue": queue,
+            "source": "local_mes_db",
+        }
+
+    @app.post("/api/v2/stations/{station_code}/operations/{work_order_operation_id}/start")
+    async def api_v2_start_operation(station_code: str, work_order_operation_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        request_payload = payload if isinstance(payload, dict) else {}
+        try:
+            return start_operation_v2(
+                config,
+                station_code=station_code,
+                work_order_operation_id=work_order_operation_id,
+                actor_id=str(request_payload.get("actor_id") or request_payload.get("operator_id") or ""),
+                started_at=str(request_payload.get("started_at") or "") or None,
+            )
+        except MesqlV2Error as exc:
+            _raise_mesql_v2_error(exc)
+
+    @app.post("/api/v2/stations/{station_code}/orders/{order_id}/operations/{operation_no}/start")
+    async def api_v2_start_operation_by_order(
+        station_code: str,
+        order_id: str,
+        operation_no: int,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        request_payload = payload if isinstance(payload, dict) else {}
+        try:
+            return start_operation_v2(
+                config,
+                station_code=station_code,
+                order_id=order_id,
+                operation_no=operation_no,
+                actor_id=str(request_payload.get("actor_id") or request_payload.get("operator_id") or ""),
+                started_at=str(request_payload.get("started_at") or "") or None,
+            )
+        except MesqlV2Error as exc:
+            _raise_mesql_v2_error(exc)
+
+    @app.post("/api/v2/stations/{station_code}/operations/{work_order_operation_id}/complete")
+    async def api_v2_complete_operation(station_code: str, work_order_operation_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        request_payload = payload if isinstance(payload, dict) else {}
+        try:
+            return complete_operation_v2(
+                config,
+                station_code=station_code,
+                work_order_operation_id=work_order_operation_id,
+                good_quantity=float(request_payload.get("good_quantity") or 0),
+                scrap_quantity=float(request_payload.get("scrap_quantity") or 0),
+                actor_id=str(request_payload.get("actor_id") or request_payload.get("operator_id") or ""),
+                classification=str(request_payload.get("classification") or "good"),
+                metadata=request_payload.get("metadata") if isinstance(request_payload.get("metadata"), dict) else {},
+                completed_at=str(request_payload.get("completed_at") or "") or None,
+            )
+        except MesqlV2Error as exc:
+            _raise_mesql_v2_error(exc)
 
     @app.get("/")
     async def index() -> FileResponse:

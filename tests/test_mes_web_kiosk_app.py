@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 try:
@@ -326,6 +327,54 @@ class KioskAppTests(unittest.TestCase):
         kiosk = client.get(f"/api/modules/{config.module_id}/kiosk/bootstrap", params={"device_id": "kiosk-1"}).json()
         self.assertEqual(dashboard["work_orders"]["active_order"]["order_id"], "WO-001")
         self.assertEqual(kiosk["work_orders"]["active_order"]["order_id"], "WO-001")
+
+    def test_kiosk_work_order_start_hydrates_db_backed_queue_order(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.apply_control("shift_start")
+        manager.import_work_orders(
+            [
+                {
+                    "order_id": "WO-DB-001",
+                    "stock_code": "BOX-BLUE",
+                    "stock_name": "Mavi Kutu",
+                    "qty": 1,
+                    "color": "blue",
+                    "stationCode": "ASSEMBLY_01",
+                },
+            ]
+        )
+        db_state = manager.read_state()
+        runtime_state = manager.read_state()
+        runtime_state["workOrders"]["ordersById"] = {}
+        runtime_state["workOrders"]["orderSequence"] = []
+        runtime_state["workOrders"]["activeOrderId"] = ""
+        runtime_state["workOrders"]["activeOrderByStation"] = {}
+        manager.write_state(runtime_state)
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        with patch.object(
+            app_module,
+            "state_with_db_work_orders",
+            return_value=SimpleNamespace(source=app_module.WORK_ORDER_READ_SOURCE, state=db_state),
+        ), patch.object(
+            app_module,
+            "fetch_station_queue_order",
+            return_value={"station_code": "ASSEMBLY_01", "order_id": "WO-DB-001", "status": "queued"},
+        ):
+            response = client.post(
+                f"/api/modules/{config.module_id}/kiosk/work-orders/start",
+                json={
+                    "device_id": "kiosk-1",
+                    "operator_id": "1",
+                    "station_code": "ASSEMBLY_01",
+                    "order_id": "WO-DB-001",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        state = manager.read_state()
+        self.assertEqual(state["workOrders"]["activeOrderId"], "WO-DB-001")
+        self.assertEqual(state["workOrders"]["ordersById"]["WO-DB-001"]["status"], "active")
 
     def test_dashboard_station_work_orders_split_active_pending_and_queue(self) -> None:
         client, config, manager, store, _runtime_service = self._build_client()

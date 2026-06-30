@@ -78,6 +78,22 @@ FROM mes.station_queue
 ORDER BY station_code, queue_rank, updated_at DESC NULLS LAST, order_id
 """
 
+STATION_QUEUE_ORDER_READ_SQL = """
+SELECT
+    q.station_code,
+    q.order_id,
+    q.queue_rank,
+    q.status,
+    q.source,
+    q.metadata,
+    q.updated_at
+FROM mes.station_queue q
+JOIN mes.work_orders w ON w.order_id = q.order_id
+WHERE q.station_code = %(station_code)s
+  AND q.order_id = %(order_id)s
+LIMIT 1
+"""
+
 ACTIVE_STATUSES = {"active", "pending_approval"}
 
 
@@ -406,6 +422,41 @@ def _fetch_station_queue_rows(config: AppConfig) -> list[JsonObject]:
                         )
                     )
             return rows
+
+
+def fetch_station_queue_order(config: AppConfig, *, station_code: str, order_id: str) -> JsonObject | None:
+    normalized_station = _text(station_code).upper()
+    normalized_order_id = _text(order_id)
+    if not config.db_enabled or not normalized_station or not normalized_order_id:
+        return None
+    with database_connection(config) as connection:
+        if connection is None:
+            return None
+        with connection.cursor() as cursor:
+            cursor.execute(
+                STATION_QUEUE_ORDER_READ_SQL,
+                {"station_code": normalized_station, "order_id": normalized_order_id},
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            if isinstance(row, Mapping):
+                return {str(key): value for key, value in row.items()}
+            values = list(row) if isinstance(row, (list, tuple)) else []
+            return dict(
+                zip(
+                    (
+                        "station_code",
+                        "order_id",
+                        "queue_rank",
+                        "status",
+                        "source",
+                        "metadata",
+                        "updated_at",
+                    ),
+                    values,
+                )
+            )
 
 
 def state_with_db_work_orders(

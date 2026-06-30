@@ -25,7 +25,7 @@ from .db.package_sessions import (
     upsert_package_session_started,
 )
 from .db.work_order_mirror import load_work_order_planning_snapshot, mirror_work_orders_from_state, reset_work_order_operational_state
-from .db.work_order_read import state_with_db_work_orders
+from .db.work_order_read import WORK_ORDER_READ_SOURCE, fetch_station_queue_order, state_with_db_work_orders
 from .db.work_order_transition_writer import mirror_work_order_transition_from_state
 from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
 from .masterdata import load_kiosk_masterdata
@@ -237,6 +237,38 @@ def _order_matches_station(order_id: str, order: dict[str, Any], station_code: s
     if not normalized_station:
         return True
     return _order_station_code(order_id, order) == normalized_station
+
+
+def _station_code_for_start(order_id: str, order: dict[str, Any] | None, station_code: str = "") -> str:
+    normalized_station = str(station_code or "").strip().upper()
+    if normalized_station:
+        return normalized_station
+    return _order_station_code(order_id, order if isinstance(order, dict) else {})
+
+
+def _hydrate_db_backed_work_order_state_for_start(
+    runtime_state: dict[str, Any],
+    db_state: dict[str, Any],
+    *,
+    order_id: str,
+    station_code: str,
+) -> None:
+    runtime_work_orders = runtime_state.get("workOrders") if isinstance(runtime_state.get("workOrders"), dict) else {}
+    runtime_orders = runtime_work_orders.get("ordersById") if isinstance(runtime_work_orders.get("ordersById"), dict) else {}
+    if isinstance(runtime_orders.get(order_id), dict):
+        return
+
+    db_work_orders = db_state.get("workOrders") if isinstance(db_state.get("workOrders"), dict) else {}
+    db_orders = db_work_orders.get("ordersById") if isinstance(db_work_orders.get("ordersById"), dict) else {}
+    db_order = db_orders.get(order_id) if isinstance(db_orders.get(order_id), dict) else None
+    if db_order is None:
+        return
+
+    queue_station = _station_code_for_start(order_id, db_order, station_code)
+    queue_row = fetch_station_queue_order(config, station_code=queue_station, order_id=order_id)
+    if not queue_row or str(queue_row.get("status") or "").strip() != "queued":
+        raise HTTPException(status_code=400, detail="WORK_ORDER_NOT_FOUND")
+    oee_state_manager.write_state(db_state)
 
 
 def _project_kiosk_work_order(order_id: str, order: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
@@ -1757,7 +1789,9 @@ def create_app() -> FastAPI:
     async def kiosk_start_work_order(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         _ensure_module(module_id)
         actor = _resolve_kiosk_actor(payload)
-        current_state = oee_state_manager.read_state()
+        runtime_state = oee_state_manager.read_state()
+        db_read_result = state_with_db_work_orders(config, runtime_state, logger=logger)
+        current_state = db_read_result.state
         if str(current_state.get("operationalState") or "") != "shift_active_running":
             raise HTTPException(status_code=400, detail="KIOSK_WORK_ORDER_START_BLOCKED")
         work_orders = current_state.get("workOrders") if isinstance(current_state.get("workOrders"), dict) else {}
@@ -1790,6 +1824,13 @@ def create_app() -> FastAPI:
                     "requested_order_id": order_id,
                     "priority_order_id": top_queue_order_id,
                 },
+            )
+        if db_read_result.source == WORK_ORDER_READ_SOURCE:
+            _hydrate_db_backed_work_order_state_for_start(
+                runtime_state,
+                current_state,
+                order_id=order_id,
+                station_code=station_code,
             )
         try:
             result = oee_state_manager.start_work_order(

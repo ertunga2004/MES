@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import unittest
 from contextlib import contextmanager
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
+from uuid import UUID
 
 from fastapi.testclient import TestClient
 
@@ -21,6 +25,9 @@ class _Cursor:
         self.last_sql = ""
         self.last_params: dict = {}
         self.operation_status = "queued"
+        self.planned_quantity = 1
+        self.good_quantity = 0
+        self.scrap_quantity = 0
         self.queue_rows: list[dict] = []
 
     def __enter__(self):
@@ -45,9 +52,9 @@ class _Cursor:
                 "operation_name": "Assembly",
                 "station_code": "ASSEMBLY_01",
                 "status": self.operation_status,
-                "planned_quantity": 1,
-                "good_quantity": 0,
-                "scrap_quantity": 0,
+                "planned_quantity": self.planned_quantity,
+                "good_quantity": self.good_quantity,
+                "scrap_quantity": self.scrap_quantity,
                 "uom_code": "ADET",
                 "started_at": None,
                 "completed_at": None,
@@ -97,6 +104,18 @@ class _Connection:
 
     def close(self) -> None:
         return None
+
+
+def _assert_json_serializable_without_decimal(test_case: unittest.TestCase, value) -> None:
+    json.dumps(value)
+    if isinstance(value, dict):
+        for child in value.values():
+            _assert_json_serializable_without_decimal(test_case, child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_json_serializable_without_decimal(test_case, child)
+    else:
+        test_case.assertNotIsInstance(value, Decimal)
 
 
 class _QueueConflictCursor:
@@ -168,6 +187,26 @@ class MesqlV2Tests(unittest.TestCase):
 
         self.assertEqual(config.mesql_api_base_url, "http://ferptop:8090")
         self.assertEqual(config.mesql_stations, ("ASSEMBLY_01", "PACKAGING_01"))
+
+    def test_json_safe_normalizes_decimal_uuid_and_dates(self) -> None:
+        value = mesql_v2._json_safe(
+            {
+                "integral_decimal": Decimal("1.0"),
+                "fractional_decimal": Decimal("1.25"),
+                "operation_id": UUID("11111111-1111-1111-1111-111111111111"),
+                "created_at": datetime(2026, 6, 30, 12, 0, 0),
+                "business_date": date(2026, 6, 30),
+                "items": (Decimal("2.0"),),
+            }
+        )
+
+        self.assertEqual(value["integral_decimal"], 1)
+        self.assertEqual(value["fractional_decimal"], 1.25)
+        self.assertEqual(value["operation_id"], "11111111-1111-1111-1111-111111111111")
+        self.assertEqual(value["created_at"], "2026-06-30T12:00:00")
+        self.assertEqual(value["business_date"], "2026-06-30")
+        self.assertEqual(value["items"], [2])
+        _assert_json_serializable_without_decimal(self, value)
 
     def test_pull_dry_run_maps_queue_items_without_db_write(self) -> None:
         item = {
@@ -398,6 +437,9 @@ class MesqlV2Tests(unittest.TestCase):
     def test_complete_operation_writes_completion_event_and_outbox(self) -> None:
         connection = _Connection()
         connection.cursor_instance.operation_status = "active"
+        connection.cursor_instance.planned_quantity = Decimal("1.0")
+        connection.cursor_instance.good_quantity = Decimal("0")
+        connection.cursor_instance.scrap_quantity = Decimal("0")
 
         @contextmanager
         def fake_connection(_config):
@@ -408,9 +450,10 @@ class MesqlV2Tests(unittest.TestCase):
                 AppConfig(db_enabled=True),
                 station_code="ASSEMBLY_01",
                 work_order_operation_id="11111111-1111-1111-1111-111111111111",
-                good_quantity=1,
-                scrap_quantity=0,
+                good_quantity=Decimal("1.0"),
+                scrap_quantity=Decimal("0"),
                 actor_id="OP-001",
+                metadata={"measured_weight": Decimal("1.25")},
                 completed_at="2026-06-30T12:05:00+00:00",
             )
 
@@ -420,6 +463,10 @@ class MesqlV2Tests(unittest.TestCase):
         self.assertIn("insert into mes.production_completions", executed_sql)
         self.assertTrue(any(params.get("event_type") == "operation_completed" for params in executed_params))
         self.assertIn("insert into mes.integration_outbox", executed_sql)
+        json_payloads = [params["payload"] for params in executed_params if "payload" in params]
+        self.assertTrue(json_payloads)
+        for payload in json_payloads:
+            _assert_json_serializable_without_decimal(self, payload)
 
     def test_push_dry_run_exposes_mesql_payload_without_http_call(self) -> None:
         event = mesql_v2.PendingOutboxEvent(
@@ -436,6 +483,7 @@ class MesqlV2Tests(unittest.TestCase):
                     "operation_no": 10,
                     "operator_id": "OP-001",
                     "station_code": "ASSEMBLY_01",
+                    "good_quantity": Decimal("1.0"),
                     "started_at": "2026-06-30T12:00:00+00:00",
                 },
             },
@@ -447,6 +495,8 @@ class MesqlV2Tests(unittest.TestCase):
         self.assertEqual(result["read_count"], 1)
         self.assertEqual(result["pushed_count"], 0)
         self.assertEqual(result["dry_run_payloads"][0]["payload"]["order_id"], "WO-E2E-MAVI-001")
+        self.assertEqual(result["dry_run_payloads"][0]["payload"]["good_quantity"], 1)
+        _assert_json_serializable_without_decimal(self, result)
 
 
 if __name__ == "__main__":

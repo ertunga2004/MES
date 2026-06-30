@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass, field
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 from ..config import AppConfig
 from .connection import database_connection
@@ -16,6 +19,22 @@ MESQL_SOURCE_SYSTEM = "mesql"
 READY_OPERATION_STATUSES = {"queued", "ready"}
 ACTIVE_OPERATION_STATUSES = {"active", "in_progress"}
 COMPLETED_OPERATION_STATUSES = {"completed", "done"}
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        if value == value.to_integral_value():
+            return int(value)
+        return float(value)
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(child) for child in value]
+    return value
 
 
 class MesqlV2Error(RuntimeError):
@@ -37,7 +56,7 @@ class MesqlPullResult:
     dry_run: bool = False
 
     def to_dict(self) -> JsonObject:
-        return {
+        return _json_safe({
             "pulled_station_count": self.pulled_station_count,
             "upserted_work_orders": self.upserted_work_orders,
             "upserted_operations": self.upserted_operations,
@@ -46,7 +65,7 @@ class MesqlPullResult:
             "skipped_items": self.skipped_items,
             "errors": list(self.errors),
             "dry_run": self.dry_run,
-        }
+        })
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,11 +111,12 @@ def _safe_float(value: Any) -> float | None:
 
 
 def _jsonb(value: Any) -> Any:
+    safe_value = _json_safe(value)
     try:
         from psycopg.types.json import Jsonb
     except ModuleNotFoundError:
-        return value
-    return Jsonb(value)
+        return safe_value
+    return Jsonb(safe_value)
 
 
 def _field(row: Any, index: int, key: str) -> Any:
@@ -913,7 +933,7 @@ def read_station_queue_v2(config: AppConfig, station_code: str) -> list[JsonObje
         with connection.cursor() as cursor:
             cursor.execute(SELECT_V2_QUEUE_SQL, {"station_code": _upper(station_code)})
             rows = cursor.fetchall()
-    return [
+    return _json_safe([
         {
             "station_code": _field(row, 0, "station_code"),
             "queue_rank": _field(row, 1, "queue_rank"),
@@ -944,7 +964,7 @@ def read_station_queue_v2(config: AppConfig, station_code: str) -> list[JsonObje
             "metadata": _field(row, 26, "operation_metadata") or {},
         }
         for row in rows
-    ]
+    ])
 
 
 def _operation_from_cursor(cursor: Any, params: JsonObject) -> JsonObject:
@@ -1102,14 +1122,14 @@ def start_operation_v2(
         commit = getattr(connection, "commit", None)
         if callable(commit):
             commit()
-    return {
+    return _json_safe({
         "status": "ok",
         "order_id": operation["order_id"],
         "work_order_operation_id": operation["work_order_operation_id"],
         "station_code": operation["station_code"],
         "operation_status": "active",
         "outbox_id": outbox_id,
-    }
+    })
 
 
 def complete_operation_v2(
@@ -1194,14 +1214,14 @@ def complete_operation_v2(
         commit = getattr(connection, "commit", None)
         if callable(commit):
             commit()
-    return {
+    return _json_safe({
         "status": "ok",
         "order_id": operation["order_id"],
         "work_order_operation_id": operation["work_order_operation_id"],
         "station_code": operation["station_code"],
         "operation_status": "completed",
         "outbox_id": outbox_id,
-    }
+    })
 
 
 def pending_outbox_events(config: AppConfig, *, limit: int = 50) -> list[PendingOutboxEvent]:
@@ -1219,7 +1239,7 @@ def pending_outbox_events(config: AppConfig, *, limit: int = 50) -> list[Pending
             work_order_operation_id=_nullable_text(_field(row, 3, "work_order_operation_id")),
             station_code=_nullable_text(_field(row, 4, "station_code")),
             dedupe_key=_text(_field(row, 5, "dedupe_key")),
-            payload=dict(_field(row, 6, "payload") or {}),
+            payload=_json_safe(dict(_field(row, 6, "payload") or {})),
         )
         for row in rows
     ]

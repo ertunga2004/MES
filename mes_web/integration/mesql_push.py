@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..config import AppConfig
-from ..db.mesql_v2 import JsonObject, mark_outbox_error, mark_outbox_pushed, pending_outbox_events
+from ..db.mesql_v2 import JsonObject, _json_safe, mark_outbox_error, mark_outbox_pushed, pending_outbox_events
 from .mesql_client import MesqlClient
 
 
@@ -26,7 +26,7 @@ def push_mesql_outbox(
     dry_run_payloads: list[JsonObject] = []
 
     for event in events:
-        payload = _request_payload(event.payload)
+        payload = _json_safe(_request_payload(event.payload))
         row = {
             "outbox_id": event.outbox_id,
             "event_type": event.event_type,
@@ -50,7 +50,7 @@ def push_mesql_outbox(
             mark_outbox_error(config, event.outbox_id, message)
             failed.append({**row, "error": message})
 
-    return {
+    return _json_safe({
         "status": "ok" if not failed else "partial_error",
         "dry_run": dry_run,
         "read_count": len(events),
@@ -59,4 +59,4 @@ def push_mesql_outbox(
         "dry_run_payloads": dry_run_payloads,
         "pushed": pushed,
         "failed": failed,
-    }
+    })

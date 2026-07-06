@@ -24,6 +24,19 @@ or MESQL push/pull action.
   build source, active mounts, runtime roots, data folders, health, logs,
   dashboard, and Adminer.
 
+## Applied Local Station/Location Migration
+
+- On 2026-07-06, `db/migrations/003_add_station_locations.sql` was manually
+  applied.
+- `mes.locations` and `mes.station_location_bindings` were created.
+- 8 locations and 8 active station-location bindings were verified.
+- A second apply verified idempotency.
+- No duplicate location or duplicate active binding rows were found.
+- MESQL push/pull was not run.
+- Runtime/API code did not change.
+- Existing `PACKAGING_01` `station_name` has an observed encoding issue; track
+  this as a separate data quality cleanup item.
+
 ## Portable Path Model
 
 ```text

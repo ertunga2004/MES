@@ -2,6 +2,39 @@
 
 This folder contains only the Docker infrastructure for MES.
 
+## Current Canonical Layout
+
+```text
+Git repo root:
+C:\Users\ertun\Documents\.CODE\codex\MES
+
+Docker control root:
+C:\Users\ertun\Documents\.CODE\codex\MES\docker\mes
+
+Portable runtime/data root:
+C:\Users\ertun\Documents\.CODE\.DOCKER\MES
+
+Runtime data:
+C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\logs
+C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\work_orders
+C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups
+```
+
+Portable `mes_web` images are built from the real repo source under `mes_web/`.
+The old `app_source/` snapshot flow is not the active source-of-truth for
+portable runtime builds.
+
+Use `MES_CONTROL.cmd` as the main launcher. It now includes diagnostic entries
+for container code version, compose build source, active mounts, runtime roots,
+portable data folders, health, logs, dashboard, and Adminer.
+
+Do not commit `.env`; it can contain the real local PostgreSQL password. Keep
+only `.env.example` in git.
+
+Do not remove the `mes_postgres_data` named Docker volume. Do not use
+`docker compose down -v` or `docker volume rm` unless there is explicit
+destructive-operation approval.
+
 MES source code:
 
 ```text
@@ -75,12 +108,23 @@ If you prefer direct execution, you can run the scripts in the `launchers/` fold
 | `launchers\portable\stop_mes_portable.cmd` | Stop portable mode | Portable | |
 | `launchers\portable\restart_mes_portable.cmd`| Restart portable mode | Portable | Calls stop then start scripts |
 | `launchers\portable\status_mes_portable.cmd`| Show portable status | Port Status | |
-| `launchers\portable\build_mes_portable.cmd`| Build portable image | Port Build | Calls `sync_mes_source.cmd` first |
-| `launchers\portable\sync_mes_source.cmd` | Sync `app_source/` | Internal | Prepares the `Dockerfile.mes_web.portable` context |
-| `launchers\maintenance\backup_mes_db.cmd` | Dump PostgreSQL DB | Backup | Writes to `data/db_backups/` |
+| `launchers\portable\build_mes_portable.cmd`| Build portable image | Port Build | Builds from repo-root `mes_web/`; does not call `sync_mes_source.cmd` |
+| `launchers\portable\sync_mes_source.cmd` | Deprecated snapshot helper | Internal | Not part of the active portable build flow |
+| `launchers\diagnostics\verify_container_code_version.cmd` | Verify loaded container code | Diagnostics | Checks successor SQL markers inside `mes_web` |
+| `launchers\diagnostics\show_compose_build_source.cmd` | Show compose build/mount config | Diagnostics | Uses `docker compose -f compose.portable.yaml config` |
+| `launchers\diagnostics\show_active_docker_mounts.cmd` | Show current container mounts | Diagnostics | Uses `docker inspect` |
+| `launchers\diagnostics\show_runtime_root.cmd` | Show resolved roots | Diagnostics | Uses `launchers\common\portable_paths.cmd` |
+| `launchers\diagnostics\show_portable_data_folders.cmd` | Show runtime data folders | Diagnostics | Read-only existence check |
+| `launchers\diagnostics\check_mes_web_health.cmd` | Check MES Web health | Diagnostics | Calls `http://127.0.0.1:8080/health` |
+| `launchers\diagnostics\show_mes_web_logs.cmd` | Show recent MES Web logs | Diagnostics | `docker logs --tail 100 mes_web` |
+| `launchers\diagnostics\open_dashboard.cmd` | Open dashboard | Diagnostics | Opens `http://127.0.0.1:8080` |
+| `launchers\diagnostics\open_adminer.cmd` | Open Adminer | Diagnostics | Reads Adminer port from compose |
+| `launchers\maintenance\backup_mes_db.cmd` | Dump PostgreSQL DB | Backup | Writes to portable runtime `data/db_backups/` |
 | `launchers\maintenance\export_mes_portable_bundle.cmd`| Create bundle | Export | Calls build and backup scripts, writes to `exports/` |
 
-**Important Note:** The paths for `app_source`, `data`, `exports`, and `.env` remain exactly the same (in the `docker/mes` root).
+**Important Note:** Docker control files remain in `docker/mes`. Portable
+runtime data is rooted at `C:\Users\ertun\Documents\.CODE\.DOCKER\MES`, not
+inside the git repo.
 
 For detailed documentation, refer to `docs/agent_memory/11_launcher_inventory.md`.
 
@@ -188,19 +232,20 @@ This backs up only PostgreSQL. It does not replace the current MES Excel/JSON/FE
 
 ## Data Locations
 
-Docker infrastructure local data:
+Portable runtime local data:
 
 ```text
-data\
+C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\
 ```
 
 Important subfolders created by containers or scripts:
 
 - `data\logs` is mounted to `/app/logs` for MES workbook/runtime outputs.
 - `data\db_backups` stores PostgreSQL backups made by `backup_mes_db.cmd`.
-- `data\work_orders` is available for future explicit work order import experiments, but the current app still keeps its existing default import behavior unless configured otherwise.
+- `data\work_orders` is mounted to `/data/work_orders`.
 
-The named Docker volume `mes_postgres_data` stores PostgreSQL data.
+The named Docker volume `mes_postgres_data` stores PostgreSQL data. Do not
+delete this volume during normal operations.
 
 ## Verification
 
@@ -213,6 +258,12 @@ Health check:
 
 ```text
 http://127.0.0.1:8080/health
+```
+
+Container code version check:
+
+```cmd
+docker exec mes_web python -c "from mes_web.db import mesql_v2; sql=getattr(mesql_v2,'SELECT_SUCCESSOR_OPERATION_SQL',''); print('has_successor_sql', bool(sql)); print('orders_by_sequence_operation', 'ORDER BY sequence_no ASC, operation_no ASC' in sql); print('skips_terminal', 'status NOT IN' in sql)"
 ```
 
 Adminer:
@@ -274,14 +325,14 @@ Portable mode dosyaları:
 
 - `compose.portable.yaml`
 - `Dockerfile.mes_web.portable`
-- `sync_mes_source.cmd`
 - `build_mes_portable.cmd`
 - `start_mes_portable.cmd`
 - `stop_mes_portable.cmd`
 - `restart_mes_portable.cmd`
 - `status_mes_portable.cmd`
 - `export_mes_portable_bundle.cmd`
-- `app_source\` kaynak snapshot klasörü
+- `launchers\diagnostics\*.cmd`
+- `launchers\common\portable_paths.cmd`
 - `exports\` portable export klasörü
 
 Korunan sınırlar:
@@ -297,14 +348,17 @@ Korunan sınırlar:
 Portable mode'da sadece veri amaçlı mountlar kalır:
 
 ```text
-./data/logs:/app/logs
-./data/work_orders:/data/work_orders
-./data/db_backups:/backups
+%MES_PORTABLE_RUNTIME_ROOT%/data/logs:/app/logs
+%MES_PORTABLE_RUNTIME_ROOT%/data/work_orders:/data/work_orders
+%MES_PORTABLE_RUNTIME_ROOT%/data/db_backups:/backups
 ```
 
-`./data/db_backups:/backups` PostgreSQL container tarafında kullanılır. PostgreSQL verisi image içine alınmaz; `mes_postgres_data` Docker volume içinde kalır ve SQL backup ile taşınır.
+`%MES_PORTABLE_RUNTIME_ROOT%/data/db_backups:/backups` PostgreSQL container tarafında kullanılır. PostgreSQL verisi image içine alınmaz; `mes_postgres_data` Docker volume içinde kalır ve SQL backup ile taşınır.
 
-### Portable Kaynak Snapshot
+### Deprecated Portable Kaynak Snapshot
+
+`sync_mes_source.cmd` eski `app_source/` snapshot akışı içindir. Aktif
+portable build source-of-truth değildir.
 
 Kaynak snapshot almak için:
 
@@ -347,7 +401,7 @@ Portable image üretmek için:
 build_mes_portable.cmd
 ```
 
-Bu komut önce `sync_mes_source.cmd` çalıştırır, sonra image build eder:
+Bu komut doğrudan repo kökündeki `mes_web/` kaynağından image build eder:
 
 ```cmd
 docker compose -f compose.portable.yaml build mes_web
@@ -555,8 +609,5 @@ Stop containers without deleting data:
 docker compose down
 ```
 
-Removing the PostgreSQL Docker volume is destructive and should only be done with explicit confirmation:
-
-```cmd
-docker compose down -v
-```
+Removing the PostgreSQL Docker volume is destructive. Do not remove volumes
+unless there is explicit destructive-operation approval.

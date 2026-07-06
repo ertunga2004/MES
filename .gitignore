@@ -26,6 +26,8 @@ network_backups/
 # Docker MES local runtime/export artifacts
 docker/mes/.env
 docker/mes/data/
+docker/mes/data__OLD_RUNTIME_QUARANTINE/
+docker/mes/data__OLD_RUNTIME_QUARANTINE*/
 docker/mes/app_source/
 docker/mes/exports/
 docker/mes/*.tar

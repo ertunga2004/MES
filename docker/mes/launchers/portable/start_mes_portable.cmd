@@ -1,9 +1,9 @@
 @echo off
 setlocal
 
-set "MES_DOCKER_ROOT=%~dp0..\.."
-for %%I in ("%MES_DOCKER_ROOT%") do set "MES_DOCKER_ROOT=%%~fI"
-cd /d "%MES_DOCKER_ROOT%"
+call "%~dp0..\common\portable_paths.cmd"
+if errorlevel 1 exit /b %errorlevel%
+cd /d "%MES_DOCKER_CONTROL_ROOT%"
 
 echo Portable MES modu baslatiliyor.
 echo Kullanilacak portlar:

@@ -1,9 +1,9 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-set "MES_DOCKER_ROOT=%~dp0..\.."
-for %%I in ("%MES_DOCKER_ROOT%") do set "MES_DOCKER_ROOT=%%~fI"
-cd /d "%MES_DOCKER_ROOT%"
+call "%~dp0..\common\portable_paths.cmd"
+if errorlevel 1 exit /b %errorlevel%
+cd /d "%MES_DOCKER_CONTROL_ROOT%"
 
 if not exist "exports" mkdir "exports"
 
@@ -14,12 +14,12 @@ set "NOTES_FILE=exports\mes_portable_restore_%STAMP%.txt"
 docker image inspect mes_web_portable:latest >nul 2>nul
 if errorlevel 1 (
     echo Portable MES image bulunamadi. Once build_mes_portable.cmd calistiriliyor.
-    call "%MES_DOCKER_ROOT%\launchers\portable\build_mes_portable.cmd"
+    call "%MES_DOCKER_CONTROL_ROOT%\launchers\portable\build_mes_portable.cmd"
     if errorlevel 1 exit /b %errorlevel%
 )
 
 echo PostgreSQL backup deneniyor.
-call "%MES_DOCKER_ROOT%\launchers\maintenance\backup_mes_db.cmd"
+call "%MES_DOCKER_CONTROL_ROOT%\launchers\maintenance\backup_mes_db.cmd"
 if errorlevel 1 (
     echo UYARI: PostgreSQL backup alinamadi. Container calismiyor olabilir.
     echo Image export devam edecek.

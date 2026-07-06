@@ -43,11 +43,14 @@ class _Cursor:
 
     def fetchone(self):
         lowered = self.last_sql.lower()
+        if "from mes.work_order_operations" in lowered and "sequence_no >" in lowered:
+            return None
         if "from mes.work_order_operations" in lowered and "for update" in lowered:
             return {
                 "work_order_operation_id": "11111111-1111-1111-1111-111111111111",
                 "order_id": "WO-E2E-MAVI-001",
                 "operation_no": 10,
+                "sequence_no": 10,
                 "operation_code": "OP-ASSEMBLY",
                 "operation_name": "Assembly",
                 "station_code": "ASSEMBLY_01",
@@ -80,6 +83,200 @@ class _Cursor:
 class _Connection:
     def __init__(self) -> None:
         self.cursor_instance = _Cursor()
+        self.committed = False
+        self.transaction_entered = False
+
+    def cursor(self):
+        return self.cursor_instance
+
+    def transaction(self):
+        connection = self
+
+        class _Transaction:
+            def __enter__(self):
+                connection.transaction_entered = True
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        return _Transaction()
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def close(self) -> None:
+        return None
+
+
+class _SuccessorCursor:
+    ORDER_ID = "WO-LOCAL-SUCCESSOR-001"
+    OP10_ID = "10101010-1010-1010-1010-101010101010"
+    OP20_ID = "20202020-2020-2020-2020-202020202020"
+
+    def __init__(self) -> None:
+        self.executed: list[tuple[str, dict]] = []
+        self.last_sql = ""
+        self.last_params: dict = {}
+        self.outbox_count = 0
+        self.work_orders = {self.ORDER_ID: {"status": "active", "completed_at": None}}
+        self.operations = {
+            self.OP10_ID: {
+                "work_order_operation_id": self.OP10_ID,
+                "order_id": self.ORDER_ID,
+                "operation_no": 10,
+                "sequence_no": 10,
+                "operation_code": "OP-ASSEMBLY",
+                "operation_name": "Assembly",
+                "station_code": "ASSEMBLY_01",
+                "status": "active",
+                "planned_quantity": 1,
+                "good_quantity": 0,
+                "scrap_quantity": 0,
+                "uom_code": "ADET",
+                "started_at": "2026-07-06T09:00:00+00:00",
+                "completed_at": None,
+            },
+            self.OP20_ID: {
+                "work_order_operation_id": self.OP20_ID,
+                "order_id": self.ORDER_ID,
+                "operation_no": 20,
+                "sequence_no": 20,
+                "operation_code": "OP-PACKAGING",
+                "operation_name": "Packaging",
+                "station_code": "PACKAGING_01",
+                "status": "planned",
+                "planned_quantity": 1,
+                "good_quantity": 0,
+                "scrap_quantity": 0,
+                "uom_code": "ADET",
+                "started_at": None,
+                "completed_at": None,
+            },
+        }
+        self.station_queue = [
+            {
+                "station_queue_pk": 1,
+                "station_code": "ASSEMBLY_01",
+                "order_id": self.ORDER_ID,
+                "work_order_operation_id": self.OP10_ID,
+                "queue_rank": 0,
+                "status": "active",
+            }
+        ]
+        self.next_queue_pk = 2
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def execute(self, sql: str, params: dict | None = None) -> None:
+        self.last_sql = sql
+        self.last_params = dict(params or {})
+        self.executed.append((sql, dict(params or {})))
+        lowered = sql.lower()
+        if "update mes.work_order_operations" in lowered and "set status = 'completed'" in lowered:
+            operation = self.operations[self.last_params["work_order_operation_id"]]
+            operation["status"] = "completed"
+            operation["good_quantity"] = self.last_params["good_quantity"]
+            operation["scrap_quantity"] = self.last_params["scrap_quantity"]
+            operation["completed_at"] = self.last_params["completed_at"]
+        elif "update mes.station_queue" in lowered and "set status = 'completed'" in lowered:
+            row = self._queue_by_pk(self.last_params["station_queue_pk"])
+            row["status"] = "completed"
+        elif "update mes.work_order_operations" in lowered and "case" in lowered:
+            operation = self.operations[self.last_params["work_order_operation_id"]]
+            if operation["status"] not in {"completed", "done", "cancelled", "canceled", "active", "in_progress", "ready"}:
+                operation["status"] = "queued"
+        elif "insert into mes.station_queue" in lowered:
+            row = {
+                "station_queue_pk": self.next_queue_pk,
+                "station_code": self.last_params["station_code"],
+                "order_id": self.last_params["order_id"],
+                "work_order_operation_id": self.last_params["work_order_operation_id"],
+                "queue_rank": self.last_params["queue_rank"],
+                "status": self.last_params["status"],
+            }
+            self.next_queue_pk += 1
+            self.station_queue.append(row)
+        elif "update mes.station_queue" in lowered and "where station_queue_pk = %(station_queue_pk)s" in lowered:
+            row = self._queue_by_pk(self.last_params["station_queue_pk"])
+            row.update(
+                {
+                    "station_code": self.last_params["station_code"],
+                    "order_id": self.last_params["order_id"],
+                    "work_order_operation_id": self.last_params["work_order_operation_id"],
+                    "queue_rank": self.last_params["queue_rank"],
+                    "status": self.last_params["status"],
+                }
+            )
+        elif "update mes.work_orders w" in lowered:
+            order_id = self.last_params["order_id"]
+            if all(row["status"] in {"completed", "done"} for row in self.operations.values() if row["order_id"] == order_id):
+                self.work_orders[order_id]["status"] = "completed"
+                self.work_orders[order_id]["completed_at"] = self.last_params["completed_at"]
+
+    def fetchone(self):
+        lowered = self.last_sql.lower()
+        if "from mes.work_order_operations" in lowered and "sequence_no >" in lowered:
+            candidates = [
+                row
+                for row in self.operations.values()
+                if row["order_id"] == self.last_params["order_id"]
+                and row["sequence_no"] > self.last_params["sequence_no"]
+                and row["status"] not in {"completed", "done", "cancelled", "canceled"}
+            ]
+            return min(candidates, key=lambda row: (row["sequence_no"], row["operation_no"])) if candidates else None
+        if "from mes.work_order_operations" in lowered and "where work_order_operation_id" in lowered:
+            return self.operations.get(self.last_params["work_order_operation_id"])
+        if "from mes.station_queue" in lowered and " or (" in lowered:
+            return self._queue_for_operation(self.last_params["station_code"], self.last_params["work_order_operation_id"])
+        if "from mes.station_queue" in lowered and "work_order_operation_id = %(work_order_operation_id)s" in lowered:
+            return self._queue_for_operation(self.last_params["station_code"], self.last_params["work_order_operation_id"])
+        if "from mes.station_queue" in lowered and "work_order_operation_id is null" in lowered:
+            for row in self.station_queue:
+                if (
+                    row["station_code"] == self.last_params["station_code"]
+                    and row["order_id"] == self.last_params["order_id"]
+                    and row["status"] in {"queued", "ready", "active", "pending_approval"}
+                    and row["work_order_operation_id"] in {None, self.last_params["work_order_operation_id"]}
+                ):
+                    return row
+            return None
+        if "coalesce(max(queue_rank)" in lowered:
+            ranks = [
+                row["queue_rank"]
+                for row in self.station_queue
+                if row["station_code"] == self.last_params["station_code"]
+                and row["status"] in {"queued", "ready", "active", "pending_approval"}
+            ]
+            return {"queue_rank": (max(ranks) + 1) if ranks else 0}
+        if "insert into mes.integration_outbox" in lowered:
+            self.outbox_count += 1
+            return {"outbox_id": f"outbox-{self.outbox_count}"}
+        return None
+
+    def fetchall(self):
+        return []
+
+    def _queue_by_pk(self, station_queue_pk: int) -> dict:
+        for row in self.station_queue:
+            if row["station_queue_pk"] == station_queue_pk:
+                return row
+        raise AssertionError(f"missing station_queue_pk={station_queue_pk}")
+
+    def _queue_for_operation(self, station_code: str, operation_id: str) -> dict | None:
+        for row in self.station_queue:
+            if row["station_code"] == station_code and row["work_order_operation_id"] == operation_id:
+                return row
+        return None
+
+
+class _SuccessorConnection:
+    def __init__(self) -> None:
+        self.cursor_instance = _SuccessorCursor()
         self.committed = False
         self.transaction_entered = False
 
@@ -497,6 +694,176 @@ class MesqlV2Tests(unittest.TestCase):
             [completed_at, completed_at, completed_at],
         )
         self.assertTrue(any(params.get("event_at") == completed_at for params in executed_params))
+
+    def test_complete_operation_activates_successor_once_and_final_operation_completes_order(self) -> None:
+        connection = _SuccessorConnection()
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            first_result = complete_operation_v2(
+                AppConfig(db_enabled=True),
+                station_code="ASSEMBLY_01",
+                work_order_operation_id=_SuccessorCursor.OP10_ID,
+                good_quantity=1,
+                scrap_quantity=0,
+                actor_id="OP-001",
+            )
+
+            second_result = complete_operation_v2(
+                AppConfig(db_enabled=True),
+                station_code="ASSEMBLY_01",
+                work_order_operation_id=_SuccessorCursor.OP10_ID,
+                good_quantity=1,
+                scrap_quantity=0,
+                actor_id="OP-001",
+            )
+
+        cursor = connection.cursor_instance
+        self.assertEqual(first_result["operation_status"], "completed")
+        self.assertEqual(second_result["operation_status"], "completed")
+        self.assertEqual(cursor.operations[_SuccessorCursor.OP10_ID]["status"], "completed")
+        self.assertEqual(cursor.operations[_SuccessorCursor.OP20_ID]["status"], "queued")
+        packaging_rows = [
+            row
+            for row in cursor.station_queue
+            if row["station_code"] == "PACKAGING_01"
+            and row["work_order_operation_id"] == _SuccessorCursor.OP20_ID
+        ]
+        self.assertEqual(len(packaging_rows), 1)
+        self.assertEqual(packaging_rows[0]["status"], "queued")
+        self.assertEqual(packaging_rows[0]["queue_rank"], 0)
+        self.assertEqual(cursor.work_orders[_SuccessorCursor.ORDER_ID]["status"], "active")
+
+        packaging_rows[0]["status"] = "active"
+        cursor.operations[_SuccessorCursor.OP20_ID]["status"] = "active"
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            final_result = complete_operation_v2(
+                AppConfig(db_enabled=True),
+                station_code="PACKAGING_01",
+                work_order_operation_id=_SuccessorCursor.OP20_ID,
+                good_quantity=1,
+                scrap_quantity=0,
+                actor_id="OP-001",
+            )
+
+        self.assertEqual(final_result["operation_status"], "completed")
+        self.assertEqual(cursor.operations[_SuccessorCursor.OP20_ID]["status"], "completed")
+        self.assertEqual(cursor.work_orders[_SuccessorCursor.ORDER_ID]["status"], "completed")
+
+    def test_complete_operation_skips_completed_successor_candidate(self) -> None:
+        connection = _SuccessorConnection()
+        cursor = connection.cursor_instance
+        order_id = "WO-LOCAL-SUCCESSOR-SKIP-001"
+        op10_id = "10101010-0000-0000-0000-000000000010"
+        op20_id = "20202020-0000-0000-0000-000000000020"
+        op30_id = "30303030-0000-0000-0000-000000000030"
+        cursor.work_orders[order_id] = {"status": "active", "completed_at": None}
+        cursor.operations.update(
+            {
+                op10_id: {
+                    "work_order_operation_id": op10_id,
+                    "order_id": order_id,
+                    "operation_no": 10,
+                    "sequence_no": 10,
+                    "operation_code": "OP-ASSEMBLY",
+                    "operation_name": "Assembly",
+                    "station_code": "ASSEMBLY_01",
+                    "status": "active",
+                    "planned_quantity": 1,
+                    "good_quantity": 0,
+                    "scrap_quantity": 0,
+                    "uom_code": "ADET",
+                    "started_at": "2026-07-06T09:00:00+00:00",
+                    "completed_at": None,
+                },
+                op20_id: {
+                    "work_order_operation_id": op20_id,
+                    "order_id": order_id,
+                    "operation_no": 20,
+                    "sequence_no": 20,
+                    "operation_code": "OP-PACKAGING",
+                    "operation_name": "Packaging",
+                    "station_code": "PACKAGING_01",
+                    "status": "completed",
+                    "planned_quantity": 1,
+                    "good_quantity": 1,
+                    "scrap_quantity": 0,
+                    "uom_code": "ADET",
+                    "started_at": "2026-07-06T09:05:00+00:00",
+                    "completed_at": "2026-07-06T09:10:00+00:00",
+                },
+                op30_id: {
+                    "work_order_operation_id": op30_id,
+                    "order_id": order_id,
+                    "operation_no": 30,
+                    "sequence_no": 30,
+                    "operation_code": "OP-QUALITY",
+                    "operation_name": "Quality",
+                    "station_code": "QUALITY_01",
+                    "status": "waiting",
+                    "planned_quantity": 1,
+                    "good_quantity": 0,
+                    "scrap_quantity": 0,
+                    "uom_code": "ADET",
+                    "started_at": None,
+                    "completed_at": None,
+                },
+            }
+        )
+        cursor.station_queue.append(
+            {
+                "station_queue_pk": cursor.next_queue_pk,
+                "station_code": "ASSEMBLY_01",
+                "order_id": order_id,
+                "work_order_operation_id": op10_id,
+                "queue_rank": 1,
+                "status": "active",
+            }
+        )
+        cursor.next_queue_pk += 1
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            complete_operation_v2(
+                AppConfig(db_enabled=True),
+                station_code="ASSEMBLY_01",
+                work_order_operation_id=op10_id,
+                good_quantity=1,
+                scrap_quantity=0,
+                actor_id="OP-001",
+            )
+            complete_operation_v2(
+                AppConfig(db_enabled=True),
+                station_code="ASSEMBLY_01",
+                work_order_operation_id=op10_id,
+                good_quantity=1,
+                scrap_quantity=0,
+                actor_id="OP-001",
+            )
+
+        self.assertEqual(cursor.operations[op20_id]["status"], "completed")
+        self.assertEqual(cursor.operations[op30_id]["status"], "queued")
+        quality_rows = [
+            row
+            for row in cursor.station_queue
+            if row["station_code"] == "QUALITY_01"
+            and row["work_order_operation_id"] == op30_id
+        ]
+        self.assertEqual(len(quality_rows), 1)
+        self.assertEqual(quality_rows[0]["status"], "queued")
+
+    def test_successor_query_orders_by_sequence_then_operation_number(self) -> None:
+        self.assertIn(
+            "ORDER BY sequence_no ASC, operation_no ASC",
+            mesql_v2.SELECT_SUCCESSOR_OPERATION_SQL,
+        )
 
     def test_push_dry_run_exposes_mesql_payload_without_http_call(self) -> None:
         start_event = mesql_v2.PendingOutboxEvent(

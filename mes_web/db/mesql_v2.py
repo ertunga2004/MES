@@ -485,7 +485,8 @@ SELECT
     scrap_quantity,
     uom_code,
     started_at,
-    completed_at
+    completed_at,
+    sequence_no
 FROM mes.work_order_operations
 WHERE work_order_operation_id = %(work_order_operation_id)s
 FOR UPDATE
@@ -505,10 +506,36 @@ SELECT
     scrap_quantity,
     uom_code,
     started_at,
-    completed_at
+    completed_at,
+    sequence_no
 FROM mes.work_order_operations
 WHERE order_id = %(order_id)s
   AND operation_no = %(operation_no)s
+FOR UPDATE
+"""
+
+SELECT_SUCCESSOR_OPERATION_SQL = """
+SELECT
+    work_order_operation_id,
+    order_id,
+    operation_no,
+    operation_code,
+    operation_name,
+    station_code,
+    status,
+    planned_quantity,
+    good_quantity,
+    scrap_quantity,
+    uom_code,
+    started_at,
+    completed_at,
+    sequence_no
+FROM mes.work_order_operations
+WHERE order_id = %(order_id)s
+  AND sequence_no > %(sequence_no)s
+  AND status NOT IN ('completed', 'done', 'cancelled', 'canceled')
+ORDER BY sequence_no ASC, operation_no ASC
+LIMIT 1
 FOR UPDATE
 """
 
@@ -573,6 +600,57 @@ WHERE work_order_operation_id = %(work_order_operation_id)s
 UPDATE_QUEUE_COMPLETED_SQL = """
 UPDATE mes.station_queue
 SET status = 'completed',
+    updated_at = now()
+WHERE station_queue_pk = %(station_queue_pk)s
+"""
+
+UPDATE_SUCCESSOR_OPERATION_QUEUED_SQL = """
+UPDATE mes.work_order_operations
+SET status = CASE
+        WHEN status IN ('completed', 'done', 'cancelled', 'canceled', 'active', 'in_progress', 'ready')
+        THEN status
+        ELSE 'queued'
+    END,
+    updated_at = now()
+WHERE work_order_operation_id = %(work_order_operation_id)s
+"""
+
+SELECT_SUCCESSOR_QUEUE_BY_OPERATION_SQL = """
+SELECT station_queue_pk, status, queue_rank
+FROM mes.station_queue
+WHERE station_code = %(station_code)s
+  AND work_order_operation_id = %(work_order_operation_id)s
+LIMIT 1
+FOR UPDATE
+"""
+
+SELECT_SUCCESSOR_LEGACY_QUEUE_SQL = """
+SELECT station_queue_pk, status, queue_rank
+FROM mes.station_queue
+WHERE station_code = %(station_code)s
+  AND order_id = %(order_id)s
+  AND status IN ('queued', 'ready', 'active', 'pending_approval')
+  AND (work_order_operation_id IS NULL OR work_order_operation_id = %(work_order_operation_id)s)
+LIMIT 1
+FOR UPDATE
+"""
+
+SELECT_NEXT_QUEUE_RANK_SQL = """
+SELECT COALESCE(MAX(queue_rank) + 1, 0) AS queue_rank
+FROM mes.station_queue
+WHERE station_code = %(station_code)s
+  AND status IN ('queued', 'ready', 'active', 'pending_approval')
+"""
+
+UPDATE_SUCCESSOR_QUEUE_BY_PK_SQL = """
+UPDATE mes.station_queue
+SET order_id = %(order_id)s,
+    work_order_operation_id = %(work_order_operation_id)s,
+    queue_rank = %(queue_rank)s,
+    status = %(status)s,
+    source = %(source)s,
+    payload = %(payload)s,
+    metadata = metadata || %(metadata)s,
     updated_at = now()
 WHERE station_queue_pk = %(station_queue_pk)s
 """
@@ -975,14 +1053,7 @@ def read_station_queue_v2(config: AppConfig, station_code: str) -> list[JsonObje
     ])
 
 
-def _operation_from_cursor(cursor: Any, params: JsonObject) -> JsonObject:
-    if params.get("work_order_operation_id"):
-        cursor.execute(SELECT_OPERATION_BY_ID_SQL, params)
-    else:
-        cursor.execute(SELECT_OPERATION_BY_ORDER_SQL, params)
-    row = cursor.fetchone()
-    if not row:
-        raise MesqlV2Error("OPERATION_NOT_FOUND", status_code=404)
+def _operation_row(row: Any) -> JsonObject:
     return {
         "work_order_operation_id": _text(_field(row, 0, "work_order_operation_id")),
         "order_id": _text(_field(row, 1, "order_id")),
@@ -997,7 +1068,31 @@ def _operation_from_cursor(cursor: Any, params: JsonObject) -> JsonObject:
         "uom_code": _field(row, 10, "uom_code"),
         "started_at": _field(row, 11, "started_at"),
         "completed_at": _field(row, 12, "completed_at"),
+        "sequence_no": _safe_int(_field(row, 13, "sequence_no"), _safe_int(_field(row, 2, "operation_no"), 0)),
     }
+
+
+def _operation_from_cursor(cursor: Any, params: JsonObject) -> JsonObject:
+    if params.get("work_order_operation_id"):
+        cursor.execute(SELECT_OPERATION_BY_ID_SQL, params)
+    else:
+        cursor.execute(SELECT_OPERATION_BY_ORDER_SQL, params)
+    row = cursor.fetchone()
+    if not row:
+        raise MesqlV2Error("OPERATION_NOT_FOUND", status_code=404)
+    return _operation_row(row)
+
+
+def _successor_operation_from_cursor(cursor: Any, operation: JsonObject) -> JsonObject | None:
+    cursor.execute(
+        SELECT_SUCCESSOR_OPERATION_SQL,
+        {
+            "order_id": operation["order_id"],
+            "sequence_no": _safe_int(operation.get("sequence_no"), operation["operation_no"]),
+        },
+    )
+    row = cursor.fetchone()
+    return _operation_row(row) if row else None
 
 
 def _operation_queue_from_cursor(cursor: Any, operation: JsonObject) -> JsonObject:
@@ -1026,6 +1121,78 @@ def _assert_no_other_active_operation(cursor: Any, operation: JsonObject) -> Non
     active = cursor.fetchone()
     if active:
         raise MesqlV2Error("STATION_ACTIVE_OPERATION_CONFLICT", status_code=409)
+
+
+def _successor_queue_status(operation: JsonObject) -> str:
+    status = _text(operation.get("status")).lower()
+    if status in ACTIVE_OPERATION_STATUSES:
+        return "active"
+    if status == "ready":
+        return "ready"
+    return "queued"
+
+
+def _next_queue_rank(cursor: Any, station_code: str) -> int:
+    cursor.execute(SELECT_NEXT_QUEUE_RANK_SQL, {"station_code": station_code})
+    row = cursor.fetchone()
+    return _safe_int(_field(row, 0, "queue_rank"), 0)
+
+
+def _successor_queue_params(cursor: Any, operation: JsonObject) -> JsonObject:
+    station_code = _upper(operation.get("station_code"))
+    return {
+        "station_code": station_code,
+        "order_id": operation["order_id"],
+        "work_order_operation_id": operation["work_order_operation_id"],
+        "queue_rank": _next_queue_rank(cursor, station_code),
+        "status": _successor_queue_status(operation),
+        "source": "local_successor_activation",
+        "payload": _jsonb(
+            {
+                "order_id": operation["order_id"],
+                "work_order_operation_id": operation["work_order_operation_id"],
+                "operation_no": operation["operation_no"],
+                "sequence_no": operation["sequence_no"],
+                "station_code": station_code,
+                "status": _successor_queue_status(operation),
+            }
+        ),
+        "metadata": _jsonb({"source": "local_successor_activation"}),
+    }
+
+
+def _upsert_successor_queue(cursor: Any, operation: JsonObject) -> None:
+    params = _successor_queue_params(cursor, operation)
+    cursor.execute(SELECT_SUCCESSOR_QUEUE_BY_OPERATION_SQL, params)
+    existing = cursor.fetchone()
+    if not existing:
+        cursor.execute(SELECT_SUCCESSOR_LEGACY_QUEUE_SQL, params)
+        existing = cursor.fetchone()
+    if existing:
+        update_params = dict(params)
+        update_params["station_queue_pk"] = _field(existing, 0, "station_queue_pk")
+        update_params["queue_rank"] = _safe_int(_field(existing, 2, "queue_rank"), params["queue_rank"])
+        existing_status = _text(_field(existing, 1, "status")).lower()
+        if existing_status in {"active", "ready"}:
+            update_params["status"] = existing_status
+        cursor.execute(UPDATE_SUCCESSOR_QUEUE_BY_PK_SQL, update_params)
+        return
+    cursor.execute(INSERT_QUEUE_SQL, params)
+
+
+def _activate_successor_operation(cursor: Any, operation: JsonObject) -> bool:
+    status = _text(operation.get("status")).lower()
+    if status in COMPLETED_OPERATION_STATUSES | {"cancelled", "canceled"}:
+        return False
+    cursor.execute(
+        UPDATE_SUCCESSOR_OPERATION_QUEUED_SQL,
+        {"work_order_operation_id": operation["work_order_operation_id"]},
+    )
+    queued_operation = dict(operation)
+    if status not in ACTIVE_OPERATION_STATUSES | {"ready"}:
+        queued_operation["status"] = "queued"
+    _upsert_successor_queue(cursor, queued_operation)
+    return True
 
 
 def _insert_event(cursor: Any, *, event_type: str, event_at: Any, actor_id: str, operation: JsonObject, payload: JsonObject) -> None:
@@ -1187,7 +1354,10 @@ def complete_operation_v2(
                     },
                 )
                 cursor.execute(UPDATE_QUEUE_COMPLETED_SQL, {"station_queue_pk": queue_row["station_queue_pk"]})
-                cursor.execute(UPDATE_WORK_ORDER_COMPLETED_IF_ALL_DONE_SQL, {"order_id": operation["order_id"], "completed_at": transition_completed_at})
+                successor_operation = _successor_operation_from_cursor(cursor, operation)
+                successor_activated = bool(successor_operation and _activate_successor_operation(cursor, successor_operation))
+                if not successor_activated:
+                    cursor.execute(UPDATE_WORK_ORDER_COMPLETED_IF_ALL_DONE_SQL, {"order_id": operation["order_id"], "completed_at": transition_completed_at})
                 event_payload = {
                     "operation": operation,
                     "good_quantity": good_quantity,

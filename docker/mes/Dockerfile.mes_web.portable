@@ -9,11 +9,11 @@ ENV MES_WEB_DB_ENABLED=false
 
 WORKDIR /app
 
-COPY requirements.mes_web.txt /tmp/requirements.mes_web.txt
+COPY mes_web/requirements.txt /tmp/requirements.mes_web.txt
 RUN python -m pip install --upgrade pip \
     && python -m pip install -r /tmp/requirements.mes_web.txt
 
-COPY app_source/ /app/
+COPY mes_web/ /app/mes_web/
 RUN test -f /app/mes_web/__main__.py
 
 EXPOSE 8080

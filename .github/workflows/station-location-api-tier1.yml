@@ -1,0 +1,44 @@
+name: Station Location API Tier 1
+
+on:
+  push:
+    paths:
+      - "mes_web/**"
+      - "tests/test_mes_web_station_location_api.py"
+      - "tests/test_mes_web_mesql_v2.py"
+      - ".github/workflows/station-location-api-tier1.yml"
+  pull_request:
+    paths:
+      - "mes_web/**"
+      - "tests/test_mes_web_station_location_api.py"
+      - "tests/test_mes_web_mesql_v2.py"
+      - ".github/workflows/station-location-api-tier1.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  tier1-offline:
+    name: Offline unit/API tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r mes_web/requirements.txt
+
+      - name: Run station/location API Tier 1 tests
+        run: |
+          # Tier 1 only: offline unit/API tests.
+          # No Docker, no PostgreSQL, no HTTP smoke, no MESQL.
+          python -m unittest tests.test_mes_web_station_location_api
+          python -m unittest tests.test_mes_web_mesql_v2

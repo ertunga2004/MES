@@ -15,6 +15,7 @@ JsonObject = dict[str, Any]
 
 SOURCE_SYSTEM = "mes_web"
 MESQL_SOURCE_SYSTEM = "mesql"
+STATION_LOCATION_READ_MODEL_FEATURE_FLAG = "MES_WEB_DB_STATION_LOCATION_READ_MODEL_ENABLED"
 
 READY_OPERATION_STATUSES = {"queued", "ready"}
 ACTIVE_OPERATION_STATUSES = {"active", "in_progress"}
@@ -92,6 +93,15 @@ def _upper(value: Any) -> str:
     return _text(value).upper()
 
 
+def _lower(value: Any) -> str:
+    return _text(value).lower()
+
+
+def _nullable_upper(value: Any) -> str | None:
+    text = _upper(value)
+    return text or None
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     if value in (None, ""):
         return default
@@ -133,6 +143,16 @@ def _field(row: Any, index: int, key: str) -> Any:
     if isinstance(row, (list, tuple)) and len(row) > index:
         return row[index]
     return None
+
+
+def _field_any(row: Any, index: int, *keys: str) -> Any:
+    if isinstance(row, dict):
+        for key in keys:
+            if key in row:
+                return row.get(key)
+        return None
+    key = keys[0] if keys else ""
+    return _field(row, index, key)
 
 
 def _transaction(connection: Any):
@@ -469,6 +489,149 @@ LEFT JOIN mes.work_order_operations o
   )
 WHERE q.station_code = %(station_code)s
 ORDER BY q.queue_rank, q.order_id, o.sequence_no
+"""
+
+SELECT_LOCATIONS_SQL = """
+SELECT
+    location_pk,
+    location_id,
+    location_code,
+    location_name,
+    location_type,
+    parent_location_code,
+    station_code,
+    active,
+    source_system,
+    source_file,
+    external_ref,
+    payload,
+    metadata,
+    created_at,
+    updated_at
+FROM mes.locations
+WHERE (%(active_only)s = false OR active = true)
+  AND (%(location_type)s IS NULL OR location_type = %(location_type)s)
+ORDER BY location_type, location_code
+"""
+
+SELECT_LOCATION_BY_CODE_SQL = """
+SELECT
+    location_pk,
+    location_id,
+    location_code,
+    location_name,
+    location_type,
+    parent_location_code,
+    station_code,
+    active,
+    source_system,
+    source_file,
+    external_ref,
+    payload,
+    metadata,
+    created_at,
+    updated_at
+FROM mes.locations
+WHERE location_code = %(location_code)s
+LIMIT 1
+"""
+
+SELECT_STATION_LOCATION_BINDINGS_SQL = """
+SELECT
+    b.binding_pk,
+    b.binding_id,
+    b.station_code,
+    b.role,
+    b.location_code,
+    b.item_scope,
+    b.operation_scope,
+    b.priority,
+    b.active,
+    b.source_system AS binding_source_system,
+    b.source_file AS binding_source_file,
+    b.external_ref AS binding_external_ref,
+    b.payload AS binding_payload,
+    b.metadata AS binding_metadata,
+    b.created_at AS binding_created_at,
+    b.updated_at AS binding_updated_at,
+    l.location_pk,
+    l.location_id,
+    l.location_code AS joined_location_code,
+    l.location_name,
+    l.location_type,
+    l.parent_location_code,
+    l.station_code AS location_station_code,
+    l.active AS location_active,
+    l.source_system AS location_source_system,
+    l.source_file AS location_source_file,
+    l.external_ref AS location_external_ref,
+    l.payload AS location_payload,
+    l.metadata AS location_metadata,
+    l.created_at AS location_created_at,
+    l.updated_at AS location_updated_at
+FROM mes.station_location_bindings b
+LEFT JOIN mes.locations l
+  ON l.location_code = b.location_code
+WHERE b.station_code = %(station_code)s
+  AND (%(active_only)s = false OR b.active = true)
+  AND (%(role)s IS NULL OR b.role = %(role)s)
+ORDER BY b.role, b.priority, b.location_code
+"""
+
+SELECT_RESOLVE_STATION_LOCATION_SQL = """
+SELECT
+    b.binding_pk,
+    b.binding_id,
+    b.station_code,
+    b.role,
+    b.location_code,
+    b.item_scope,
+    b.operation_scope,
+    b.priority,
+    b.active,
+    b.source_system AS binding_source_system,
+    b.source_file AS binding_source_file,
+    b.external_ref AS binding_external_ref,
+    b.payload AS binding_payload,
+    b.metadata AS binding_metadata,
+    b.created_at AS binding_created_at,
+    b.updated_at AS binding_updated_at,
+    l.location_pk,
+    l.location_id,
+    l.location_code AS joined_location_code,
+    l.location_name,
+    l.location_type,
+    l.parent_location_code,
+    l.station_code AS location_station_code,
+    l.active AS location_active,
+    l.source_system AS location_source_system,
+    l.source_file AS location_source_file,
+    l.external_ref AS location_external_ref,
+    l.payload AS location_payload,
+    l.metadata AS location_metadata,
+    l.created_at AS location_created_at,
+    l.updated_at AS location_updated_at
+FROM mes.station_location_bindings b
+JOIN mes.locations l
+  ON l.location_code = b.location_code
+WHERE b.station_code = %(station_code)s
+  AND b.role = %(role)s
+  AND b.active = true
+  AND l.active = true
+  AND (
+      b.item_scope IS NULL
+      OR b.item_scope = %(item_scope)s
+  )
+  AND (
+      b.operation_scope IS NULL
+      OR b.operation_scope = %(operation_scope)s
+  )
+ORDER BY
+    CASE WHEN b.item_scope = %(item_scope)s THEN 0 ELSE 1 END,
+    CASE WHEN b.operation_scope = %(operation_scope)s THEN 0 ELSE 1 END,
+    b.priority ASC,
+    b.location_code ASC
+LIMIT 1
 """
 
 SELECT_OPERATION_BY_ID_SQL = """
@@ -1051,6 +1214,203 @@ def read_station_queue_v2(config: AppConfig, station_code: str) -> list[JsonObje
         }
         for row in rows
     ])
+
+
+def _location_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "location_pk": _field(row, 0, "location_pk"),
+        "location_id": _field(row, 1, "location_id"),
+        "location_code": _upper(_field(row, 2, "location_code")),
+        "location_name": _field(row, 3, "location_name"),
+        "location_type": _lower(_field(row, 4, "location_type")),
+        "parent_location_code": _nullable_upper(_field(row, 5, "parent_location_code")),
+        "station_code": _nullable_upper(_field(row, 6, "station_code")),
+        "active": _field(row, 7, "active"),
+        "source_system": _field(row, 8, "source_system"),
+        "source_file": _field(row, 9, "source_file"),
+        "external_ref": _field(row, 10, "external_ref"),
+        "payload": _field(row, 11, "payload") or {},
+        "metadata": _field(row, 12, "metadata") or {},
+        "created_at": _field(row, 13, "created_at"),
+        "updated_at": _field(row, 14, "updated_at"),
+    })
+
+
+def _joined_location_row(row: Any, *, offset: int = 16) -> JsonObject | None:
+    location_pk = _field_any(row, offset, "location_pk")
+    if location_pk is None:
+        return None
+    return _json_safe({
+        "location_pk": location_pk,
+        "location_id": _field_any(row, offset + 1, "location_id"),
+        "location_code": _upper(_field_any(row, offset + 2, "joined_location_code", "location_code")),
+        "location_name": _field_any(row, offset + 3, "location_name"),
+        "location_type": _lower(_field_any(row, offset + 4, "location_type")),
+        "parent_location_code": _nullable_upper(_field_any(row, offset + 5, "parent_location_code")),
+        "station_code": _nullable_upper(_field_any(row, offset + 6, "location_station_code", "station_code")),
+        "active": _field_any(row, offset + 7, "location_active", "active"),
+        "source_system": _field_any(row, offset + 8, "location_source_system", "source_system"),
+        "source_file": _field_any(row, offset + 9, "location_source_file", "source_file"),
+        "external_ref": _field_any(row, offset + 10, "location_external_ref", "external_ref"),
+        "payload": _field_any(row, offset + 11, "location_payload", "payload") or {},
+        "metadata": _field_any(row, offset + 12, "location_metadata", "metadata") or {},
+        "created_at": _field_any(row, offset + 13, "location_created_at", "created_at"),
+        "updated_at": _field_any(row, offset + 14, "location_updated_at", "updated_at"),
+    })
+
+
+def _station_location_binding_row(row: Any) -> JsonObject:
+    binding = {
+        "binding_pk": _field(row, 0, "binding_pk"),
+        "binding_id": _field(row, 1, "binding_id"),
+        "station_code": _upper(_field(row, 2, "station_code")),
+        "role": _lower(_field(row, 3, "role")),
+        "location_code": _upper(_field(row, 4, "location_code")),
+        "item_scope": _nullable_text(_field(row, 5, "item_scope")),
+        "operation_scope": _nullable_text(_field(row, 6, "operation_scope")),
+        "priority": _safe_int(_field(row, 7, "priority"), 100),
+        "active": _field(row, 8, "active"),
+        "source_system": _field_any(row, 9, "binding_source_system", "source_system"),
+        "source_file": _field_any(row, 10, "binding_source_file", "source_file"),
+        "external_ref": _field_any(row, 11, "binding_external_ref", "external_ref"),
+        "payload": _field_any(row, 12, "binding_payload", "payload") or {},
+        "metadata": _field_any(row, 13, "binding_metadata", "metadata") or {},
+        "created_at": _field_any(row, 14, "binding_created_at", "created_at"),
+        "updated_at": _field_any(row, 15, "binding_updated_at", "updated_at"),
+        "location": _joined_location_row(row),
+    }
+    return _json_safe(binding)
+
+
+def list_locations(config: AppConfig, active_only: bool = True, location_type: str | None = None) -> list[JsonObject]:
+    params = {
+        "active_only": bool(active_only),
+        "location_type": _lower(location_type) or None,
+    }
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_LOCATIONS_SQL, params)
+            rows = cursor.fetchall()
+    return [_location_row(row) for row in rows]
+
+
+def get_location_by_code(config: AppConfig, location_code: str) -> JsonObject | None:
+    normalized_code = _upper(location_code)
+    if not normalized_code:
+        return None
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_LOCATION_BY_CODE_SQL, {"location_code": normalized_code})
+            row = cursor.fetchone()
+    return _location_row(row) if row else None
+
+
+def list_station_location_bindings(
+    config: AppConfig,
+    station_code: str,
+    active_only: bool = True,
+    role: str | None = None,
+) -> list[JsonObject]:
+    normalized_station_code = _upper(station_code)
+    if not normalized_station_code:
+        return []
+    params = {
+        "station_code": normalized_station_code,
+        "active_only": bool(active_only),
+        "role": _lower(role) or None,
+    }
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_STATION_LOCATION_BINDINGS_SQL, params)
+            rows = cursor.fetchall()
+    return [_station_location_binding_row(row) for row in rows]
+
+
+def resolve_station_location(
+    config: AppConfig,
+    station_code: str,
+    role: str,
+    item_scope: str | None = None,
+    operation_scope: str | None = None,
+) -> JsonObject | None:
+    normalized_station_code = _upper(station_code)
+    normalized_role = _lower(role)
+    if not normalized_station_code or not normalized_role:
+        return None
+    params = {
+        "station_code": normalized_station_code,
+        "role": normalized_role,
+        "item_scope": _nullable_text(item_scope),
+        "operation_scope": _nullable_text(operation_scope),
+    }
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_RESOLVE_STATION_LOCATION_SQL, params)
+            row = cursor.fetchone()
+    return _joined_location_row(row) if row else None
+
+
+def get_station_location_context(config: AppConfig, station_code: str) -> JsonObject:
+    normalized_station_code = _upper(station_code)
+    bindings = list_station_location_bindings(config, normalized_station_code, active_only=True)
+    locations_by_role: dict[str, list[JsonObject]] = {}
+    locations_by_code: dict[str, JsonObject] = {}
+    inactive_or_missing_locations: list[JsonObject] = []
+
+    for binding in bindings:
+        role = _lower(binding.get("role"))
+        location = binding.get("location")
+        if not isinstance(location, dict):
+            inactive_or_missing_locations.append(
+                {
+                    "role": role,
+                    "location_code": binding.get("location_code"),
+                    "reason": "missing_location",
+                }
+            )
+            continue
+        if location.get("active") is not True:
+            inactive_or_missing_locations.append(
+                {
+                    "role": role,
+                    "location_code": binding.get("location_code"),
+                    "reason": "inactive_location",
+                }
+            )
+            continue
+        locations_by_role.setdefault(role, []).append(location)
+        location_code = _upper(location.get("location_code"))
+        if location_code:
+            locations_by_code.setdefault(location_code, location)
+
+    def first_location(role: str) -> JsonObject | None:
+        locations = locations_by_role.get(role, [])
+        return locations[0] if locations else None
+
+    required_roles = ("input", "active_wip", "output_good", "output_scrap")
+    missing_roles = [role for role in required_roles if first_location(role) is None]
+
+    return _json_safe({
+        "station_code": normalized_station_code,
+        "bindings": bindings,
+        "locations": list(locations_by_code.values()),
+        "locations_by_role": locations_by_role,
+        "input_location": first_location("input"),
+        "active_wip_location": first_location("active_wip"),
+        "output_good_location": first_location("output_good"),
+        "output_scrap_location": first_location("output_scrap"),
+        "output_buffer_location": first_location("output_buffer"),
+        "missing_roles": missing_roles,
+        "inactive_or_missing_locations": inactive_or_missing_locations,
+    })
 
 
 def _operation_row(row: Any) -> JsonObject:

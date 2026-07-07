@@ -14,7 +14,17 @@ from fastapi.testclient import TestClient
 import mes_web.app as app_module
 from mes_web.config import AppConfig
 from mes_web.db import mesql_v2
-from mes_web.db.mesql_v2 import complete_operation_v2, read_station_queue_v2, start_operation_v2, upsert_mesql_queue_items
+from mes_web.db.mesql_v2 import (
+    complete_operation_v2,
+    get_location_by_code,
+    get_station_location_context,
+    list_locations,
+    list_station_location_bindings,
+    read_station_queue_v2,
+    resolve_station_location,
+    start_operation_v2,
+    upsert_mesql_queue_items,
+)
 from mes_web.integration.mesql_pull import pull_mesql_station_queues
 from mes_web.integration.mesql_push import push_mesql_outbox
 
@@ -29,6 +39,10 @@ class _Cursor:
         self.good_quantity = 0
         self.scrap_quantity = 0
         self.queue_rows: list[dict] = []
+        self.location_rows: list[dict] = []
+        self.location_row: dict | None = None
+        self.binding_rows: list[dict] = []
+        self.resolved_binding_row: dict | None = None
 
     def __enter__(self):
         return self
@@ -43,6 +57,10 @@ class _Cursor:
 
     def fetchone(self):
         lowered = self.last_sql.lower()
+        if "from mes.locations" in lowered and "where location_code = %(location_code)s" in lowered:
+            return self.location_row
+        if "from mes.station_location_bindings b" in lowered and "join mes.locations l" in lowered and "limit 1" in lowered:
+            return self.resolved_binding_row
         if "from mes.work_order_operations" in lowered and "sequence_no >" in lowered:
             return None
         if "from mes.work_order_operations" in lowered and "for update" in lowered:
@@ -75,7 +93,12 @@ class _Cursor:
         return None
 
     def fetchall(self):
-        if "from mes.station_queue q" in self.last_sql.lower():
+        lowered = self.last_sql.lower()
+        if "from mes.locations" in lowered:
+            return self.location_rows
+        if "from mes.station_location_bindings b" in lowered:
+            return self.binding_rows
+        if "from mes.station_queue q" in lowered:
             return self.queue_rows
         return []
 
@@ -329,6 +352,86 @@ def _assert_iso_timestamp(test_case: unittest.TestCase, value) -> None:
     datetime.fromisoformat(value)
 
 
+def _fake_location(
+    location_code: str,
+    *,
+    location_pk: int = 1,
+    location_type: str = "buffer",
+    station_code: str | None = None,
+    active: bool = True,
+    payload: dict | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    return {
+        "location_pk": location_pk,
+        "location_id": location_code,
+        "location_code": location_code,
+        "location_name": location_code.replace("_", " ").title(),
+        "location_type": location_type,
+        "parent_location_code": None,
+        "station_code": station_code,
+        "active": active,
+        "source_system": "mes_web",
+        "source_file": "003_add_station_locations",
+        "external_ref": f"seed:location:{location_code}",
+        "payload": payload,
+        "metadata": metadata,
+        "created_at": datetime(2026, 7, 6, 20, 25, 30),
+        "updated_at": datetime(2026, 7, 6, 20, 25, 30),
+    }
+
+
+def _fake_binding(
+    station_code: str,
+    role: str,
+    location_code: str,
+    *,
+    binding_pk: int = 1,
+    priority: int = 100,
+    active: bool = True,
+    location: dict | None = None,
+) -> dict:
+    row = {
+        "binding_pk": binding_pk,
+        "binding_id": f"{station_code}:{role}:{location_code}",
+        "station_code": station_code,
+        "role": role,
+        "location_code": location_code,
+        "item_scope": None,
+        "operation_scope": None,
+        "priority": priority,
+        "active": active,
+        "binding_source_system": "mes_web",
+        "binding_source_file": "003_add_station_locations",
+        "binding_external_ref": f"seed:station_location_binding:{station_code}:{role}:{location_code}",
+        "binding_payload": None,
+        "binding_metadata": None,
+        "binding_created_at": datetime(2026, 7, 6, 20, 25, 30),
+        "binding_updated_at": datetime(2026, 7, 6, 20, 25, 30),
+    }
+    if location:
+        row.update(
+            {
+                "location_pk": location["location_pk"],
+                "location_id": location["location_id"],
+                "joined_location_code": location["location_code"],
+                "location_name": location["location_name"],
+                "location_type": location["location_type"],
+                "parent_location_code": location["parent_location_code"],
+                "location_station_code": location["station_code"],
+                "location_active": location["active"],
+                "location_source_system": location["source_system"],
+                "location_source_file": location["source_file"],
+                "location_external_ref": location["external_ref"],
+                "location_payload": location["payload"],
+                "location_metadata": location["metadata"],
+                "location_created_at": location["created_at"],
+                "location_updated_at": location["updated_at"],
+            }
+        )
+    return row
+
+
 class _QueueConflictCursor:
     def __init__(self) -> None:
         self.executed: list[tuple[str, dict]] = []
@@ -573,6 +676,229 @@ class MesqlV2Tests(unittest.TestCase):
         self.assertEqual(queue[0]["operation_no"], 10)
         self.assertEqual(queue[0]["operation_status"], "queued")
         self.assertTrue(any("from mes.station_queue q" in sql.lower() for sql, _params in connection.cursor_instance.executed))
+
+    def test_list_locations_reads_active_locations_by_default(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.location_rows = [
+            _fake_location("RAW_MATERIAL", location_type="raw_material", payload=None, metadata=None)
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            locations = list_locations(AppConfig(db_enabled=True))
+
+        self.assertEqual(locations[0]["location_code"], "RAW_MATERIAL")
+        self.assertEqual(locations[0]["location_type"], "raw_material")
+        self.assertEqual(locations[0]["payload"], {})
+        self.assertEqual(locations[0]["metadata"], {})
+        self.assertEqual(connection.cursor_instance.last_params["active_only"], True)
+        self.assertIsNone(connection.cursor_instance.last_params["location_type"])
+        self.assertTrue(any("from mes.locations" in sql.lower() for sql, _params in connection.cursor_instance.executed))
+
+    def test_list_locations_can_filter_by_location_type(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.location_rows = [
+            _fake_location("BETWEEN_ASSEMBLY_PACKAGING", location_type="buffer")
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            locations = list_locations(AppConfig(db_enabled=True), location_type="BUFFER")
+
+        self.assertEqual(locations[0]["location_type"], "buffer")
+        self.assertEqual(connection.cursor_instance.last_params["location_type"], "buffer")
+
+    def test_get_location_by_code_normalizes_code_and_maps_row(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.location_row = _fake_location(
+            "RAW_MATERIAL",
+            location_type="raw_material",
+            payload=None,
+            metadata=None,
+        )
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            location = get_location_by_code(AppConfig(db_enabled=True), "raw_material")
+
+        self.assertIsNotNone(location)
+        self.assertEqual(location["location_code"], "RAW_MATERIAL")
+        self.assertEqual(location["payload"], {})
+        self.assertEqual(location["metadata"], {})
+        self.assertEqual(connection.cursor_instance.last_params["location_code"], "RAW_MATERIAL")
+
+    def test_get_location_by_code_returns_none_when_missing(self) -> None:
+        connection = _Connection()
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            location = get_location_by_code(AppConfig(db_enabled=True), "missing_location")
+
+        self.assertIsNone(location)
+        self.assertEqual(connection.cursor_instance.last_params["location_code"], "MISSING_LOCATION")
+
+    def test_list_station_location_bindings_filters_by_station_and_role(self) -> None:
+        connection = _Connection()
+        location = _fake_location("FINISHED_GOODS", location_pk=5, location_type="finished_goods")
+        connection.cursor_instance.binding_rows = [
+            _fake_binding("PACKAGING_01", "output_good", "FINISHED_GOODS", location=location)
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            bindings = list_station_location_bindings(
+                AppConfig(db_enabled=True),
+                "packaging_01",
+                role="OUTPUT_GOOD",
+            )
+
+        self.assertEqual(connection.cursor_instance.last_params["station_code"], "PACKAGING_01")
+        self.assertEqual(connection.cursor_instance.last_params["role"], "output_good")
+        self.assertEqual(bindings[0]["station_code"], "PACKAGING_01")
+        self.assertEqual(bindings[0]["role"], "output_good")
+        self.assertEqual(bindings[0]["location"]["location_code"], "FINISHED_GOODS")
+        self.assertEqual(bindings[0]["payload"], {})
+        self.assertEqual(bindings[0]["metadata"], {})
+
+    def test_list_station_location_bindings_joins_by_location_code(self) -> None:
+        sql = mesql_v2.SELECT_STATION_LOCATION_BINDINGS_SQL.lower()
+        join_line = next(line.strip() for line in sql.splitlines() if " on " in line.lower() or line.strip().startswith("on "))
+
+        self.assertIn("l.location_code = b.location_code", join_line)
+        self.assertNotIn("location_id", join_line)
+        self.assertNotIn("location_pk", join_line)
+
+    def test_resolve_station_location_joins_by_location_code_not_location_id(self) -> None:
+        connection = _Connection()
+        location = _fake_location("BETWEEN_ASSEMBLY_PACKAGING", location_pk=3, location_type="buffer")
+        connection.cursor_instance.resolved_binding_row = _fake_binding(
+            "ASSEMBLY_01",
+            "output_buffer",
+            "BETWEEN_ASSEMBLY_PACKAGING",
+            location=location,
+        )
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            resolved = resolve_station_location(
+                AppConfig(db_enabled=True),
+                "assembly_01",
+                "OUTPUT_BUFFER",
+                item_scope="",
+                operation_scope="",
+            )
+
+        sql = connection.cursor_instance.last_sql.lower()
+        join_line = next(line.strip() for line in sql.splitlines() if " on " in line.lower() or line.strip().startswith("on "))
+        self.assertIn("l.location_code = b.location_code", join_line)
+        self.assertNotIn("location_id", join_line)
+        self.assertNotIn("location_pk", join_line)
+        self.assertEqual(connection.cursor_instance.last_params["station_code"], "ASSEMBLY_01")
+        self.assertEqual(connection.cursor_instance.last_params["role"], "output_buffer")
+        self.assertIsNone(connection.cursor_instance.last_params["item_scope"])
+        self.assertIsNone(connection.cursor_instance.last_params["operation_scope"])
+        self.assertEqual(resolved["location_code"], "BETWEEN_ASSEMBLY_PACKAGING")
+
+    def test_resolve_station_location_returns_none_when_missing(self) -> None:
+        connection = _Connection()
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            resolved = resolve_station_location(AppConfig(db_enabled=True), "PACKAGING_01", "output_buffer")
+
+        self.assertIsNone(resolved)
+
+    def test_get_station_location_context_groups_roles(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.binding_rows = [
+            _fake_binding("ASSEMBLY_01", "input", "RAW_MATERIAL", location=_fake_location("RAW_MATERIAL", location_pk=1, location_type="raw_material")),
+            _fake_binding("ASSEMBLY_01", "active_wip", "ASSEMBLY_WIP", location=_fake_location("ASSEMBLY_WIP", location_pk=2, location_type="wip", station_code="ASSEMBLY_01")),
+            _fake_binding("ASSEMBLY_01", "output_good", "BETWEEN_ASSEMBLY_PACKAGING", location=_fake_location("BETWEEN_ASSEMBLY_PACKAGING", location_pk=3, location_type="buffer")),
+            _fake_binding("ASSEMBLY_01", "output_scrap", "SCRAP_AREA", location=_fake_location("SCRAP_AREA", location_pk=4, location_type="scrap")),
+            _fake_binding("ASSEMBLY_01", "output_buffer", "BETWEEN_ASSEMBLY_PACKAGING", binding_pk=5, location=_fake_location("BETWEEN_ASSEMBLY_PACKAGING", location_pk=3, location_type="buffer")),
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            context = get_station_location_context(AppConfig(db_enabled=True), "assembly_01")
+
+        self.assertEqual(context["station_code"], "ASSEMBLY_01")
+        self.assertEqual(context["input_location"]["location_code"], "RAW_MATERIAL")
+        self.assertEqual(context["active_wip_location"]["location_code"], "ASSEMBLY_WIP")
+        self.assertEqual(context["output_good_location"]["location_code"], "BETWEEN_ASSEMBLY_PACKAGING")
+        self.assertEqual(context["output_buffer_location"]["location_code"], "BETWEEN_ASSEMBLY_PACKAGING")
+        self.assertIn("input", context["locations_by_role"])
+        self.assertEqual(context["missing_roles"], [])
+
+    def test_get_station_location_context_allows_missing_optional_output_buffer(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.binding_rows = [
+            _fake_binding("PACKAGING_01", "input", "BETWEEN_ASSEMBLY_PACKAGING", location=_fake_location("BETWEEN_ASSEMBLY_PACKAGING", location_pk=3, location_type="buffer")),
+            _fake_binding("PACKAGING_01", "active_wip", "PACKAGING_WIP", location=_fake_location("PACKAGING_WIP", location_pk=4, location_type="wip", station_code="PACKAGING_01")),
+            _fake_binding("PACKAGING_01", "output_good", "FINISHED_GOODS", location=_fake_location("FINISHED_GOODS", location_pk=5, location_type="finished_goods")),
+            _fake_binding("PACKAGING_01", "output_scrap", "SCRAP_AREA", location=_fake_location("SCRAP_AREA", location_pk=6, location_type="scrap")),
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            context = get_station_location_context(AppConfig(db_enabled=True), "PACKAGING_01")
+
+        self.assertIsNone(context["output_buffer_location"])
+        self.assertNotIn("output_buffer", context["missing_roles"])
+        self.assertEqual(context["missing_roles"], [])
+
+    def test_station_location_read_helpers_do_not_execute_write_sql(self) -> None:
+        read_sql_constants = [
+            mesql_v2.SELECT_LOCATIONS_SQL,
+            mesql_v2.SELECT_LOCATION_BY_CODE_SQL,
+            mesql_v2.SELECT_STATION_LOCATION_BINDINGS_SQL,
+            mesql_v2.SELECT_RESOLVE_STATION_LOCATION_SQL,
+        ]
+        forbidden_keywords = ("insert", "update", "delete", "drop", "truncate", "alter", "create")
+
+        for sql in read_sql_constants:
+            lowered = sql.lower()
+            self.assertTrue(lowered.lstrip().startswith("select"))
+            self.assertIn("from mes.", lowered)
+            self.assertNotIn("for update", lowered)
+            for keyword in forbidden_keywords:
+                self.assertNotRegex(lowered, rf"\b{keyword}\b")
+
+        for sql in (mesql_v2.SELECT_STATION_LOCATION_BINDINGS_SQL, mesql_v2.SELECT_RESOLVE_STATION_LOCATION_SQL):
+            lowered = sql.lower()
+            self.assertIn("from mes.station_location_bindings", lowered)
+            self.assertIn("from mes.locations", lowered.replace("join", "from"))
+            join_line = next(line.strip() for line in lowered.splitlines() if " on " in line.lower() or line.strip().startswith("on "))
+            self.assertIn("l.location_code = b.location_code", join_line)
+            self.assertNotIn("location_id", join_line)
+            self.assertNotIn("location_pk", join_line)
 
     def test_v2_routes_are_wired_to_db_authoritative_helpers(self) -> None:
         app = app_module.create_app()

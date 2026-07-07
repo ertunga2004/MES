@@ -326,7 +326,14 @@ class _SuccessorConnection:
         return None
 
 
+def _unwrap_json_value(value):
+    if value.__class__.__module__.startswith("psycopg.types.json") and hasattr(value, "obj"):
+        return value.obj
+    return value
+
+
 def _assert_json_serializable_without_decimal(test_case: unittest.TestCase, value) -> None:
+    value = _unwrap_json_value(value)
     json.dumps(value)
     if isinstance(value, dict):
         for child in value.values():
@@ -341,7 +348,7 @@ def _assert_json_serializable_without_decimal(test_case: unittest.TestCase, valu
 def _payload_for(executed_params: list[dict], event_type: str) -> dict:
     for params in executed_params:
         if params.get("event_type") == event_type:
-            payload = params.get("payload")
+            payload = _unwrap_json_value(params.get("payload"))
             return dict(payload) if isinstance(payload, dict) else {}
     return {}
 
@@ -890,6 +897,11 @@ class MesqlV2Tests(unittest.TestCase):
             self.assertNotIn("for update", lowered)
             for keyword in forbidden_keywords:
                 self.assertNotRegex(lowered, rf"\b{keyword}\b")
+
+        self.assertIn("cast(%(location_type)s as text)", mesql_v2.SELECT_LOCATIONS_SQL.lower())
+        self.assertIn("cast(%(role)s as text)", mesql_v2.SELECT_STATION_LOCATION_BINDINGS_SQL.lower())
+        self.assertIn("cast(%(item_scope)s as text)", mesql_v2.SELECT_RESOLVE_STATION_LOCATION_SQL.lower())
+        self.assertIn("cast(%(operation_scope)s as text)", mesql_v2.SELECT_RESOLVE_STATION_LOCATION_SQL.lower())
 
         for sql in (mesql_v2.SELECT_STATION_LOCATION_BINDINGS_SQL, mesql_v2.SELECT_RESOLVE_STATION_LOCATION_SQL):
             lowered = sql.lower()

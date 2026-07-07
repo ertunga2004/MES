@@ -509,8 +509,11 @@ SELECT
     created_at,
     updated_at
 FROM mes.locations
-WHERE (%(active_only)s = false OR active = true)
-  AND (%(location_type)s IS NULL OR location_type = %(location_type)s)
+WHERE (CAST(%(active_only)s AS boolean) = false OR active = true)
+  AND (
+      CAST(%(location_type)s AS text) IS NULL
+      OR location_type = CAST(%(location_type)s AS text)
+  )
 ORDER BY location_type, location_code
 """
 
@@ -573,8 +576,11 @@ FROM mes.station_location_bindings b
 LEFT JOIN mes.locations l
   ON l.location_code = b.location_code
 WHERE b.station_code = %(station_code)s
-  AND (%(active_only)s = false OR b.active = true)
-  AND (%(role)s IS NULL OR b.role = %(role)s)
+  AND (CAST(%(active_only)s AS boolean) = false OR b.active = true)
+  AND (
+      CAST(%(role)s AS text) IS NULL
+      OR b.role = CAST(%(role)s AS text)
+  )
 ORDER BY b.role, b.priority, b.location_code
 """
 
@@ -620,15 +626,15 @@ WHERE b.station_code = %(station_code)s
   AND l.active = true
   AND (
       b.item_scope IS NULL
-      OR b.item_scope = %(item_scope)s
+      OR b.item_scope = CAST(%(item_scope)s AS text)
   )
   AND (
       b.operation_scope IS NULL
-      OR b.operation_scope = %(operation_scope)s
+      OR b.operation_scope = CAST(%(operation_scope)s AS text)
   )
 ORDER BY
-    CASE WHEN b.item_scope = %(item_scope)s THEN 0 ELSE 1 END,
-    CASE WHEN b.operation_scope = %(operation_scope)s THEN 0 ELSE 1 END,
+    CASE WHEN b.item_scope = CAST(%(item_scope)s AS text) THEN 0 ELSE 1 END,
+    CASE WHEN b.operation_scope = CAST(%(operation_scope)s AS text) THEN 0 ELSE 1 END,
     b.priority ASC,
     b.location_code ASC
 LIMIT 1

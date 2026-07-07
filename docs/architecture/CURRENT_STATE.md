@@ -63,6 +63,24 @@ or MESQL push/pull action.
   `mes.station_location_bindings`, work order tables, operation lifecycle,
   SQL migration files, runtime/API code, Docker/compose files, or MESQL state.
 
+## Verified Station/Location Read Model
+
+- Read-only helper implementation tamamlandı.
+- Unit tests: `Ran 27 tests ... OK`.
+- First smoke `psycopg.errors.AmbiguousParameter` ile fail oldu; optional
+  `NULL` parametreler explicit cast edilerek düzeltildi.
+- Final local PostgreSQL read smoke PASS.
+- `all_location_count = 8`
+- `active_location_count = 6`
+- `PACKAGING_01 active_binding_count = 4`
+- `ASSEMBLY_01 active_binding_count = 4`
+- `PACKAGING_01/output_good = FINISHED_GOODS`
+- `PACKAGING_01/output_scrap = SCRAP_AREA`
+- `ASSEMBLY_01/output_buffer = BETWEEN_ASSEMBLY_PACKAGING`
+- No DB write, no MESQL, no API/UI, no operation lifecycle mutation.
+- Evidence file:
+  `docs/runbooks/station_location_read_smoke_evidence_20260707.md`.
+
 ## Portable Path Model
 
 ```text

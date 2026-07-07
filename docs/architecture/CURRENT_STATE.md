@@ -81,6 +81,37 @@ or MESQL push/pull action.
 - Evidence file:
   `docs/runbooks/station_location_read_smoke_evidence_20260707.md`.
 
+## Verified Station/Location Read-Only API
+
+- Read-only station/location API implementation tamamlandı.
+- Endpointler:
+  - `GET /api/v2/locations`
+  - `GET /api/v2/locations/{location_code}`
+  - `GET /api/v2/stations/{station_code}/locations`
+  - `GET /api/v2/stations/{station_code}/location-context`
+- Feature flag: `MES_WEB_DB_STATION_LOCATION_READ_MODEL_ENABLED`.
+- Default disabled.
+- Route-level unit tests: `Ran 14 tests ... OK`.
+- `mesql_v2` regression tests: `Ran 27 tests ... OK`.
+- Local HTTP API read smoke PASS.
+- Smoke values:
+  - `locations active_only=false count = 8`
+  - `locations active_only=true count = 6`
+  - `PACKAGING_01 binding count = 4`
+  - `ASSEMBLY_01 binding count = 4`
+  - `PACKAGING_01/output_good = FINISHED_GOODS`
+  - `ASSEMBLY_01/output_buffer = BETWEEN_ASSEMBLY_PACKAGING`
+- Error validation verified:
+  - missing location -> 404
+  - invalid location type -> 400
+  - invalid role -> 400
+  - missing station bindings -> 200 empty list
+- No DB write, no MESQL, no migration, no operation lifecycle mutation, no UI.
+- Post-smoke base compose disabled behavior:
+  - `GET /api/v2/locations` -> `503 STATION_LOCATION_READ_MODEL_DISABLED`
+- Evidence:
+  `docs/runbooks/station_location_api_smoke_evidence_20260707.md`.
+
 ## Portable Path Model
 
 ```text

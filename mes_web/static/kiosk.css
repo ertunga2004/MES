@@ -284,6 +284,67 @@ h1 {
   gap: 8px;
 }
 
+.station-location-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(25, 91, 75, 0.1);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.station-location-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.station-location-head h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.station-location-list {
+  display: grid;
+  gap: 8px;
+}
+
+.station-location-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.75fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(25, 91, 75, 0.05);
+}
+
+.station-location-row span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.station-location-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.95rem;
+}
+
+.station-location-message,
+.station-location-warning {
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.station-location-warning {
+  color: var(--warn);
+  background: #f7e9cb;
+}
+
 .content-badge,
 .color-chip {
   display: inline-flex;
@@ -527,6 +588,7 @@ h1 {
   .fault-head,
   .fault-actions,
   .panel-head,
+  .station-location-head,
   .maintenance-head,
   .recent-item-top {
     flex-direction: column;
@@ -535,6 +597,10 @@ h1 {
 
   .work-order-row {
     grid-template-columns: auto 1fr;
+  }
+
+  .station-location-row {
+    grid-template-columns: 1fr;
   }
 
   .status-pill {

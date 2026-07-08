@@ -63,6 +63,17 @@
 
         <div id="activeOrderContents" class="content-badges"></div>
 
+        <section id="stationLocationCard" class="station-location-card" aria-live="polite">
+          <div class="station-location-head">
+            <div>
+              <p class="section-label">İstasyon Lokasyon Bilgisi</p>
+              <h3 id="stationLocationTitle">İstasyon seçilmedi</h3>
+            </div>
+            <p id="stationLocationStatus" class="muted">-</p>
+          </div>
+          <div id="stationLocationRows" class="station-location-list"></div>
+        </section>
+
         <div id="maintenancePanel" class="maintenance-panel hidden">
           <div class="maintenance-head">
             <div>
@@ -133,7 +144,7 @@
       </section>
     </main>
   </div>
-  <script src="/static/kiosk.js?v=10" defer></script>
+  <script src="/static/kiosk.js?v=11" defer></script>
 </body>
 </html>
 

@@ -8,6 +8,12 @@ const state = {
     faultReasonText: "",
     qualityReasonByItem: {},
   },
+  stationLocation: {
+    stationCode: "",
+    status: "idle",
+    data: null,
+    error: "",
+  },
 };
 
 const els = {
@@ -23,6 +29,9 @@ const els = {
   activeOrderTitle: document.getElementById("activeOrderTitle"),
   activeOrderMeta: document.getElementById("activeOrderMeta"),
   activeOrderContents: document.getElementById("activeOrderContents"),
+  stationLocationTitle: document.getElementById("stationLocationTitle"),
+  stationLocationStatus: document.getElementById("stationLocationStatus"),
+  stationLocationRows: document.getElementById("stationLocationRows"),
   maintenancePanel: document.getElementById("maintenancePanel"),
   maintenanceTitle: document.getElementById("maintenanceTitle"),
   maintenanceProgress: document.getElementById("maintenanceProgress"),
@@ -42,6 +51,14 @@ const els = {
   workOrderList: document.getElementById("workOrderList"),
   recentItemsList: document.getElementById("recentItemsList"),
 };
+
+const STATION_LOCATION_FIELDS = [
+  ["input_location", "Giriş Lokasyonu"],
+  ["active_wip_location", "Aktif WIP Lokasyonu"],
+  ["output_good_location", "Sağlam Çıkış Lokasyonu"],
+  ["output_scrap_location", "Fire/Hurda Çıkış Lokasyonu"],
+  ["output_buffer_location", "Ara Buffer Lokasyonu"],
+];
 
 function deviceStorageKey(suffix) {
   return `mes_kiosk_${state.deviceId}_${suffix}`;
@@ -218,6 +235,153 @@ async function fetchJson(url, options = {}) {
   return body;
 }
 
+function stationLocationStationCode() {
+  const snapshotCode = ((state.snapshot || {}).station_context || {}).station_code || "";
+  return String(state.stationCode || snapshotCode || "").trim().toUpperCase();
+}
+
+function stationLocationDisplay(row) {
+  if (!row || typeof row !== "object") {
+    return "Not configured";
+  }
+  const locationCode = safeText(row.location_code || row.location_id, "");
+  if (!locationCode) {
+    return "Not configured";
+  }
+  const locationType = safeText(row.location_type, "");
+  return locationType ? `${locationCode} (${locationType})` : locationCode;
+}
+
+function renderStationLocationMessage(message) {
+  els.stationLocationRows.innerHTML = "";
+  const row = document.createElement("div");
+  row.className = "station-location-message";
+  row.textContent = message;
+  els.stationLocationRows.appendChild(row);
+}
+
+function renderStationLocationRows(context) {
+  els.stationLocationRows.innerHTML = "";
+  const hasAnyLocation = STATION_LOCATION_FIELDS.some(([field]) => Boolean((context || {})[field]));
+  if (!hasAnyLocation) {
+    renderStationLocationMessage("Bu istasyon için lokasyon bilgisi bulunamadı.");
+    return;
+  }
+
+  for (const [field, label] of STATION_LOCATION_FIELDS) {
+    const item = document.createElement("div");
+    item.className = "station-location-row";
+
+    const labelNode = document.createElement("span");
+    labelNode.textContent = label;
+
+    const valueNode = document.createElement("strong");
+    valueNode.textContent = stationLocationDisplay(context[field]);
+
+    item.appendChild(labelNode);
+    item.appendChild(valueNode);
+    els.stationLocationRows.appendChild(item);
+  }
+
+  const inactiveOrMissing = Array.isArray(context.inactive_or_missing_locations) ? context.inactive_or_missing_locations : [];
+  if (inactiveOrMissing.length > 0) {
+    const warning = document.createElement("div");
+    warning.className = "station-location-warning";
+    warning.textContent = "Bazı lokasyon eşleşmeleri pasif veya eksik görünüyor.";
+    els.stationLocationRows.appendChild(warning);
+  }
+}
+
+function renderStationLocationCard() {
+  const stationCode = stationLocationStationCode();
+  if (!stationCode) {
+    els.stationLocationTitle.textContent = "İstasyon seçilmedi";
+    els.stationLocationStatus.textContent = "-";
+    renderStationLocationMessage("İstasyon seçilmedi.");
+    return;
+  }
+
+  els.stationLocationTitle.textContent = stationCode;
+  const locationState = state.stationLocation;
+  if (locationState.stationCode !== stationCode || locationState.status === "idle" || locationState.status === "loading") {
+    els.stationLocationStatus.textContent = "Yükleniyor";
+    renderStationLocationMessage("Lokasyon bilgisi yükleniyor...");
+    return;
+  }
+  if (locationState.status === "disabled") {
+    els.stationLocationStatus.textContent = "Pasif";
+    renderStationLocationMessage("İstasyon lokasyon bilgisi bu ortamda aktif değil.");
+    return;
+  }
+  if (locationState.status === "missing") {
+    els.stationLocationStatus.textContent = "Bulunamadı";
+    renderStationLocationMessage("Bu istasyon için lokasyon bilgisi bulunamadı.");
+    return;
+  }
+  if (locationState.status === "error") {
+    els.stationLocationStatus.textContent = "Okunamadı";
+    renderStationLocationMessage("Lokasyon bilgisi şu anda okunamadı.");
+    return;
+  }
+
+  els.stationLocationStatus.textContent = "Salt görünüm";
+  renderStationLocationRows(locationState.data || {});
+}
+
+async function loadStationLocationContext(stationCode) {
+  state.stationLocation = {
+    stationCode,
+    status: "loading",
+    data: null,
+    error: "",
+  };
+  renderStationLocationCard();
+
+  try {
+    const payload = await fetchJson(`/api/v2/stations/${encodeURIComponent(stationCode)}/location-context`);
+    if (stationLocationStationCode() !== stationCode) {
+      return;
+    }
+    state.stationLocation = {
+      stationCode,
+      status: "loaded",
+      data: payload && payload.data ? payload.data : {},
+      error: "",
+    };
+  } catch (error) {
+    if (stationLocationStationCode() !== stationCode) {
+      return;
+    }
+    const disabled = error.status === 503 && String(error.detail || error.message || "") === "STATION_LOCATION_READ_MODEL_DISABLED";
+    const missing = error.status === 404;
+    state.stationLocation = {
+      stationCode,
+      status: disabled ? "disabled" : (missing ? "missing" : "error"),
+      data: null,
+      error: String(error.message || error),
+    };
+  }
+  renderStationLocationCard();
+}
+
+function ensureStationLocationContext() {
+  const stationCode = stationLocationStationCode();
+  if (!stationCode) {
+    state.stationLocation = {
+      stationCode: "",
+      status: "idle",
+      data: null,
+      error: "",
+    };
+    renderStationLocationCard();
+    return;
+  }
+  if (state.stationLocation.stationCode === stationCode && state.stationLocation.status !== "idle") {
+    return;
+  }
+  void loadStationLocationContext(stationCode);
+}
+
 async function resolveModuleId() {
   const url = new URL(window.location.href);
   const queryModuleId = (url.searchParams.get("module_id") || "").trim();
@@ -261,6 +425,7 @@ async function loadBootstrap() {
     }
   }
   render();
+  ensureStationLocationContext();
 }
 
 async function registerDevice() {
@@ -672,6 +837,7 @@ function render() {
   renderFaultOptions();
   renderLineStatus();
   renderPrimaryPanel();
+  renderStationLocationCard();
   renderFaultPanel();
   renderWorkOrders();
   renderRecentItems();
@@ -951,6 +1117,7 @@ function connectSocket() {
     }
     state.snapshot = payload.data || null;
     render();
+    ensureStationLocationContext();
   });
 }
 

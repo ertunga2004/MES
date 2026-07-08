@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-07
+Last updated: 2026-07-08
 
 ## Local MES Execution and Portable Runtime Baseline
 
@@ -190,6 +190,56 @@ or MESQL push/pull action.
 - Manual visual evidence:
   `docs/runbooks/station_location_kiosk_manual_visual_evidence_20260707.md`.
 
+## Verified SQL-Driven Station Execution Documentation Phase
+
+- SQL-driven station execution documentation phase tamamlandı.
+- Bu faz implementation değildir; dokümantasyon ve karar checkpoint fazıdır.
+- Oluşturulan/güncellenen tasarım dokümanları:
+  - `docs/architecture/station_execution_model_design.md`
+  - `docs/architecture/station_execution_schema_plan.md`
+  - `docs/architecture/station_execution_schema_review_checkpoint.md`
+  - `docs/architecture/station_execution_migration_plan.md`
+  - `docs/architecture/station_execution_seed_setup_plan.md`
+  - `docs/architecture/station_execution_runtime_engine_design.md`
+  - `docs/architecture/kiosk_dynamic_action_design.md`
+  - `docs/architecture/iot_event_adapter_design.md`
+  - `docs/architecture/oee_kpi_v0_design.md`
+- Schema review sonucu:
+  - `Schema design: READY_FOR_MIGRATION_PLAN`
+  - `Migration SQL: NOT_STARTED`
+  - `Seed SQL: NOT_STARTED`
+  - `Runtime implementation: NOT_STARTED`
+  - `Kiosk dynamic action implementation: NOT_STARTED`
+  - `IoT adapter implementation: NOT_STARTED`
+  - `OEE/KPI implementation: NOT_STARTED`
+- Sabitlenen ana kararlar:
+  - `start_mode` ve `finish_mode` ayrı fiziksel alanlar olacaktır.
+  - `control_policy` engine için zorunlu ana alan olmayacaktır.
+  - `operation_steps`, `route_operation_id` üzerinden `route_operations`
+    satırına bağlanacaktır.
+  - Event source station-scoped kabul edilmiştir.
+  - Yeni execution state için `mes.work_order_operation_execution_state`
+    sidecar tablosu tercih edilmiştir.
+  - Mevcut `work_order_operations.status` ilk fazda bozulmayacaktır.
+  - `operation_events` append-only audit ledger olarak tasarlanmıştır.
+  - `production_flow_events` inventory movement değildir.
+  - Inventory movement/balance ayrı gelecek fazdır.
+  - MESQL entegrasyonu bu fazda frozen kalmıştır.
+- Bu fazda yapılmayanlar:
+  - Kod değişikliği yok.
+  - SQL migration yok.
+  - DB apply yok.
+  - Docker/psql yok.
+  - Kiosk implementation yok.
+  - Runtime engine implementation yok.
+  - IoT adapter implementation yok.
+  - OEE/KPI implementation yok.
+  - Inventory movement/balance yok.
+  - MESQL push/pull yok.
+- Sonraki teknik eşik:
+  - `004_station_execution_schema.sql` migration taslağı hazırlanabilir.
+  - Migration taslağı önce review edilecek; doğrudan DB'ye uygulanmayacaktır.
+
 ## Portable Path Model
 
 ```text
@@ -225,3 +275,8 @@ C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups
 
 For this checkpoint, no Python runtime code, database migration, Dockerfile,
 Compose, or container configuration change is required.
+
+For the SQL-driven station execution documentation checkpoint, no Python runtime
+code, SQL migration, database apply, Docker/Compose configuration, Kiosk
+implementation, operation lifecycle mutation, inventory movement/balance
+implementation, or MESQL push/pull action was performed.

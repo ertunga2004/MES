@@ -252,6 +252,18 @@ finish_event_source
 operation_completion_policy
 ```
 
+Terminoloji notu:
+
+- Bu kavramsal dokümanda erken örneklerde `start_event_source` ve
+  `finish_event_source` ifadeleri kullanılır.
+- Migration öncesi kesin schema planında bu alanlar
+  `start_event_source_code` ve `finish_event_source_code` olarak
+  netleştirilmiştir.
+- `operation_steps`, `route_operation_id` üzerinden `route_operations` satırına
+  bağlanır; `operation_code` tek başına step FK olarak kullanılmaz.
+- Event source validation station-scoped yapılır:
+  `route_operation.station_code + source_code`.
+
 `control_policy` convenience/seed alanı olabilir. Kullanıcı, workbook veya seed
 dosyası için okunabilir kısa değer sağlar; engine tarafında ise mümkün olduğunca
 `start_mode` ve `finish_mode` ayrı işlenmelidir.

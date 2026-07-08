@@ -174,6 +174,21 @@ or MESQL push/pull action.
 - Result: PASS with manual visual check pending.
 - Evidence:
   `docs/runbooks/station_location_kiosk_ui_smoke_evidence_20260707.md`.
+- Controlled manual visual check PASS.
+- `PACKAGING_01` kartı gerçek browser'da doğrulandı.
+- `ASSEMBLY_01` kartı gerçek browser'da doğrulandı.
+- Console error yok.
+- Yatay taşma yok.
+- Disabled behavior doğrulandı:
+  - Feature flag reset sonrası `503`.
+  - Kiosk kırılmadı.
+- Existing kiosk init POST görüldü:
+  - `POST /api/modules/konveyor_main/kiosk/register`
+  - Mevcut Kiosk init davranışı olarak kabul edildi.
+- Start/complete, queue mutation, MESQL ve operation lifecycle çağrısı
+  yapılmadı.
+- Manual visual evidence:
+  `docs/runbooks/station_location_kiosk_manual_visual_evidence_20260707.md`.
 
 ## Portable Path Model
 

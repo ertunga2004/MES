@@ -112,6 +112,28 @@ or MESQL push/pull action.
 - Evidence:
   `docs/runbooks/station_location_api_smoke_evidence_20260707.md`.
 
+## Verified Station/Location Tier 1 CI
+
+- Tier 1 offline GitHub Actions workflow eklendi.
+- Workflow file: `.github/workflows/station-location-api-tier1.yml`.
+- Workflow name: `Station Location API Tier 1`.
+- Latest verified commit: `329ffbe "ci: add station location api tier1 tests"`.
+- Run id: `28867373267`.
+- Job id: `85620827055`.
+- Status: `completed`.
+- Conclusion: `success`.
+- Job: `Offline unit/API tests`.
+- The workflow covers:
+  - `tests.test_mes_web_station_location_api`
+  - `tests.test_mes_web_mesql_v2`
+- GitHub log download via `gh run view --log` returned `HTTP 403`; direct
+  `Ran 14 tests` / `Ran 27 tests` lines were not read.
+- Run/job/step metadata confirmed success, so Tier 1 CI checkpoint is PASS.
+- Docker, PostgreSQL, HTTP smoke, migration, MESQL, and operation lifecycle
+  real DB smoke are not part of Tier 1.
+- Evidence:
+  `docs/runbooks/station_location_api_tier1_ci_evidence_20260707.md`.
+
 ## Portable Path Model
 
 ```text

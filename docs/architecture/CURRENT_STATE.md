@@ -134,6 +134,47 @@ or MESQL push/pull action.
 - Evidence:
   `docs/runbooks/station_location_api_tier1_ci_evidence_20260707.md`.
 
+## Verified Station/Location Kiosk Read-Only UI
+
+- Kiosk station/location read-only bilgi kartı implementation tamamlandı.
+- Değişen dosyalar:
+  - `mes_web/static/kiosk.html`
+  - `mes_web/static/kiosk.js`
+  - `mes_web/static/kiosk.css`
+- Kart endpointi:
+  - `GET /api/v2/stations/{station_code}/location-context`
+- Kart gösterimi:
+  - Giriş Lokasyonu
+  - Aktif WIP Lokasyonu
+  - Sağlam Çıkış Lokasyonu
+  - Fire/Hurda Çıkış Lokasyonu
+  - Ara Buffer Lokasyonu
+- Regression/static:
+  - `tests.test_mes_web_station_location_api`: `Ran 14 tests ... OK`
+  - `tests.test_mes_web_mesql_v2`: `Ran 27 tests ... OK`
+  - `node --check mes_web\static\kiosk.js`: PASS
+- Kiosk HTTP/static smoke PASS:
+  - `/kiosk -> 200`
+  - `/static/kiosk.html -> 200`
+  - `/kiosk/station/PACKAGING_01 -> 200`
+  - `/kiosk/PACKAGING_01 -> 200`
+  - `/static/kiosk.js -> 200`
+  - `/static/kiosk.css -> 200`
+- Kart markers verified:
+  - `stationLocationCard`
+  - `İstasyon Lokasyon Bilgisi`
+- API context values verified:
+  - `PACKAGING_01/output_good = FINISHED_GOODS`
+  - `PACKAGING_01/output_scrap = SCRAP_AREA`
+  - `ASSEMBLY_01/output_buffer = BETWEEN_ASSEMBLY_PACKAGING`
+- No DB write, no MESQL, no migration, no operation lifecycle mutation.
+- Start/complete and queue behavior were not changed.
+- Real browser visual check was not performed because existing Kiosk init may
+  trigger runtime POST calls.
+- Result: PASS with manual visual check pending.
+- Evidence:
+  `docs/runbooks/station_location_kiosk_ui_smoke_evidence_20260707.md`.
+
 ## Portable Path Model
 
 ```text

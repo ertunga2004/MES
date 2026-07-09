@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-08
+Last updated: 2026-07-09
 
 ## Local MES Execution and Portable Runtime Baseline
 
@@ -240,6 +240,67 @@ or MESQL push/pull action.
   - `004_station_execution_schema.sql` migration taslağı hazırlanabilir.
   - Migration taslağı önce review edilecek; doğrudan DB'ye uygulanmayacaktır.
 
+## Verified Station Execution Schema Migration Draft
+
+- `db/migrations/004_station_execution_schema.sql` migration taslağı
+  oluşturuldu.
+- Migration taslağı statik review'dan PASS aldı.
+- Migration henüz DB'ye uygulanmadı.
+- `docs/runbooks/station_execution_schema_migration_apply_runbook.md`
+  oluşturuldu.
+- Apply runbook backup, destructive keyword kontrolü, migration apply komutu,
+  schema/table/index/constraint verify sorguları, no-seed/no-data-mutation
+  kontrolü, location FK yokluğu kontrolü, health/regression planı, rollback
+  stratejisi ve PASS/FAIL kriterlerini içerir.
+- Migration taslağı 10 hedef tabloyu additive olarak oluşturacak şekilde
+  hazırlanmıştır:
+  - `mes.items`
+  - `mes.process_routes`
+  - `mes.route_operations`
+  - `mes.operation_steps`
+  - `mes.station_event_sources`
+  - `mes.work_order_operation_execution_state`
+  - `mes.work_order_operation_steps`
+  - `mes.operation_events`
+  - `mes.operation_approvals`
+  - `mes.production_flow_events`
+- Review sonrası giderilen kritik risk:
+  - `production_flow_events.input_location_code` ve
+    `production_flow_events.output_location_code` alanları semantic reference
+    olarak bırakılmıştır.
+  - Bu alanlar `mes.locations(location_code)` alanına DB-level FK ile
+    bağlanmamıştır.
+  - Gerekçe: mevcut local baselinelarda `locations.location_code` için full
+    unique constraint garanti edilmediğinden, location code geçerliliği
+    setup/runtime validation ile ele alınacaktır.
+- Korunan ana kararlar:
+  - Migration additive kalır.
+  - Seed içermez.
+  - Data migration içermez.
+  - Existing lifecycle mutation içermez.
+  - `work_order_operations.status` değiştirilmez.
+  - `station_queue` değiştirilmez.
+  - `mes.locations` ve `mes.station_location_bindings` değiştirilmez.
+  - Inventory movement/balance oluşturulmaz.
+  - MESQL sync/push/pull yapılmaz.
+- `operation_events` için station-scoped idempotency korunmuştur:
+  - `(station_code, event_source, external_event_id)` partial unique index.
+  - `idempotency_key` partial unique index.
+- Durum:
+  - `Schema migration draft: READY_FOR_APPLY_RUNBOOK_REVIEW`
+  - `Apply runbook: READY`
+  - `Migration apply: NOT_STARTED`
+  - `Seed SQL: NOT_STARTED`
+  - `Runtime implementation: NOT_STARTED`
+  - `Kiosk dynamic action implementation: NOT_STARTED`
+  - `IoT adapter implementation: NOT_STARTED`
+  - `OEE/KPI implementation: NOT_STARTED`
+- Sonraki teknik eşik:
+  - Açık kullanıcı onayı ile apply runbook takip edilerek backup alınacak.
+  - Sonra `004_station_execution_schema.sql` local PostgreSQL'e uygulanacak.
+  - Apply sonrası evidence dosyası önerisi:
+    `docs/runbooks/station_execution_schema_migration_evidence_YYYYMMDD.md`
+
 ## Portable Path Model
 
 ```text
@@ -279,4 +340,11 @@ Compose, or container configuration change is required.
 For the SQL-driven station execution documentation checkpoint, no Python runtime
 code, SQL migration, database apply, Docker/Compose configuration, Kiosk
 implementation, operation lifecycle mutation, inventory movement/balance
+implementation, or MESQL push/pull action was performed.
+
+For the station execution schema migration draft checkpoint,
+`004_station_execution_schema.sql` and its apply runbook were documented as
+ready for controlled future application, but no database apply, psql command,
+Docker/Compose operation, seed insert, runtime implementation, Kiosk dynamic
+action, IoT adapter, OEE/KPI implementation, inventory movement/balance
 implementation, or MESQL push/pull action was performed.

@@ -841,6 +841,151 @@ WHERE station_code = %(station_code)s
 LIMIT 1
 """
 
+SELECT_RUNTIME_WORK_ORDER_OPERATION_SQL = """
+SELECT
+    work_order_operation_id,
+    order_id,
+    operation_code,
+    station_code
+FROM mes.work_order_operations
+WHERE work_order_operation_id = %(work_order_operation_id)s
+LIMIT 1
+"""
+
+SELECT_EXECUTION_STATE_SQL = """
+SELECT
+    execution_state_id,
+    work_order_operation_id,
+    work_order_id,
+    station_code,
+    operation_code,
+    execution_status,
+    operation_completion_policy,
+    current_step_code,
+    started_at,
+    evidence_completed_at,
+    pending_final_approval_at,
+    closed_at,
+    last_event_id,
+    last_approval_id,
+    created_at,
+    updated_at,
+    metadata
+FROM mes.work_order_operation_execution_state
+WHERE work_order_operation_id = %(work_order_operation_id)s
+LIMIT 1
+"""
+
+SELECT_EXECUTION_STATE_FOR_UPDATE_SQL = """
+SELECT
+    execution_state_id,
+    work_order_operation_id,
+    work_order_id,
+    station_code,
+    operation_code,
+    execution_status,
+    operation_completion_policy,
+    current_step_code,
+    started_at,
+    evidence_completed_at,
+    pending_final_approval_at,
+    closed_at,
+    last_event_id,
+    last_approval_id,
+    created_at,
+    updated_at,
+    metadata
+FROM mes.work_order_operation_execution_state
+WHERE work_order_operation_id = %(work_order_operation_id)s
+LIMIT 1
+FOR UPDATE
+"""
+
+SELECT_EXECUTION_STEPS_SQL = """
+SELECT
+    work_order_operation_step_id,
+    work_order_operation_id,
+    work_order_id,
+    operation_code,
+    step_code,
+    step_no,
+    station_code,
+    status,
+    started_at,
+    completed_at,
+    started_by_event_id,
+    completed_by_event_id,
+    required_for_completion,
+    records_duration,
+    approval_required_after_finish,
+    created_at,
+    updated_at,
+    metadata
+FROM mes.work_order_operation_steps
+WHERE work_order_operation_id = %(work_order_operation_id)s
+ORDER BY step_no ASC
+"""
+
+INSERT_EXECUTION_STATE_SQL = """
+INSERT INTO mes.work_order_operation_execution_state (
+    execution_state_id,
+    work_order_operation_id,
+    work_order_id,
+    station_code,
+    operation_code,
+    execution_status,
+    operation_completion_policy,
+    current_step_code,
+    metadata,
+    updated_at
+) VALUES (
+    %(execution_state_id)s,
+    %(work_order_operation_id)s,
+    %(work_order_id)s,
+    %(station_code)s,
+    %(operation_code)s,
+    %(execution_status)s,
+    %(operation_completion_policy)s,
+    %(current_step_code)s,
+    %(metadata)s,
+    now()
+)
+ON CONFLICT (work_order_operation_id) DO NOTHING
+"""
+
+INSERT_EXECUTION_STEP_SQL = """
+INSERT INTO mes.work_order_operation_steps (
+    work_order_operation_step_id,
+    work_order_operation_id,
+    work_order_id,
+    operation_code,
+    step_code,
+    step_no,
+    station_code,
+    status,
+    required_for_completion,
+    records_duration,
+    approval_required_after_finish,
+    metadata,
+    updated_at
+) VALUES (
+    %(work_order_operation_step_id)s,
+    %(work_order_operation_id)s,
+    %(work_order_id)s,
+    %(operation_code)s,
+    %(step_code)s,
+    %(step_no)s,
+    %(station_code)s,
+    %(status)s,
+    %(required_for_completion)s,
+    %(records_duration)s,
+    %(approval_required_after_finish)s,
+    %(metadata)s,
+    now()
+)
+ON CONFLICT (work_order_operation_id, step_code) DO NOTHING
+"""
+
 SELECT_OPERATION_BY_ID_SQL = """
 SELECT
     work_order_operation_id,
@@ -1567,6 +1712,60 @@ def _operation_step_row(row: Any) -> JsonObject:
     })
 
 
+def _execution_state_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "execution_state_id": _text(_field(row, 0, "execution_state_id")),
+        "work_order_operation_id": _text(_field(row, 1, "work_order_operation_id")),
+        "work_order_id": _text(_field(row, 2, "work_order_id")),
+        "station_code": _upper(_field(row, 3, "station_code")),
+        "operation_code": _upper(_field(row, 4, "operation_code")),
+        "execution_status": _lower(_field(row, 5, "execution_status")),
+        "operation_completion_policy": _lower(_field(row, 6, "operation_completion_policy")),
+        "current_step_code": _nullable_upper(_field(row, 7, "current_step_code")),
+        "started_at": _field(row, 8, "started_at"),
+        "evidence_completed_at": _field(row, 9, "evidence_completed_at"),
+        "pending_final_approval_at": _field(row, 10, "pending_final_approval_at"),
+        "closed_at": _field(row, 11, "closed_at"),
+        "last_event_id": _field(row, 12, "last_event_id"),
+        "last_approval_id": _field(row, 13, "last_approval_id"),
+        "created_at": _field(row, 14, "created_at"),
+        "updated_at": _field(row, 15, "updated_at"),
+        "metadata": _field(row, 16, "metadata") or {},
+    })
+
+
+def _execution_step_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "work_order_operation_step_id": _text(_field(row, 0, "work_order_operation_step_id")),
+        "work_order_operation_id": _text(_field(row, 1, "work_order_operation_id")),
+        "work_order_id": _text(_field(row, 2, "work_order_id")),
+        "operation_code": _upper(_field(row, 3, "operation_code")),
+        "step_code": _upper(_field(row, 4, "step_code")),
+        "step_no": _safe_int(_field(row, 5, "step_no"), 0),
+        "station_code": _upper(_field(row, 6, "station_code")),
+        "status": _lower(_field(row, 7, "status")),
+        "started_at": _field(row, 8, "started_at"),
+        "completed_at": _field(row, 9, "completed_at"),
+        "started_by_event_id": _field(row, 10, "started_by_event_id"),
+        "completed_by_event_id": _field(row, 11, "completed_by_event_id"),
+        "required_for_completion": _field(row, 12, "required_for_completion"),
+        "records_duration": _field(row, 13, "records_duration"),
+        "approval_required_after_finish": _field(row, 14, "approval_required_after_finish"),
+        "created_at": _field(row, 15, "created_at"),
+        "updated_at": _field(row, 16, "updated_at"),
+        "metadata": _field(row, 17, "metadata") or {},
+    })
+
+
+def _runtime_operation_context_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "work_order_operation_id": _text(_field(row, 0, "work_order_operation_id")),
+        "work_order_id": _text(_field(row, 1, "order_id")),
+        "operation_code": _upper(_field(row, 2, "operation_code")),
+        "station_code": _upper(_field(row, 3, "station_code")),
+    })
+
+
 def list_locations(config: AppConfig, active_only: bool = True, location_type: str | None = None) -> list[JsonObject]:
     params = {
         "active_only": bool(active_only),
@@ -2017,6 +2216,188 @@ def get_station_execution_config(config: AppConfig, station_code: str) -> JsonOb
         "route_operations": operation_configs,
         "event_sources": event_sources,
         "validation": validation,
+    })
+
+
+def get_execution_state(config: AppConfig, work_order_operation_id: str) -> JsonObject | None:
+    normalized_operation_id = _text(work_order_operation_id)
+    if not normalized_operation_id:
+        return None
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                SELECT_EXECUTION_STATE_SQL,
+                {"work_order_operation_id": normalized_operation_id},
+            )
+            row = cursor.fetchone()
+    return _execution_state_row(row) if row else None
+
+
+def list_execution_steps(config: AppConfig, work_order_operation_id: str) -> list[JsonObject]:
+    normalized_operation_id = _text(work_order_operation_id)
+    if not normalized_operation_id:
+        return []
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                SELECT_EXECUTION_STEPS_SQL,
+                {"work_order_operation_id": normalized_operation_id},
+            )
+            rows = cursor.fetchall()
+    return [_execution_step_row(row) for row in rows]
+
+
+def _config_validation_has_critical_warnings(validation: JsonObject) -> bool:
+    for key in (
+        "missing_items",
+        "missing_station",
+        "missing_event_sources",
+        "invalid_step_source_refs",
+        "invalid_auto_mode_refs",
+    ):
+        value = validation.get(key)
+        if isinstance(value, list) and value:
+            return True
+    return False
+
+
+def _assert_route_operation_config_valid(route_operation_config: JsonObject) -> None:
+    validation = route_operation_config.get("validation")
+    if isinstance(validation, dict) and _config_validation_has_critical_warnings(validation):
+        raise MesqlV2Error("ROUTE_OPERATION_CONFIG_INVALID", status_code=409)
+
+
+def _runtime_record_id(prefix: str, *parts: Any) -> str:
+    normalized_parts = [_text(part) for part in parts if _text(part)]
+    return "_".join([prefix, *normalized_parts])
+
+
+def initialize_execution_state(
+    config: AppConfig,
+    work_order_operation_id: str,
+    route_operation_id: str,
+    station_code: str,
+    actor_id: str | None = None,
+) -> JsonObject:
+    normalized_operation_id = _text(work_order_operation_id)
+    normalized_route_operation_id = _upper(route_operation_id)
+    normalized_station_code = _upper(station_code)
+    normalized_actor_id = _nullable_text(actor_id)
+    if not normalized_operation_id or not normalized_route_operation_id or not normalized_station_code:
+        raise MesqlV2Error("RUNTIME_IDENTIFIER_REQUIRED", status_code=400)
+
+    route_operation_config = get_route_operation_config(config, normalized_route_operation_id)
+    if route_operation_config is None:
+        raise MesqlV2Error("ROUTE_OPERATION_NOT_FOUND", status_code=404)
+    _assert_route_operation_config_valid(route_operation_config)
+
+    route_operation = route_operation_config["route_operation"]
+    if _upper(route_operation.get("station_code")) != normalized_station_code:
+        raise MesqlV2Error("ROUTE_OPERATION_STATION_MISMATCH", status_code=409)
+
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with _transaction(connection):
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    SELECT_RUNTIME_WORK_ORDER_OPERATION_SQL,
+                    {"work_order_operation_id": normalized_operation_id},
+                )
+                operation_context_row = cursor.fetchone()
+                if not operation_context_row:
+                    raise MesqlV2Error("WORK_ORDER_OPERATION_NOT_FOUND", status_code=404)
+                operation_context = _runtime_operation_context_row(operation_context_row)
+                if _upper(operation_context.get("station_code")) != normalized_station_code:
+                    raise MesqlV2Error("WORK_ORDER_OPERATION_STATION_MISMATCH", status_code=409)
+
+                cursor.execute(
+                    SELECT_EXECUTION_STATE_FOR_UPDATE_SQL,
+                    {"work_order_operation_id": normalized_operation_id},
+                )
+                existing_state = cursor.fetchone()
+                initialized = existing_state is None
+
+                if initialized:
+                    state_metadata = {
+                        "source": "runtime_engine_v0_phase1",
+                        "route_operation_id": normalized_route_operation_id,
+                    }
+                    if normalized_actor_id:
+                        state_metadata["actor_id"] = normalized_actor_id
+                    cursor.execute(
+                        INSERT_EXECUTION_STATE_SQL,
+                        {
+                            "execution_state_id": _runtime_record_id("EXEC_STATE", normalized_operation_id),
+                            "work_order_operation_id": normalized_operation_id,
+                            "work_order_id": operation_context["work_order_id"],
+                            "station_code": normalized_station_code,
+                            "operation_code": _upper(route_operation.get("operation_code")),
+                            "execution_status": "ready",
+                            "operation_completion_policy": _lower(route_operation.get("operation_completion_policy")),
+                            "current_step_code": None,
+                            "metadata": _jsonb(state_metadata),
+                        },
+                    )
+
+                    for step in route_operation_config.get("steps", []):
+                        step_code = _upper(step.get("step_code"))
+                        if not step_code:
+                            continue
+                        step_metadata = {
+                            "source": "runtime_engine_v0_phase1",
+                            "route_operation_id": normalized_route_operation_id,
+                            "operation_step_metadata": step.get("metadata") or {},
+                        }
+                        cursor.execute(
+                            INSERT_EXECUTION_STEP_SQL,
+                            {
+                                "work_order_operation_step_id": _runtime_record_id(
+                                    "EXEC_STEP",
+                                    normalized_operation_id,
+                                    step_code,
+                                ),
+                                "work_order_operation_id": normalized_operation_id,
+                                "work_order_id": operation_context["work_order_id"],
+                                "operation_code": _upper(route_operation.get("operation_code")),
+                                "step_code": step_code,
+                                "step_no": _safe_int(step.get("step_no"), 0),
+                                "station_code": normalized_station_code,
+                                "status": "pending",
+                                "required_for_completion": bool(step.get("required_for_completion")),
+                                "records_duration": bool(step.get("records_duration")),
+                                "approval_required_after_finish": bool(step.get("approval_required_after_finish")),
+                                "metadata": _jsonb(step_metadata),
+                            },
+                        )
+
+                cursor.execute(
+                    SELECT_EXECUTION_STATE_SQL,
+                    {"work_order_operation_id": normalized_operation_id},
+                )
+                state_row = cursor.fetchone()
+                cursor.execute(
+                    SELECT_EXECUTION_STEPS_SQL,
+                    {"work_order_operation_id": normalized_operation_id},
+                )
+                step_rows = cursor.fetchall()
+
+        commit = getattr(connection, "commit", None)
+        if callable(commit):
+            commit()
+
+    return _json_safe({
+        "status": "ok",
+        "work_order_operation_id": normalized_operation_id,
+        "route_operation_id": normalized_route_operation_id,
+        "station_code": normalized_station_code,
+        "initialized": initialized,
+        "execution_state": _execution_state_row(state_row) if state_row else None,
+        "steps": [_execution_step_row(row) for row in step_rows],
     })
 
 

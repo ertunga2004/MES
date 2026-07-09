@@ -16,6 +16,7 @@ from mes_web.config import AppConfig
 from mes_web.db import mesql_v2
 from mes_web.db.mesql_v2 import (
     complete_operation_v2,
+    get_execution_state,
     get_location_by_code,
     get_item_by_code,
     get_operation_step,
@@ -24,7 +25,9 @@ from mes_web.db.mesql_v2 import (
     get_route_operation_config,
     get_station_location_context,
     get_station_execution_config,
+    initialize_execution_state,
     list_locations,
+    list_execution_steps,
     list_items,
     list_operation_steps,
     list_process_routes,
@@ -65,6 +68,9 @@ class _Cursor:
         self.station_event_source_row: dict | None = None
         self.operation_step_rows: list[dict] = []
         self.operation_step_row: dict | None = None
+        self.runtime_operation_row: dict | None = None
+        self.execution_state_row: dict | None = None
+        self.execution_step_rows: list[dict] = []
         self.station_exists = True
 
     def __enter__(self):
@@ -77,9 +83,79 @@ class _Cursor:
         self.last_sql = sql
         self.last_params = dict(params or {})
         self.executed.append((sql, dict(params or {})))
+        lowered = sql.lower()
+        if "insert into mes.work_order_operation_execution_state" in lowered:
+            if self.execution_state_row is None:
+                self.execution_state_row = {
+                    "execution_state_id": self.last_params["execution_state_id"],
+                    "work_order_operation_id": self.last_params["work_order_operation_id"],
+                    "work_order_id": self.last_params["work_order_id"],
+                    "station_code": self.last_params["station_code"],
+                    "operation_code": self.last_params["operation_code"],
+                    "execution_status": self.last_params["execution_status"],
+                    "operation_completion_policy": self.last_params["operation_completion_policy"],
+                    "current_step_code": self.last_params["current_step_code"],
+                    "started_at": None,
+                    "evidence_completed_at": None,
+                    "pending_final_approval_at": None,
+                    "closed_at": None,
+                    "last_event_id": None,
+                    "last_approval_id": None,
+                    "created_at": None,
+                    "updated_at": None,
+                    "metadata": self.last_params["metadata"],
+                }
+        elif "insert into mes.work_order_operation_steps" in lowered:
+            key = (
+                self.last_params["work_order_operation_id"],
+                self.last_params["step_code"],
+            )
+            if not any(
+                (
+                    row.get("work_order_operation_id"),
+                    row.get("step_code"),
+                ) == key
+                for row in self.execution_step_rows
+            ):
+                self.execution_step_rows.append(
+                    {
+                        "work_order_operation_step_id": self.last_params["work_order_operation_step_id"],
+                        "work_order_operation_id": self.last_params["work_order_operation_id"],
+                        "work_order_id": self.last_params["work_order_id"],
+                        "operation_code": self.last_params["operation_code"],
+                        "step_code": self.last_params["step_code"],
+                        "step_no": self.last_params["step_no"],
+                        "station_code": self.last_params["station_code"],
+                        "status": self.last_params["status"],
+                        "started_at": None,
+                        "completed_at": None,
+                        "started_by_event_id": None,
+                        "completed_by_event_id": None,
+                        "required_for_completion": self.last_params["required_for_completion"],
+                        "records_duration": self.last_params["records_duration"],
+                        "approval_required_after_finish": self.last_params["approval_required_after_finish"],
+                        "created_at": None,
+                        "updated_at": None,
+                        "metadata": self.last_params["metadata"],
+                    }
+                )
 
     def fetchone(self):
         lowered = self.last_sql.lower()
+        if "from mes.work_order_operation_execution_state" in lowered:
+            operation_id = self.last_params.get("work_order_operation_id")
+            if self.execution_state_row and self.execution_state_row.get("work_order_operation_id") == operation_id:
+                return self.execution_state_row
+            return None
+        if "from mes.work_order_operations" in lowered and "where work_order_operation_id = %(work_order_operation_id)s" in lowered and "for update" not in lowered:
+            if self.runtime_operation_row is not None:
+                return self.runtime_operation_row
+            return {
+                "work_order_operation_id": self.last_params.get("work_order_operation_id"),
+                "order_id": "WO-E2E-MAVI-001",
+                "operation_code": "OP10_ASSEMBLY_CLASSIFICATION",
+                "station_code": "ASSEMBLY_01",
+            }
         if "from mes.locations" in lowered and "where location_code = %(location_code)s" in lowered:
             return self.location_row
         if "from mes.station_location_bindings b" in lowered and "join mes.locations l" in lowered and "limit 1" in lowered:
@@ -166,6 +242,13 @@ class _Cursor:
             return self.station_event_source_rows
         if "from mes.operation_steps" in lowered:
             return self.operation_step_rows
+        if "from mes.work_order_operation_steps" in lowered:
+            operation_id = self.last_params.get("work_order_operation_id")
+            return [
+                row
+                for row in sorted(self.execution_step_rows, key=lambda step: step.get("step_no", 0))
+                if row.get("work_order_operation_id") == operation_id
+            ]
         if "from mes.station_queue q" in lowered:
             return self.queue_rows
         return []
@@ -637,6 +720,98 @@ def _fake_operation_step(
         "active": active,
         "metadata": metadata,
     }
+
+
+def _fake_runtime_operation(
+    work_order_operation_id: str = "11111111-1111-1111-1111-111111111111",
+    *,
+    order_id: str = "WO-E2E-MAVI-001",
+    operation_code: str = "OP10_ASSEMBLY_CLASSIFICATION",
+    station_code: str = "ASSEMBLY_01",
+) -> dict:
+    return {
+        "work_order_operation_id": work_order_operation_id,
+        "order_id": order_id,
+        "operation_code": operation_code,
+        "station_code": station_code,
+    }
+
+
+def _fake_execution_state(
+    work_order_operation_id: str = "11111111-1111-1111-1111-111111111111",
+    *,
+    work_order_id: str = "WO-E2E-MAVI-001",
+    station_code: str = "ASSEMBLY_01",
+    operation_code: str = "OP10_ASSEMBLY_CLASSIFICATION",
+    execution_status: str = "ready",
+    operation_completion_policy: str = "auto_complete_pending_approval",
+) -> dict:
+    return {
+        "execution_state_id": f"EXEC_STATE_{work_order_operation_id}",
+        "work_order_operation_id": work_order_operation_id,
+        "work_order_id": work_order_id,
+        "station_code": station_code,
+        "operation_code": operation_code,
+        "execution_status": execution_status,
+        "operation_completion_policy": operation_completion_policy,
+        "current_step_code": None,
+        "started_at": None,
+        "evidence_completed_at": None,
+        "pending_final_approval_at": None,
+        "closed_at": None,
+        "last_event_id": None,
+        "last_approval_id": None,
+        "created_at": datetime(2026, 7, 9, 10, 0, 0),
+        "updated_at": datetime(2026, 7, 9, 10, 0, 0),
+        "metadata": {"source": "runtime_engine_v0_phase1"},
+    }
+
+
+def _fake_execution_step(
+    work_order_operation_id: str = "11111111-1111-1111-1111-111111111111",
+    step_code: str = "COLOR_SENSOR_ENTRY_EVIDENCE",
+    *,
+    work_order_id: str = "WO-E2E-MAVI-001",
+    operation_code: str = "OP10_ASSEMBLY_CLASSIFICATION",
+    step_no: int = 10,
+    station_code: str = "ASSEMBLY_01",
+    status: str = "pending",
+) -> dict:
+    return {
+        "work_order_operation_step_id": f"EXEC_STEP_{work_order_operation_id}_{step_code}",
+        "work_order_operation_id": work_order_operation_id,
+        "work_order_id": work_order_id,
+        "operation_code": operation_code,
+        "step_code": step_code,
+        "step_no": step_no,
+        "station_code": station_code,
+        "status": status,
+        "started_at": None,
+        "completed_at": None,
+        "started_by_event_id": None,
+        "completed_by_event_id": None,
+        "required_for_completion": True,
+        "records_duration": False,
+        "approval_required_after_finish": False,
+        "created_at": datetime(2026, 7, 9, 10, 0, 0),
+        "updated_at": datetime(2026, 7, 9, 10, 0, 0),
+        "metadata": {"source": "runtime_engine_v0_phase1"},
+    }
+
+
+def _seed_valid_route_operation_config(cursor: _Cursor) -> None:
+    cursor.route_operation_rows = [_fake_route_operation()]
+    cursor.item_rows = [
+        _fake_item("RAW_BOX"),
+        _fake_item("COLOR_CLASSIFIED_BOX", item_type="semi_finished"),
+    ]
+    cursor.station_event_source_rows = [
+        _fake_station_event_source("ASSEMBLY_01", "COLOR_SENSOR_ENTRY")
+    ]
+    cursor.operation_step_rows = [
+        _fake_operation_step(step_code="COLOR_SENSOR_ENTRY_EVIDENCE", step_no=10)
+    ]
+    cursor.runtime_operation_row = _fake_runtime_operation()
 
 
 class _QueueConflictCursor:
@@ -1398,6 +1573,171 @@ class MesqlV2Tests(unittest.TestCase):
         self.assertIn("cast(%(item_code)s as text)", mesql_v2.SELECT_PROCESS_ROUTES_SQL.lower())
         self.assertIn("cast(%(route_code)s as text)", mesql_v2.SELECT_ROUTE_OPERATIONS_SQL.lower())
         self.assertIn("cast(%(station_code)s as text)", mesql_v2.SELECT_ROUTE_OPERATIONS_SQL.lower())
+
+    def test_get_execution_state_returns_none_when_missing(self) -> None:
+        connection = _Connection()
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            state = get_execution_state(AppConfig(db_enabled=True), "11111111-1111-1111-1111-111111111111")
+
+        self.assertIsNone(state)
+        self.assertEqual(connection.cursor_instance.last_params["work_order_operation_id"], "11111111-1111-1111-1111-111111111111")
+
+    def test_list_execution_steps_orders_by_step_no(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.execution_step_rows = [
+            _fake_execution_step(step_code="SECOND_STEP", step_no=20),
+            _fake_execution_step(step_code="FIRST_STEP", step_no=10),
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            steps = list_execution_steps(AppConfig(db_enabled=True), "11111111-1111-1111-1111-111111111111")
+
+        self.assertEqual([step["step_code"] for step in steps], ["FIRST_STEP", "SECOND_STEP"])
+        self.assertIn("order by step_no asc", connection.cursor_instance.last_sql.lower())
+
+    def test_initialize_execution_state_inserts_state_and_steps(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            result = initialize_execution_state(
+                AppConfig(db_enabled=True),
+                work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                route_operation_id="route_box_packaging_v1_op10",
+                station_code="assembly_01",
+                actor_id="OP-001",
+            )
+
+        executed_sql = "\n".join(sql.lower() for sql, _params in connection.cursor_instance.executed)
+        self.assertTrue(result["initialized"])
+        self.assertEqual(result["execution_state"]["execution_status"], "ready")
+        self.assertEqual(result["execution_state"]["operation_completion_policy"], "auto_complete_pending_approval")
+        self.assertEqual(result["steps"][0]["step_code"], "COLOR_SENSOR_ENTRY_EVIDENCE")
+        self.assertTrue(connection.transaction_entered)
+        self.assertTrue(connection.committed)
+        self.assertIn("insert into mes.work_order_operation_execution_state", executed_sql)
+        self.assertIn("insert into mes.work_order_operation_steps", executed_sql)
+        self.assertNotIn("insert into mes.operation_events", executed_sql)
+
+    def test_initialize_execution_state_is_idempotent_when_state_exists(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        connection.cursor_instance.execution_state_row = _fake_execution_state()
+        connection.cursor_instance.execution_step_rows = [
+            _fake_execution_step(step_code="COLOR_SENSOR_ENTRY_EVIDENCE", step_no=10)
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            result = initialize_execution_state(
+                AppConfig(db_enabled=True),
+                work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                route_operation_id="ROUTE_BOX_PACKAGING_V1_OP10",
+                station_code="ASSEMBLY_01",
+            )
+
+        executed_sql = "\n".join(sql.lower() for sql, _params in connection.cursor_instance.executed)
+        self.assertFalse(result["initialized"])
+        self.assertEqual(len(result["steps"]), 1)
+        self.assertNotIn("insert into mes.work_order_operation_execution_state", executed_sql)
+        self.assertNotIn("insert into mes.work_order_operation_steps", executed_sql)
+
+    def test_initialize_execution_state_rejects_missing_identifiers(self) -> None:
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            initialize_execution_state(
+                AppConfig(db_enabled=True),
+                work_order_operation_id="",
+                route_operation_id="ROUTE_BOX_PACKAGING_V1_OP10",
+                station_code="ASSEMBLY_01",
+            )
+
+        self.assertEqual(error.exception.detail, "RUNTIME_IDENTIFIER_REQUIRED")
+        self.assertEqual(error.exception.status_code, 400)
+
+    def test_initialize_execution_state_rejects_missing_route_operation_config(self) -> None:
+        with patch.object(mesql_v2, "get_route_operation_config", return_value=None):
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                initialize_execution_state(
+                    AppConfig(db_enabled=True),
+                    work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                    route_operation_id="MISSING_ROUTE_OPERATION",
+                    station_code="ASSEMBLY_01",
+                )
+
+        self.assertEqual(error.exception.detail, "ROUTE_OPERATION_NOT_FOUND")
+        self.assertEqual(error.exception.status_code, 404)
+
+    def test_initialize_execution_state_rejects_invalid_config_validation(self) -> None:
+        invalid_config = {
+            "route_operation": _fake_route_operation(),
+            "validation": {
+                "missing_items": [{"code": "MISSING_INPUT_ITEM"}],
+                "missing_station": [],
+                "missing_event_sources": [],
+                "invalid_step_source_refs": [],
+                "invalid_auto_mode_refs": [],
+            },
+        }
+
+        with patch.object(mesql_v2, "get_route_operation_config", return_value=invalid_config):
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                initialize_execution_state(
+                    AppConfig(db_enabled=True),
+                    work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                    route_operation_id="ROUTE_BOX_PACKAGING_V1_OP10",
+                    station_code="ASSEMBLY_01",
+                )
+
+        self.assertEqual(error.exception.detail, "ROUTE_OPERATION_CONFIG_INVALID")
+        self.assertEqual(error.exception.status_code, 409)
+
+    def test_runtime_initialize_does_not_write_forbidden_tables(self) -> None:
+        write_sql_constants = [
+            mesql_v2.INSERT_EXECUTION_STATE_SQL,
+            mesql_v2.INSERT_EXECUTION_STEP_SQL,
+        ]
+        allowed_write_tables = (
+            "mes.work_order_operation_execution_state",
+            "mes.work_order_operation_steps",
+        )
+        forbidden_write_tables = (
+            "mes.work_orders",
+            "mes.work_order_operations",
+            "mes.station_queue",
+            "mes.items",
+            "mes.process_routes",
+            "mes.route_operations",
+            "mes.operation_steps",
+            "mes.station_event_sources",
+            "mes.locations",
+            "mes.station_location_bindings",
+            "mes.operation_events",
+            "mes.operation_approvals",
+            "mes.production_flow_events",
+        )
+
+        for sql in write_sql_constants:
+            lowered = sql.lower()
+            self.assertTrue(lowered.lstrip().startswith("insert"))
+            self.assertTrue(any(table_name in lowered for table_name in allowed_write_tables))
+            for table_name in forbidden_write_tables:
+                self.assertNotRegex(lowered, rf"\b(insert\s+into|update|delete\s+from)\s+{table_name}\b")
 
     def test_v2_routes_are_wired_to_db_authoritative_helpers(self) -> None:
         app = app_module.create_app()

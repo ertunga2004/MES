@@ -338,6 +338,59 @@ or MESQL push/pull action.
   - MESQL push/pull yok.
   - Operation lifecycle mutation yok.
 
+## Applied Station Execution Minimal Seed
+
+- `db/migrations/005_station_execution_seed_minimal.sql` local PostgreSQL
+  uzerinde kontrollu sekilde uygulandi.
+- Apply oncesi backup alindi:
+  `C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups\mes_postgres_before_005_station_execution_seed_minimal_20260709-115906.sql`
+- Evidence:
+  `docs/runbooks/station_execution_seed_minimal_evidence_20260709.md`
+- Seeded scope:
+  - Items:
+    - `RAW_BOX`
+    - `COLOR_CLASSIFIED_BOX`
+    - `PACKAGED_PRODUCT`
+  - Process route:
+    - `ROUTE_BOX_PACKAGING_V1`, version `1`
+  - Route operations:
+    - `OP10_ASSEMBLY_CLASSIFICATION` on `ASSEMBLY_01`
+    - `OP20_PACKAGING` on `PACKAGING_01`
+  - Station event sources: `4`
+  - Operation steps:
+    - `3` assembly/classification steps
+    - `2` packaging steps
+- Expected counts verified:
+  - `items = 3`
+  - `process_routes = 1`
+  - `route_operations = 2`
+  - `station_event_sources = 4`
+  - `operation_steps = 5`
+- Runtime/event/flow tables remained empty:
+  - `work_order_operation_execution_state = 0`
+  - `work_order_operation_steps = 0`
+  - `operation_events = 0`
+  - `operation_approvals = 0`
+  - `production_flow_events = 0`
+- Station/location baseline retained:
+  - `locations = 8`
+  - `active_station_location_bindings = 8`
+- Health / limited regression control tamamlandi:
+  - `GET /health -> ok`
+  - `GET /api/v2/locations -> 503`
+  - `GET /kiosk -> 200`
+  - `GET /static/kiosk.js -> 200`
+  - `GET /static/kiosk.css -> 200`
+- Bu apply sirasinda yapilmayanlar:
+  - Runtime engine implementation yok.
+  - Kiosk dynamic action implementation yok.
+  - IoT adapter implementation yok.
+  - OEE/KPI implementation yok.
+  - Inventory movement/balance yok.
+  - MESQL push/pull yok.
+  - Operation lifecycle mutation yok.
+  - Work order create/change yok.
+
 ## Portable Path Model
 
 ```text
@@ -391,3 +444,10 @@ For the applied station execution schema migration checkpoint,
 seed insert, runtime implementation, Kiosk dynamic action, IoT adapter, OEE/KPI
 implementation, inventory movement/balance implementation, MESQL push/pull, or
 operation lifecycle mutation was performed.
+
+For the applied station execution minimal seed checkpoint,
+`005_station_execution_seed_minimal.sql` was applied after backup and
+verification; only station execution master/config tables were seeded, and no
+runtime/event/flow data, work order data, operation lifecycle mutation, Kiosk
+dynamic action, runtime engine, IoT adapter, OEE/KPI implementation, inventory
+movement/balance implementation, or MESQL push/pull action was performed.

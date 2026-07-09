@@ -538,6 +538,41 @@ or MESQL push/pull action.
 - No DB write, lifecycle mutation, MESQL, Kiosk action, seed, migration, or
   volume operation was performed.
 
+## Verified Station Execution Runtime Init Helper
+
+- Runtime Engine V0 Phase 1 initialize helper real DB smoke PASS.
+- Implementation commit:
+  `80ac95a "feat: add station execution runtime init helpers"`
+- Verified helpers:
+  - `initialize_execution_state`
+  - `get_execution_state`
+  - `list_execution_steps`
+- Selected existing operation:
+  `c8f0be13-9dc7-4e66-9fbb-43547a5f1808`
+  (`WO-E2E-MAVI-001`, `ASSEMBLY_01`, status `queued`).
+- Route operation used:
+  `ROUTE_BOX_PACKAGING_V1_OP10`.
+- Real DB initialize result:
+  - `execution_state_count = 1`
+  - `execution_status = ready`
+  - OP10 runtime step count = `3`
+  - all runtime steps remained `pending`
+- Idempotency PASS:
+  - first call returned `initialized = true`
+  - second call returned `initialized = false`
+  - duplicate state/step rows were not created
+- Forbidden mutation verification PASS:
+  - `operation_events = 0`
+  - `operation_approvals = 0`
+  - `production_flow_events = 0`
+  - `work_orders` unchanged
+  - `work_order_operations` unchanged
+  - `station_queue` unchanged
+- Existing lifecycle remained untouched; no start/finish, approval, API, Kiosk,
+  IoT, OEE, MESQL, seed, or migration action was performed.
+- Evidence:
+  `docs/runbooks/station_execution_runtime_init_smoke_evidence_20260709.md`
+
 ## Portable Path Model
 
 ```text

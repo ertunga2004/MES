@@ -640,6 +640,207 @@ ORDER BY
 LIMIT 1
 """
 
+SELECT_ITEMS_SQL = """
+SELECT
+    item_code,
+    item_name,
+    item_type,
+    unit,
+    active,
+    metadata
+FROM mes.items
+WHERE (CAST(%(active_only)s AS boolean) = false OR active = true)
+ORDER BY item_type ASC, item_code ASC
+"""
+
+SELECT_ITEM_BY_CODE_SQL = """
+SELECT
+    item_code,
+    item_name,
+    item_type,
+    unit,
+    active,
+    metadata
+FROM mes.items
+WHERE item_code = %(item_code)s
+LIMIT 1
+"""
+
+SELECT_PROCESS_ROUTES_SQL = """
+SELECT
+    route_code,
+    version,
+    route_name,
+    item_code,
+    active,
+    metadata
+FROM mes.process_routes
+WHERE (CAST(%(active_only)s AS boolean) = false OR active = true)
+  AND (
+      CAST(%(item_code)s AS text) IS NULL
+      OR item_code = CAST(%(item_code)s AS text)
+  )
+ORDER BY route_code ASC, version ASC
+"""
+
+SELECT_PROCESS_ROUTE_SQL = """
+SELECT
+    route_code,
+    version,
+    route_name,
+    item_code,
+    active,
+    metadata
+FROM mes.process_routes
+WHERE route_code = %(route_code)s
+  AND version = %(version)s
+LIMIT 1
+"""
+
+SELECT_ROUTE_OPERATIONS_SQL = """
+SELECT
+    route_operation_id,
+    route_code,
+    route_version,
+    sequence_no,
+    operation_code,
+    operation_name,
+    station_code,
+    input_item_code,
+    output_item_code,
+    input_qty_per_cycle,
+    output_qty_per_cycle,
+    input_location_role,
+    output_location_role,
+    scrap_location_role,
+    operation_completion_policy,
+    planned_cycle_time_sec,
+    active,
+    metadata
+FROM mes.route_operations
+WHERE (CAST(%(active_only)s AS boolean) = false OR active = true)
+  AND (
+      CAST(%(route_code)s AS text) IS NULL
+      OR route_code = CAST(%(route_code)s AS text)
+  )
+  AND (
+      CAST(%(station_code)s AS text) IS NULL
+      OR station_code = CAST(%(station_code)s AS text)
+  )
+ORDER BY route_code ASC, route_version ASC, sequence_no ASC
+"""
+
+SELECT_ROUTE_OPERATION_BY_ID_SQL = """
+SELECT
+    route_operation_id,
+    route_code,
+    route_version,
+    sequence_no,
+    operation_code,
+    operation_name,
+    station_code,
+    input_item_code,
+    output_item_code,
+    input_qty_per_cycle,
+    output_qty_per_cycle,
+    input_location_role,
+    output_location_role,
+    scrap_location_role,
+    operation_completion_policy,
+    planned_cycle_time_sec,
+    active,
+    metadata
+FROM mes.route_operations
+WHERE route_operation_id = %(route_operation_id)s
+LIMIT 1
+"""
+
+SELECT_STATION_EVENT_SOURCES_SQL = """
+SELECT
+    station_code,
+    source_code,
+    source_name,
+    source_type,
+    event_channel,
+    mqtt_topic,
+    active,
+    metadata
+FROM mes.station_event_sources
+WHERE station_code = %(station_code)s
+  AND (CAST(%(active_only)s AS boolean) = false OR active = true)
+ORDER BY source_type ASC, source_code ASC
+"""
+
+SELECT_STATION_EVENT_SOURCE_SQL = """
+SELECT
+    station_code,
+    source_code,
+    source_name,
+    source_type,
+    event_channel,
+    mqtt_topic,
+    active,
+    metadata
+FROM mes.station_event_sources
+WHERE station_code = %(station_code)s
+  AND source_code = %(source_code)s
+LIMIT 1
+"""
+
+SELECT_OPERATION_STEPS_SQL = """
+SELECT
+    route_operation_id,
+    operation_code,
+    step_no,
+    step_code,
+    step_name,
+    start_mode,
+    finish_mode,
+    start_event_source_code,
+    finish_event_source_code,
+    required_for_completion,
+    records_duration,
+    approval_required_after_finish,
+    actor_type,
+    active,
+    metadata
+FROM mes.operation_steps
+WHERE route_operation_id = %(route_operation_id)s
+  AND (CAST(%(active_only)s AS boolean) = false OR active = true)
+ORDER BY step_no ASC
+"""
+
+SELECT_OPERATION_STEP_SQL = """
+SELECT
+    route_operation_id,
+    operation_code,
+    step_no,
+    step_code,
+    step_name,
+    start_mode,
+    finish_mode,
+    start_event_source_code,
+    finish_event_source_code,
+    required_for_completion,
+    records_duration,
+    approval_required_after_finish,
+    actor_type,
+    active,
+    metadata
+FROM mes.operation_steps
+WHERE route_operation_id = %(route_operation_id)s
+  AND step_code = %(step_code)s
+LIMIT 1
+"""
+
+SELECT_STATION_EXISTS_SQL = """
+SELECT true AS station_exists
+FROM mes.stations
+WHERE station_code = %(station_code)s
+  AND active = true
+LIMIT 1
+"""
+
 SELECT_OPERATION_BY_ID_SQL = """
 SELECT
     work_order_operation_id,
@@ -1288,6 +1489,84 @@ def _station_location_binding_row(row: Any) -> JsonObject:
     return _json_safe(binding)
 
 
+def _item_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "item_code": _upper(_field(row, 0, "item_code")),
+        "item_name": _field(row, 1, "item_name"),
+        "item_type": _lower(_field(row, 2, "item_type")),
+        "unit": _field(row, 3, "unit"),
+        "active": _field(row, 4, "active"),
+        "metadata": _field(row, 5, "metadata") or {},
+    })
+
+
+def _process_route_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "route_code": _upper(_field(row, 0, "route_code")),
+        "version": _safe_int(_field(row, 1, "version"), 1),
+        "route_name": _field(row, 2, "route_name"),
+        "item_code": _upper(_field(row, 3, "item_code")),
+        "active": _field(row, 4, "active"),
+        "metadata": _field(row, 5, "metadata") or {},
+    })
+
+
+def _route_operation_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "route_operation_id": _upper(_field(row, 0, "route_operation_id")),
+        "route_code": _upper(_field(row, 1, "route_code")),
+        "route_version": _safe_int(_field(row, 2, "route_version"), 1),
+        "sequence_no": _safe_int(_field(row, 3, "sequence_no"), 0),
+        "operation_code": _upper(_field(row, 4, "operation_code")),
+        "operation_name": _field(row, 5, "operation_name"),
+        "station_code": _upper(_field(row, 6, "station_code")),
+        "input_item_code": _upper(_field(row, 7, "input_item_code")),
+        "output_item_code": _upper(_field(row, 8, "output_item_code")),
+        "input_qty_per_cycle": _field(row, 9, "input_qty_per_cycle"),
+        "output_qty_per_cycle": _field(row, 10, "output_qty_per_cycle"),
+        "input_location_role": _lower(_field(row, 11, "input_location_role")),
+        "output_location_role": _lower(_field(row, 12, "output_location_role")),
+        "scrap_location_role": _lower(_field(row, 13, "scrap_location_role")) or None,
+        "operation_completion_policy": _lower(_field(row, 14, "operation_completion_policy")),
+        "planned_cycle_time_sec": _field(row, 15, "planned_cycle_time_sec"),
+        "active": _field(row, 16, "active"),
+        "metadata": _field(row, 17, "metadata") or {},
+    })
+
+
+def _station_event_source_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "station_code": _upper(_field(row, 0, "station_code")),
+        "source_code": _upper(_field(row, 1, "source_code")),
+        "source_name": _field(row, 2, "source_name"),
+        "source_type": _lower(_field(row, 3, "source_type")),
+        "event_channel": _lower(_field(row, 4, "event_channel")),
+        "mqtt_topic": _field(row, 5, "mqtt_topic"),
+        "active": _field(row, 6, "active"),
+        "metadata": _field(row, 7, "metadata") or {},
+    })
+
+
+def _operation_step_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "route_operation_id": _upper(_field(row, 0, "route_operation_id")),
+        "operation_code": _upper(_field(row, 1, "operation_code")),
+        "step_no": _safe_int(_field(row, 2, "step_no"), 0),
+        "step_code": _upper(_field(row, 3, "step_code")),
+        "step_name": _field(row, 4, "step_name"),
+        "start_mode": _lower(_field(row, 5, "start_mode")),
+        "finish_mode": _lower(_field(row, 6, "finish_mode")),
+        "start_event_source_code": _nullable_upper(_field(row, 7, "start_event_source_code")),
+        "finish_event_source_code": _nullable_upper(_field(row, 8, "finish_event_source_code")),
+        "required_for_completion": _field(row, 9, "required_for_completion"),
+        "records_duration": _field(row, 10, "records_duration"),
+        "approval_required_after_finish": _field(row, 11, "approval_required_after_finish"),
+        "actor_type": _lower(_field(row, 12, "actor_type")),
+        "active": _field(row, 13, "active"),
+        "metadata": _field(row, 14, "metadata") or {},
+    })
+
+
 def list_locations(config: AppConfig, active_only: bool = True, location_type: str | None = None) -> list[JsonObject]:
     params = {
         "active_only": bool(active_only),
@@ -1416,6 +1695,328 @@ def get_station_location_context(config: AppConfig, station_code: str) -> JsonOb
         "output_buffer_location": first_location("output_buffer"),
         "missing_roles": missing_roles,
         "inactive_or_missing_locations": inactive_or_missing_locations,
+    })
+
+
+def list_items(config: AppConfig, active_only: bool = True) -> list[JsonObject]:
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_ITEMS_SQL, {"active_only": bool(active_only)})
+            rows = cursor.fetchall()
+    return [_item_row(row) for row in rows]
+
+
+def get_item_by_code(config: AppConfig, item_code: str) -> JsonObject | None:
+    normalized_code = _upper(item_code)
+    if not normalized_code:
+        return None
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_ITEM_BY_CODE_SQL, {"item_code": normalized_code})
+            row = cursor.fetchone()
+    return _item_row(row) if row else None
+
+
+def list_process_routes(
+    config: AppConfig,
+    active_only: bool = True,
+    item_code: str | None = None,
+) -> list[JsonObject]:
+    params = {
+        "active_only": bool(active_only),
+        "item_code": _nullable_upper(item_code),
+    }
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_PROCESS_ROUTES_SQL, params)
+            rows = cursor.fetchall()
+    return [_process_route_row(row) for row in rows]
+
+
+def get_process_route(config: AppConfig, route_code: str, version: int = 1) -> JsonObject | None:
+    normalized_route_code = _upper(route_code)
+    if not normalized_route_code:
+        return None
+    params = {
+        "route_code": normalized_route_code,
+        "version": _safe_int(version, 1),
+    }
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_PROCESS_ROUTE_SQL, params)
+            row = cursor.fetchone()
+    return _process_route_row(row) if row else None
+
+
+def list_route_operations(
+    config: AppConfig,
+    route_code: str | None = None,
+    station_code: str | None = None,
+    active_only: bool = True,
+) -> list[JsonObject]:
+    params = {
+        "active_only": bool(active_only),
+        "route_code": _nullable_upper(route_code),
+        "station_code": _nullable_upper(station_code),
+    }
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_ROUTE_OPERATIONS_SQL, params)
+            rows = cursor.fetchall()
+    return [_route_operation_row(row) for row in rows]
+
+
+def get_route_operation(config: AppConfig, route_operation_id: str) -> JsonObject | None:
+    normalized_route_operation_id = _upper(route_operation_id)
+    if not normalized_route_operation_id:
+        return None
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                SELECT_ROUTE_OPERATION_BY_ID_SQL,
+                {"route_operation_id": normalized_route_operation_id},
+            )
+            row = cursor.fetchone()
+    return _route_operation_row(row) if row else None
+
+
+def list_station_event_sources(
+    config: AppConfig,
+    station_code: str,
+    active_only: bool = True,
+) -> list[JsonObject]:
+    normalized_station_code = _upper(station_code)
+    if not normalized_station_code:
+        return []
+    params = {
+        "station_code": normalized_station_code,
+        "active_only": bool(active_only),
+    }
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_STATION_EVENT_SOURCES_SQL, params)
+            rows = cursor.fetchall()
+    return [_station_event_source_row(row) for row in rows]
+
+
+def resolve_station_event_source(config: AppConfig, station_code: str, source_code: str) -> JsonObject | None:
+    normalized_station_code = _upper(station_code)
+    normalized_source_code = _upper(source_code)
+    if not normalized_station_code or not normalized_source_code:
+        return None
+    params = {
+        "station_code": normalized_station_code,
+        "source_code": normalized_source_code,
+    }
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_STATION_EVENT_SOURCE_SQL, params)
+            row = cursor.fetchone()
+    return _station_event_source_row(row) if row else None
+
+
+def list_operation_steps(
+    config: AppConfig,
+    route_operation_id: str,
+    active_only: bool = True,
+) -> list[JsonObject]:
+    normalized_route_operation_id = _upper(route_operation_id)
+    if not normalized_route_operation_id:
+        return []
+    params = {
+        "route_operation_id": normalized_route_operation_id,
+        "active_only": bool(active_only),
+    }
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_OPERATION_STEPS_SQL, params)
+            rows = cursor.fetchall()
+    return [_operation_step_row(row) for row in rows]
+
+
+def get_operation_step(config: AppConfig, route_operation_id: str, step_code: str) -> JsonObject | None:
+    normalized_route_operation_id = _upper(route_operation_id)
+    normalized_step_code = _upper(step_code)
+    if not normalized_route_operation_id or not normalized_step_code:
+        return None
+    params = {
+        "route_operation_id": normalized_route_operation_id,
+        "step_code": normalized_step_code,
+    }
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_OPERATION_STEP_SQL, params)
+            row = cursor.fetchone()
+    return _operation_step_row(row) if row else None
+
+
+def _station_exists(config: AppConfig, station_code: str) -> bool:
+    normalized_station_code = _upper(station_code)
+    if not normalized_station_code:
+        return False
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(SELECT_STATION_EXISTS_SQL, {"station_code": normalized_station_code})
+            return cursor.fetchone() is not None
+
+
+def _config_validation() -> JsonObject:
+    return {
+        "missing_items": [],
+        "missing_station": [],
+        "missing_event_sources": [],
+        "invalid_step_source_refs": [],
+        "invalid_auto_mode_refs": [],
+    }
+
+
+def _config_warning(code: str, **values: Any) -> JsonObject:
+    warning = {"severity": "warning", "code": code}
+    warning.update({key: value for key, value in values.items() if value is not None})
+    return _json_safe(warning)
+
+
+def get_route_operation_config(config: AppConfig, route_operation_id: str) -> JsonObject | None:
+    normalized_route_operation_id = _upper(route_operation_id)
+    if not normalized_route_operation_id:
+        return None
+
+    route_operation = get_route_operation(config, normalized_route_operation_id)
+    if route_operation is None:
+        return None
+
+    input_item_code = _upper(route_operation.get("input_item_code"))
+    output_item_code = _upper(route_operation.get("output_item_code"))
+    station_code = _upper(route_operation.get("station_code"))
+
+    input_item = get_item_by_code(config, input_item_code) if input_item_code else None
+    output_item = get_item_by_code(config, output_item_code) if output_item_code else None
+    steps = list_operation_steps(config, normalized_route_operation_id, active_only=True)
+    event_sources = list_station_event_sources(config, station_code, active_only=True)
+
+    validation = _config_validation()
+    if input_item is None:
+        validation["missing_items"].append(
+            _config_warning(
+                "MISSING_INPUT_ITEM",
+                route_operation_id=normalized_route_operation_id,
+                field="input_item_code",
+                item_code=input_item_code,
+            )
+        )
+    if output_item is None:
+        validation["missing_items"].append(
+            _config_warning(
+                "MISSING_OUTPUT_ITEM",
+                route_operation_id=normalized_route_operation_id,
+                field="output_item_code",
+                item_code=output_item_code,
+            )
+        )
+    if not _station_exists(config, station_code):
+        validation["missing_station"].append(
+            _config_warning(
+                "MISSING_STATION",
+                route_operation_id=normalized_route_operation_id,
+                station_code=station_code,
+            )
+        )
+
+    source_codes = {_upper(source.get("source_code")) for source in event_sources}
+    for step in steps:
+        step_code = _upper(step.get("step_code"))
+        for field in ("start_event_source_code", "finish_event_source_code"):
+            source_code = _upper(step.get(field))
+            if source_code and source_code not in source_codes:
+                warning = _config_warning(
+                    "MISSING_EVENT_SOURCE",
+                    route_operation_id=normalized_route_operation_id,
+                    step_code=step_code,
+                    field=field,
+                    source_code=source_code,
+                )
+                validation["missing_event_sources"].append(warning)
+                validation["invalid_step_source_refs"].append(warning)
+        if _lower(step.get("start_mode")) == "auto_start" and not _upper(step.get("start_event_source_code")):
+            validation["invalid_auto_mode_refs"].append(
+                _config_warning(
+                    "AUTO_START_REQUIRES_SOURCE",
+                    route_operation_id=normalized_route_operation_id,
+                    step_code=step_code,
+                    field="start_event_source_code",
+                )
+            )
+        if _lower(step.get("finish_mode")) == "auto_finish" and not _upper(step.get("finish_event_source_code")):
+            validation["invalid_auto_mode_refs"].append(
+                _config_warning(
+                    "AUTO_FINISH_REQUIRES_SOURCE",
+                    route_operation_id=normalized_route_operation_id,
+                    step_code=step_code,
+                    field="finish_event_source_code",
+                )
+            )
+
+    return _json_safe({
+        "route_operation": route_operation,
+        "input_item": input_item,
+        "output_item": output_item,
+        "steps": steps,
+        "event_sources": event_sources,
+        "validation": validation,
+    })
+
+
+def get_station_execution_config(config: AppConfig, station_code: str) -> JsonObject:
+    normalized_station_code = _upper(station_code)
+    if not normalized_station_code:
+        return {
+            "station_code": None,
+            "route_operations": [],
+            "event_sources": [],
+            "validation": {"missing_station": []},
+        }
+
+    event_sources = list_station_event_sources(config, normalized_station_code, active_only=True)
+    route_operations = list_route_operations(config, station_code=normalized_station_code, active_only=True)
+    operation_configs = [
+        operation_config
+        for operation in route_operations
+        for operation_config in [get_route_operation_config(config, _upper(operation.get("route_operation_id")))]
+        if operation_config is not None
+    ]
+    validation = {"missing_station": []}
+    if not _station_exists(config, normalized_station_code):
+        validation["missing_station"].append(
+            _config_warning("MISSING_STATION", station_code=normalized_station_code)
+        )
+
+    return _json_safe({
+        "station_code": normalized_station_code,
+        "route_operations": operation_configs,
+        "event_sources": event_sources,
+        "validation": validation,
     })
 
 

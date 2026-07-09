@@ -17,10 +17,22 @@ from mes_web.db import mesql_v2
 from mes_web.db.mesql_v2 import (
     complete_operation_v2,
     get_location_by_code,
+    get_item_by_code,
+    get_operation_step,
+    get_process_route,
+    get_route_operation,
+    get_route_operation_config,
     get_station_location_context,
+    get_station_execution_config,
     list_locations,
+    list_items,
+    list_operation_steps,
+    list_process_routes,
+    list_route_operations,
+    list_station_event_sources,
     list_station_location_bindings,
     read_station_queue_v2,
+    resolve_station_event_source,
     resolve_station_location,
     start_operation_v2,
     upsert_mesql_queue_items,
@@ -43,6 +55,17 @@ class _Cursor:
         self.location_row: dict | None = None
         self.binding_rows: list[dict] = []
         self.resolved_binding_row: dict | None = None
+        self.item_rows: list[dict] = []
+        self.item_row: dict | None = None
+        self.process_route_rows: list[dict] = []
+        self.process_route_row: dict | None = None
+        self.route_operation_rows: list[dict] = []
+        self.route_operation_row: dict | None = None
+        self.station_event_source_rows: list[dict] = []
+        self.station_event_source_row: dict | None = None
+        self.operation_step_rows: list[dict] = []
+        self.operation_step_row: dict | None = None
+        self.station_exists = True
 
     def __enter__(self):
         return self
@@ -61,6 +84,41 @@ class _Cursor:
             return self.location_row
         if "from mes.station_location_bindings b" in lowered and "join mes.locations l" in lowered and "limit 1" in lowered:
             return self.resolved_binding_row
+        if "from mes.items" in lowered and "where item_code = %(item_code)s" in lowered:
+            item_code = self.last_params.get("item_code")
+            for row in self.item_rows:
+                if row.get("item_code") == item_code:
+                    return row
+            return self.item_row
+        if "from mes.process_routes" in lowered and "where route_code = %(route_code)s" in lowered:
+            route_code = self.last_params.get("route_code")
+            version = self.last_params.get("version")
+            for row in self.process_route_rows:
+                if row.get("route_code") == route_code and row.get("version") == version:
+                    return row
+            return self.process_route_row
+        if "from mes.route_operations" in lowered and "where route_operation_id = %(route_operation_id)s" in lowered:
+            route_operation_id = self.last_params.get("route_operation_id")
+            for row in self.route_operation_rows:
+                if row.get("route_operation_id") == route_operation_id:
+                    return row
+            return self.route_operation_row
+        if "from mes.station_event_sources" in lowered and "source_code = %(source_code)s" in lowered:
+            station_code = self.last_params.get("station_code")
+            source_code = self.last_params.get("source_code")
+            for row in self.station_event_source_rows:
+                if row.get("station_code") == station_code and row.get("source_code") == source_code:
+                    return row
+            return self.station_event_source_row
+        if "from mes.operation_steps" in lowered and "step_code = %(step_code)s" in lowered:
+            route_operation_id = self.last_params.get("route_operation_id")
+            step_code = self.last_params.get("step_code")
+            for row in self.operation_step_rows:
+                if row.get("route_operation_id") == route_operation_id and row.get("step_code") == step_code:
+                    return row
+            return self.operation_step_row
+        if "from mes.stations" in lowered and "station_code = %(station_code)s" in lowered:
+            return {"station_exists": True} if self.station_exists else None
         if "from mes.work_order_operations" in lowered and "sequence_no >" in lowered:
             return None
         if "from mes.work_order_operations" in lowered and "for update" in lowered:
@@ -98,6 +156,16 @@ class _Cursor:
             return self.location_rows
         if "from mes.station_location_bindings b" in lowered:
             return self.binding_rows
+        if "from mes.items" in lowered:
+            return self.item_rows
+        if "from mes.process_routes" in lowered:
+            return self.process_route_rows
+        if "from mes.route_operations" in lowered:
+            return self.route_operation_rows
+        if "from mes.station_event_sources" in lowered:
+            return self.station_event_source_rows
+        if "from mes.operation_steps" in lowered:
+            return self.operation_step_rows
         if "from mes.station_queue q" in lowered:
             return self.queue_rows
         return []
@@ -437,6 +505,138 @@ def _fake_binding(
             }
         )
     return row
+
+
+def _fake_item(
+    item_code: str,
+    *,
+    item_name: str | None = None,
+    item_type: str = "raw_material",
+    unit: str = "piece",
+    active: bool = True,
+    metadata: dict | None = None,
+) -> dict:
+    return {
+        "item_code": item_code,
+        "item_name": item_name or item_code.replace("_", " ").title(),
+        "item_type": item_type,
+        "unit": unit,
+        "active": active,
+        "metadata": metadata,
+    }
+
+
+def _fake_process_route(
+    route_code: str = "ROUTE_BOX_PACKAGING_V1",
+    *,
+    version: int = 1,
+    item_code: str = "PACKAGED_PRODUCT",
+    active: bool = True,
+    metadata: dict | None = None,
+) -> dict:
+    return {
+        "route_code": route_code,
+        "version": version,
+        "route_name": "Box Packaging Demo Route V1",
+        "item_code": item_code,
+        "active": active,
+        "metadata": metadata,
+    }
+
+
+def _fake_route_operation(
+    route_operation_id: str = "ROUTE_BOX_PACKAGING_V1_OP10",
+    *,
+    route_code: str = "ROUTE_BOX_PACKAGING_V1",
+    route_version: int = 1,
+    sequence_no: int = 10,
+    operation_code: str = "OP10_ASSEMBLY_CLASSIFICATION",
+    operation_name: str = "Assembly / Classification",
+    station_code: str = "ASSEMBLY_01",
+    input_item_code: str = "RAW_BOX",
+    output_item_code: str = "COLOR_CLASSIFIED_BOX",
+    input_location_role: str = "input",
+    output_location_role: str = "output_buffer",
+    scrap_location_role: str | None = "output_scrap",
+    operation_completion_policy: str = "auto_complete_pending_approval",
+    active: bool = True,
+    metadata: dict | None = None,
+) -> dict:
+    return {
+        "route_operation_id": route_operation_id,
+        "route_code": route_code,
+        "route_version": route_version,
+        "sequence_no": sequence_no,
+        "operation_code": operation_code,
+        "operation_name": operation_name,
+        "station_code": station_code,
+        "input_item_code": input_item_code,
+        "output_item_code": output_item_code,
+        "input_qty_per_cycle": Decimal("1.000000"),
+        "output_qty_per_cycle": Decimal("1.000000"),
+        "input_location_role": input_location_role,
+        "output_location_role": output_location_role,
+        "scrap_location_role": scrap_location_role,
+        "operation_completion_policy": operation_completion_policy,
+        "planned_cycle_time_sec": None,
+        "active": active,
+        "metadata": metadata,
+    }
+
+
+def _fake_station_event_source(
+    station_code: str = "ASSEMBLY_01",
+    source_code: str = "COLOR_SENSOR_ENTRY",
+    *,
+    source_type: str = "sensor",
+    event_channel: str = "mqtt",
+    mqtt_topic: str | None = "mes/stations/ASSEMBLY_01/sources/COLOR_SENSOR_ENTRY/events",
+    active: bool = True,
+    metadata: dict | None = None,
+) -> dict:
+    return {
+        "station_code": station_code,
+        "source_code": source_code,
+        "source_name": source_code.replace("_", " ").title(),
+        "source_type": source_type,
+        "event_channel": event_channel,
+        "mqtt_topic": mqtt_topic,
+        "active": active,
+        "metadata": metadata,
+    }
+
+
+def _fake_operation_step(
+    route_operation_id: str = "ROUTE_BOX_PACKAGING_V1_OP10",
+    step_code: str = "COLOR_SENSOR_ENTRY_EVIDENCE",
+    *,
+    operation_code: str = "OP10_ASSEMBLY_CLASSIFICATION",
+    step_no: int = 10,
+    start_mode: str = "auto_start",
+    finish_mode: str = "auto_finish",
+    start_event_source_code: str | None = "COLOR_SENSOR_ENTRY",
+    finish_event_source_code: str | None = "COLOR_SENSOR_ENTRY",
+    actor_type: str = "sensor",
+    active: bool = True,
+    metadata: dict | None = None,
+) -> dict:
+    return {
+        "route_operation_id": route_operation_id,
+        "operation_code": operation_code,
+        "step_no": step_no,
+        "step_code": step_code,
+        "step_name": step_code.replace("_", " ").title(),
+        "start_mode": start_mode,
+        "finish_mode": finish_mode,
+        "start_event_source_code": start_event_source_code,
+        "finish_event_source_code": finish_event_source_code,
+        "required_for_completion": True,
+        "records_duration": False,
+        "approval_required_after_finish": False,
+        "actor_type": actor_type,
+        "active": active,
+        "metadata": metadata,
+    }
 
 
 class _QueueConflictCursor:
@@ -911,6 +1111,293 @@ class MesqlV2Tests(unittest.TestCase):
             self.assertIn("l.location_code = b.location_code", join_line)
             self.assertNotIn("location_id", join_line)
             self.assertNotIn("location_pk", join_line)
+
+    def test_list_items_reads_active_items_by_default(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.item_rows = [
+            _fake_item("RAW_BOX", item_type="raw_material", metadata=None)
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            items = list_items(AppConfig(db_enabled=True))
+
+        self.assertEqual(items[0]["item_code"], "RAW_BOX")
+        self.assertEqual(items[0]["item_type"], "raw_material")
+        self.assertEqual(items[0]["metadata"], {})
+        self.assertEqual(connection.cursor_instance.last_params["active_only"], True)
+        self.assertTrue(any("from mes.items" in sql.lower() for sql, _params in connection.cursor_instance.executed))
+
+    def test_get_item_by_code_normalizes_code(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.item_rows = [_fake_item("RAW_BOX")]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            item = get_item_by_code(AppConfig(db_enabled=True), " raw_box ")
+
+        self.assertIsNotNone(item)
+        self.assertEqual(item["item_code"], "RAW_BOX")
+        self.assertEqual(connection.cursor_instance.last_params["item_code"], "RAW_BOX")
+
+    def test_list_process_routes_filters_by_item_code(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.process_route_rows = [_fake_process_route()]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            routes = list_process_routes(AppConfig(db_enabled=True), item_code="packaged_product")
+
+        self.assertEqual(routes[0]["route_code"], "ROUTE_BOX_PACKAGING_V1")
+        self.assertEqual(connection.cursor_instance.last_params["item_code"], "PACKAGED_PRODUCT")
+        self.assertIn("cast(%(item_code)s as text)", connection.cursor_instance.last_sql.lower())
+
+    def test_get_process_route_uses_route_code_and_version(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.process_route_rows = [_fake_process_route(version=1)]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            route = get_process_route(AppConfig(db_enabled=True), "route_box_packaging_v1", version=1)
+
+        self.assertIsNotNone(route)
+        self.assertEqual(route["item_code"], "PACKAGED_PRODUCT")
+        self.assertEqual(connection.cursor_instance.last_params["route_code"], "ROUTE_BOX_PACKAGING_V1")
+        self.assertEqual(connection.cursor_instance.last_params["version"], 1)
+
+    def test_list_route_operations_filters_by_station_code(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.route_operation_rows = [_fake_route_operation()]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            operations = list_route_operations(AppConfig(db_enabled=True), station_code="assembly_01")
+
+        self.assertEqual(operations[0]["station_code"], "ASSEMBLY_01")
+        self.assertEqual(operations[0]["input_qty_per_cycle"], 1)
+        self.assertEqual(connection.cursor_instance.last_params["station_code"], "ASSEMBLY_01")
+        self.assertIn("order by route_code asc, route_version asc, sequence_no asc", connection.cursor_instance.last_sql.lower())
+
+    def test_get_route_operation_missing_returns_none(self) -> None:
+        connection = _Connection()
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            operation = get_route_operation(AppConfig(db_enabled=True), "missing")
+
+        self.assertIsNone(operation)
+        self.assertEqual(connection.cursor_instance.last_params["route_operation_id"], "MISSING")
+
+    def test_list_station_event_sources_filters_by_station(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.station_event_source_rows = [
+            _fake_station_event_source("ASSEMBLY_01", "COLOR_SENSOR_ENTRY")
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            sources = list_station_event_sources(AppConfig(db_enabled=True), "assembly_01")
+
+        self.assertEqual(sources[0]["station_code"], "ASSEMBLY_01")
+        self.assertEqual(sources[0]["source_type"], "sensor")
+        self.assertEqual(connection.cursor_instance.last_params["station_code"], "ASSEMBLY_01")
+
+    def test_resolve_station_event_source_normalizes_source(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.station_event_source_rows = [
+            _fake_station_event_source("ASSEMBLY_01", "KIOSK_OPERATOR", source_type="kiosk", event_channel="kiosk", mqtt_topic=None)
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            source = resolve_station_event_source(AppConfig(db_enabled=True), "assembly_01", "kiosk_operator")
+
+        self.assertIsNotNone(source)
+        self.assertEqual(source["source_code"], "KIOSK_OPERATOR")
+        self.assertEqual(connection.cursor_instance.last_params["source_code"], "KIOSK_OPERATOR")
+
+    def test_list_operation_steps_orders_by_step_no(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.operation_step_rows = [
+            _fake_operation_step(step_code="COLOR_SENSOR_ENTRY_EVIDENCE", step_no=10)
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            steps = list_operation_steps(AppConfig(db_enabled=True), "route_box_packaging_v1_op10")
+
+        self.assertEqual(steps[0]["step_code"], "COLOR_SENSOR_ENTRY_EVIDENCE")
+        self.assertEqual(connection.cursor_instance.last_params["route_operation_id"], "ROUTE_BOX_PACKAGING_V1_OP10")
+        self.assertIn("order by step_no asc", connection.cursor_instance.last_sql.lower())
+
+    def test_get_operation_step_missing_returns_none(self) -> None:
+        connection = _Connection()
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            step = get_operation_step(AppConfig(db_enabled=True), "route_box_packaging_v1_op10", "missing")
+
+        self.assertIsNone(step)
+        self.assertEqual(connection.cursor_instance.last_params["step_code"], "MISSING")
+
+    def test_get_route_operation_config_aggregate_includes_steps_items_and_sources(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.route_operation_rows = [_fake_route_operation()]
+        connection.cursor_instance.item_rows = [
+            _fake_item("RAW_BOX"),
+            _fake_item("COLOR_CLASSIFIED_BOX", item_type="semi_finished"),
+        ]
+        connection.cursor_instance.station_event_source_rows = [
+            _fake_station_event_source("ASSEMBLY_01", "COLOR_SENSOR_ENTRY")
+        ]
+        connection.cursor_instance.operation_step_rows = [
+            _fake_operation_step(step_code="COLOR_SENSOR_ENTRY_EVIDENCE")
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            aggregate = get_route_operation_config(AppConfig(db_enabled=True), "route_box_packaging_v1_op10")
+
+        self.assertIsNotNone(aggregate)
+        self.assertEqual(aggregate["route_operation"]["station_code"], "ASSEMBLY_01")
+        self.assertEqual(aggregate["input_item"]["item_code"], "RAW_BOX")
+        self.assertEqual(aggregate["output_item"]["item_code"], "COLOR_CLASSIFIED_BOX")
+        self.assertEqual(aggregate["steps"][0]["step_code"], "COLOR_SENSOR_ENTRY_EVIDENCE")
+        self.assertEqual(aggregate["event_sources"][0]["source_code"], "COLOR_SENSOR_ENTRY")
+        self.assertEqual(aggregate["validation"]["missing_event_sources"], [])
+
+    def test_get_route_operation_config_reports_missing_event_source_ref(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.route_operation_rows = [_fake_route_operation()]
+        connection.cursor_instance.item_rows = [
+            _fake_item("RAW_BOX"),
+            _fake_item("COLOR_CLASSIFIED_BOX", item_type="semi_finished"),
+        ]
+        connection.cursor_instance.station_event_source_rows = [
+            _fake_station_event_source("ASSEMBLY_01", "COLOR_SENSOR_ENTRY")
+        ]
+        connection.cursor_instance.operation_step_rows = [
+            _fake_operation_step(
+                step_code="ROBOT_ARM_DROP_COMPLETED",
+                step_no=20,
+                start_mode="implicit_start",
+                finish_mode="auto_finish",
+                start_event_source_code=None,
+                finish_event_source_code="ROBOT_ARM_DROP",
+                actor_type="robot",
+            )
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            aggregate = get_route_operation_config(AppConfig(db_enabled=True), "route_box_packaging_v1_op10")
+
+        missing = aggregate["validation"]["missing_event_sources"]
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0]["code"], "MISSING_EVENT_SOURCE")
+        self.assertEqual(missing[0]["field"], "finish_event_source_code")
+        self.assertEqual(missing[0]["source_code"], "ROBOT_ARM_DROP")
+
+    def test_get_station_execution_config_includes_route_operations_for_station(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.route_operation_rows = [_fake_route_operation()]
+        connection.cursor_instance.item_rows = [
+            _fake_item("RAW_BOX"),
+            _fake_item("COLOR_CLASSIFIED_BOX", item_type="semi_finished"),
+        ]
+        connection.cursor_instance.station_event_source_rows = [
+            _fake_station_event_source("ASSEMBLY_01", "COLOR_SENSOR_ENTRY")
+        ]
+        connection.cursor_instance.operation_step_rows = [
+            _fake_operation_step(step_code="COLOR_SENSOR_ENTRY_EVIDENCE")
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            config = get_station_execution_config(AppConfig(db_enabled=True), "assembly_01")
+
+        self.assertEqual(config["station_code"], "ASSEMBLY_01")
+        self.assertEqual(config["route_operations"][0]["route_operation"]["route_operation_id"], "ROUTE_BOX_PACKAGING_V1_OP10")
+        self.assertEqual(config["event_sources"][0]["source_code"], "COLOR_SENSOR_ENTRY")
+
+    def test_station_execution_config_helpers_are_read_only(self) -> None:
+        read_sql_constants = [
+            mesql_v2.SELECT_ITEMS_SQL,
+            mesql_v2.SELECT_ITEM_BY_CODE_SQL,
+            mesql_v2.SELECT_PROCESS_ROUTES_SQL,
+            mesql_v2.SELECT_PROCESS_ROUTE_SQL,
+            mesql_v2.SELECT_ROUTE_OPERATIONS_SQL,
+            mesql_v2.SELECT_ROUTE_OPERATION_BY_ID_SQL,
+            mesql_v2.SELECT_STATION_EVENT_SOURCES_SQL,
+            mesql_v2.SELECT_STATION_EVENT_SOURCE_SQL,
+            mesql_v2.SELECT_OPERATION_STEPS_SQL,
+            mesql_v2.SELECT_OPERATION_STEP_SQL,
+            mesql_v2.SELECT_STATION_EXISTS_SQL,
+        ]
+        forbidden_keywords = ("insert", "update", "delete", "drop", "truncate", "alter", "create")
+        forbidden_tables = (
+            "mes.work_order_operation_execution_state",
+            "mes.work_order_operation_steps",
+            "mes.operation_events",
+            "mes.operation_approvals",
+            "mes.production_flow_events",
+            "mes.work_orders",
+            "mes.work_order_operations",
+            "mes.station_queue",
+        )
+
+        for sql in read_sql_constants:
+            lowered = sql.lower()
+            self.assertTrue(lowered.lstrip().startswith("select"))
+            self.assertNotIn("for update", lowered)
+            for keyword in forbidden_keywords:
+                self.assertNotRegex(lowered, rf"\b{keyword}\b")
+            for table_name in forbidden_tables:
+                self.assertNotIn(table_name, lowered)
+
+        self.assertIn("cast(%(active_only)s as boolean)", mesql_v2.SELECT_ITEMS_SQL.lower())
+        self.assertIn("cast(%(item_code)s as text)", mesql_v2.SELECT_PROCESS_ROUTES_SQL.lower())
+        self.assertIn("cast(%(route_code)s as text)", mesql_v2.SELECT_ROUTE_OPERATIONS_SQL.lower())
+        self.assertIn("cast(%(station_code)s as text)", mesql_v2.SELECT_ROUTE_OPERATIONS_SQL.lower())
 
     def test_v2_routes_are_wired_to_db_authoritative_helpers(self) -> None:
         app = app_module.create_app()

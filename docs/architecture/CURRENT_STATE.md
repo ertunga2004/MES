@@ -301,6 +301,43 @@ or MESQL push/pull action.
   - Apply sonrası evidence dosyası önerisi:
     `docs/runbooks/station_execution_schema_migration_evidence_YYYYMMDD.md`
 
+## Applied Station Execution Schema Migration
+
+- `db/migrations/004_station_execution_schema.sql` local PostgreSQL üzerinde
+  kontrollü şekilde uygulandı.
+- Apply öncesi backup alındı:
+  `C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups\mes_postgres_before_004_station_execution_schema_20260709-111429.sql`
+- Evidence:
+  `docs/runbooks/station_execution_schema_migration_evidence_20260709.md`
+- Apply sonrası doğrulanan yeni tablolar:
+  - `mes.items`
+  - `mes.process_routes`
+  - `mes.route_operations`
+  - `mes.operation_steps`
+  - `mes.station_event_sources`
+  - `mes.work_order_operation_execution_state`
+  - `mes.work_order_operation_steps`
+  - `mes.operation_events`
+  - `mes.operation_approvals`
+  - `mes.production_flow_events`
+- `operation_events` station-scoped idempotency indexleri doğrulandı.
+- `production_flow_events` üzerinde `mes.locations(location_code)` FK olmadığı
+  doğrulandı.
+- Yeni tabloların seed/data içermediği doğrulandı.
+- Station/location baseline korundu:
+  - `locations = 8`
+  - `active_station_location_bindings = 8`
+- Health / limited regression kontrolü tamamlandı.
+- Bu apply sırasında yapılmayanlar:
+  - Seed SQL apply yok.
+  - Runtime engine implementation yok.
+  - Kiosk dynamic action implementation yok.
+  - IoT adapter implementation yok.
+  - OEE/KPI implementation yok.
+  - Inventory movement/balance yok.
+  - MESQL push/pull yok.
+  - Operation lifecycle mutation yok.
+
 ## Portable Path Model
 
 ```text
@@ -348,3 +385,9 @@ ready for controlled future application, but no database apply, psql command,
 Docker/Compose operation, seed insert, runtime implementation, Kiosk dynamic
 action, IoT adapter, OEE/KPI implementation, inventory movement/balance
 implementation, or MESQL push/pull action was performed.
+
+For the applied station execution schema migration checkpoint,
+`004_station_execution_schema.sql` was applied after backup and verification; no
+seed insert, runtime implementation, Kiosk dynamic action, IoT adapter, OEE/KPI
+implementation, inventory movement/balance implementation, MESQL push/pull, or
+operation lifecycle mutation was performed.

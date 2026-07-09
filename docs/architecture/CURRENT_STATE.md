@@ -520,6 +520,24 @@ or MESQL push/pull action.
   - Work order create/change yok.
   - Queue mutation yok.
 
+## Verified Station Execution Config API Feature Flag Wiring
+
+- Portable compose pass-through verified.
+- `MES_WEB_DB_STATION_EXECUTION_CONFIG_READ_MODEL_ENABLED=true` enabled normal
+  `mes_web:8080` read-only API access.
+- Removing the host env and recreating `mes_web` restored default disabled
+  behavior.
+- Verified values:
+  - `items count = 3`
+  - `ASSEMBLY_01 route operation count = 1`
+  - `ASSEMBLY_01 execution config route_operations count = 1`
+  - disabled restore: `503 STATION_EXECUTION_CONFIG_READ_MODEL_DISABLED`
+  - Kiosk static GET: `/kiosk`, `/static/kiosk.js`, `/static/kiosk.css` -> `200`
+- Evidence:
+  `docs/runbooks/station_execution_config_read_api_feature_flag_wiring_smoke_20260709.md`
+- No DB write, lifecycle mutation, MESQL, Kiosk action, seed, migration, or
+  volume operation was performed.
+
 ## Portable Path Model
 
 ```text

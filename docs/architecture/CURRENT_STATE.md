@@ -447,6 +447,79 @@ or MESQL push/pull action.
   - Operation lifecycle mutation yok.
   - Work order create/change yok.
 
+## Verified Station Execution Config Read-Only API
+
+- Station execution config read-only API implementation tamamlandi.
+- Implementation commit:
+  `116ef77 "feat: add station execution config read api"`
+- Degisen dosyalar:
+  - `mes_web/__main__.py`
+  - `tests/test_mes_web_station_execution_config_api.py`
+- Feature flag:
+  - `MES_WEB_DB_STATION_EXECUTION_CONFIG_READ_MODEL_ENABLED`
+  - Default disabled.
+- New read-only GET endpoints:
+  - `GET /api/v2/station-execution/items`
+  - `GET /api/v2/station-execution/items/{item_code}`
+  - `GET /api/v2/station-execution/routes`
+  - `GET /api/v2/station-execution/routes/{route_code}`
+  - `GET /api/v2/station-execution/route-operations`
+  - `GET /api/v2/station-execution/route-operations/{route_operation_id}`
+  - `GET /api/v2/stations/{station_code}/execution-event-sources`
+  - `GET /api/v2/stations/{station_code}/execution-config`
+  - `GET /api/v2/station-execution/route-operations/{route_operation_id}/steps`
+  - `GET /api/v2/station-execution/route-operations/{route_operation_id}/config`
+- Route-level/unit regression:
+  - `tests.test_mes_web_station_execution_config_api`
+  - `tests.test_mes_web_station_location_api`
+  - `tests.test_mes_web_mesql_v2`
+  - `Ran 77 tests ... OK`
+- Local HTTP smoke PASS after corrected DB password source.
+- Prior failed enabled smoke root cause:
+  - temporary smoke container used wrong DB password.
+  - diagnosis:
+    `docs/runbooks/station_execution_config_read_api_500_diagnosis_20260709.md`
+- Verified disabled behavior:
+  - `GET /api/v2/station-execution/items -> 503`
+- Verified enabled seeded config reads:
+  - `items = 3`
+  - `routes includes ROUTE_BOX_PACKAGING_V1`
+  - `ASSEMBLY_01 route operation count = 1`
+  - `PACKAGING_01 route operation count = 1`
+  - `ASSEMBLY_01 event source count = 3`
+  - `PACKAGING_01 event source count = 1`
+  - `OP10 step count = 3`
+  - `OP20 step count = 2`
+  - `ASSEMBLY_01 execution config route_operations count = 1`
+  - `PACKAGING_01 execution config route_operations count = 1`
+- Error behavior smoke PASS:
+  - invalid `active_only` -> `400 INVALID_QUERY_PARAM`
+  - invalid `version` -> `400 INVALID_QUERY_PARAM`
+  - missing item -> `404 ITEM_NOT_FOUND`
+  - missing route operation -> `404 ROUTE_OPERATION_NOT_FOUND`
+- No-write baseline retained:
+  - runtime/event/flow tables remained `0`
+  - `locations = 8`
+  - `active_station_location_bindings = 8`
+- Existing station/location API default-disabled behavior retained:
+  - `GET /api/v2/locations -> 503`
+- Kiosk static GET regression retained:
+  - `GET /kiosk -> 200`
+  - `GET /static/kiosk.js -> 200`
+  - `GET /static/kiosk.css -> 200`
+- Evidence:
+  `docs/runbooks/station_execution_config_read_api_smoke_evidence_20260709.md`
+- Bu fazda yapilmayanlar:
+  - Kiosk dynamic action implementation yok.
+  - Runtime engine implementation yok.
+  - IoT adapter implementation yok.
+  - OEE/KPI implementation yok.
+  - Inventory movement/balance yok.
+  - MESQL push/pull yok.
+  - Operation lifecycle mutation yok.
+  - Work order create/change yok.
+  - Queue mutation yok.
+
 ## Portable Path Model
 
 ```text
@@ -507,6 +580,13 @@ verification; only station execution master/config tables were seeded, and no
 runtime/event/flow data, work order data, operation lifecycle mutation, Kiosk
 dynamic action, runtime engine, IoT adapter, OEE/KPI implementation, inventory
 movement/balance implementation, or MESQL push/pull action was performed.
+
+For the verified station execution config read-only API checkpoint, read-only
+GET endpoints, route-level tests, corrected local HTTP smoke, and no-write
+baseline verification were completed; no Kiosk dynamic action, runtime engine,
+IoT adapter, OEE/KPI implementation, inventory movement/balance implementation,
+MESQL push/pull, work order mutation, queue mutation, or operation lifecycle
+mutation was performed.
 
 For the verified station execution config read model checkpoint, read-only
 helper functions and offline tests were added and real local PostgreSQL read

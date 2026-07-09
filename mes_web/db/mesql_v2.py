@@ -986,6 +986,110 @@ INSERT INTO mes.work_order_operation_steps (
 ON CONFLICT (work_order_operation_id, step_code) DO NOTHING
 """
 
+SELECT_OPERATION_EVENT_BY_IDEMPOTENCY_KEY_SQL = """
+SELECT
+    event_id,
+    event_time,
+    received_at,
+    station_code,
+    work_order_id,
+    work_order_operation_id,
+    work_order_operation_step_id,
+    operation_code,
+    step_code,
+    event_source,
+    event_type,
+    external_event_id,
+    idempotency_key,
+    payload,
+    accepted,
+    rejection_reason,
+    created_at
+FROM mes.operation_events
+WHERE idempotency_key = %(idempotency_key)s
+LIMIT 1
+"""
+
+SELECT_OPERATION_EVENT_BY_EXTERNAL_EVENT_SQL = """
+SELECT
+    event_id,
+    event_time,
+    received_at,
+    station_code,
+    work_order_id,
+    work_order_operation_id,
+    work_order_operation_step_id,
+    operation_code,
+    step_code,
+    event_source,
+    event_type,
+    external_event_id,
+    idempotency_key,
+    payload,
+    accepted,
+    rejection_reason,
+    created_at
+FROM mes.operation_events
+WHERE station_code = %(station_code)s
+  AND event_source = %(event_source)s
+  AND external_event_id = %(external_event_id)s
+LIMIT 1
+"""
+
+INSERT_OPERATION_EVENT_SQL = """
+INSERT INTO mes.operation_events (
+    event_id,
+    event_time,
+    station_code,
+    work_order_id,
+    work_order_operation_id,
+    work_order_operation_step_id,
+    operation_code,
+    step_code,
+    event_source,
+    event_type,
+    external_event_id,
+    idempotency_key,
+    payload,
+    accepted,
+    rejection_reason
+) VALUES (
+    %(event_id)s,
+    now(),
+    %(station_code)s,
+    NULL,
+    %(work_order_operation_id)s,
+    NULL,
+    NULL,
+    NULL,
+    %(event_source)s,
+    %(event_type)s,
+    %(external_event_id)s,
+    %(idempotency_key)s,
+    %(payload)s,
+    %(accepted)s,
+    %(rejection_reason)s
+)
+RETURNING
+    event_id,
+    event_time,
+    received_at,
+    station_code,
+    work_order_id,
+    work_order_operation_id,
+    work_order_operation_step_id,
+    operation_code,
+    step_code,
+    event_source,
+    event_type,
+    external_event_id,
+    idempotency_key,
+    payload,
+    accepted,
+    rejection_reason,
+    created_at
+"""
+
 SELECT_OPERATION_BY_ID_SQL = """
 SELECT
     work_order_operation_id,
@@ -1766,6 +1870,28 @@ def _runtime_operation_context_row(row: Any) -> JsonObject:
     })
 
 
+def _operation_event_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "event_id": _text(_field(row, 0, "event_id")),
+        "event_time": _field(row, 1, "event_time"),
+        "received_at": _field(row, 2, "received_at"),
+        "station_code": _upper(_field(row, 3, "station_code")),
+        "work_order_id": _nullable_text(_field(row, 4, "work_order_id")),
+        "work_order_operation_id": _nullable_text(_field(row, 5, "work_order_operation_id")),
+        "work_order_operation_step_id": _nullable_text(_field(row, 6, "work_order_operation_step_id")),
+        "operation_code": _nullable_upper(_field(row, 7, "operation_code")),
+        "step_code": _nullable_upper(_field(row, 8, "step_code")),
+        "event_source": _upper(_field(row, 9, "event_source")),
+        "event_type": _lower(_field(row, 10, "event_type")),
+        "external_event_id": _nullable_text(_field(row, 11, "external_event_id")),
+        "idempotency_key": _nullable_text(_field(row, 12, "idempotency_key")),
+        "payload": _field(row, 13, "payload") or {},
+        "accepted": _field(row, 14, "accepted"),
+        "rejection_reason": _nullable_text(_field(row, 15, "rejection_reason")),
+        "created_at": _field(row, 16, "created_at"),
+    })
+
+
 def list_locations(config: AppConfig, active_only: bool = True, location_type: str | None = None) -> list[JsonObject]:
     params = {
         "active_only": bool(active_only),
@@ -2398,6 +2524,161 @@ def initialize_execution_state(
         "initialized": initialized,
         "execution_state": _execution_state_row(state_row) if state_row else None,
         "steps": [_execution_step_row(row) for row in step_rows],
+    })
+
+
+OPERATION_EVENT_TYPES = {
+    "step_start",
+    "step_finish",
+    "evidence",
+    "approval",
+    "reject",
+    "system_transition",
+}
+
+
+def _normalize_operation_event_type(event_type: Any) -> str:
+    normalized_event_type = _lower(event_type)
+    if normalized_event_type not in OPERATION_EVENT_TYPES:
+        raise MesqlV2Error("INVALID_OPERATION_EVENT_TYPE", status_code=400)
+    return normalized_event_type
+
+
+def _build_operation_event_idempotency_key(
+    station_code: str,
+    event_source: str,
+    external_event_id: str | None,
+) -> str | None:
+    normalized_external_event_id = _nullable_text(external_event_id)
+    if not normalized_external_event_id:
+        return None
+    return f"{_upper(station_code)}:{_upper(event_source)}:{normalized_external_event_id}"
+
+
+def get_operation_event_by_idempotency_key(config: AppConfig, idempotency_key: str) -> JsonObject | None:
+    normalized_idempotency_key = _nullable_text(idempotency_key)
+    if not normalized_idempotency_key:
+        return None
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                SELECT_OPERATION_EVENT_BY_IDEMPOTENCY_KEY_SQL,
+                {"idempotency_key": normalized_idempotency_key},
+            )
+            row = cursor.fetchone()
+    return _operation_event_row(row) if row else None
+
+
+def get_operation_event_by_external_event(
+    config: AppConfig,
+    station_code: str,
+    event_source: str,
+    external_event_id: str,
+) -> JsonObject | None:
+    normalized_station_code = _upper(station_code)
+    normalized_event_source = _upper(event_source)
+    normalized_external_event_id = _nullable_text(external_event_id)
+    if not normalized_station_code or not normalized_event_source or not normalized_external_event_id:
+        return None
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                SELECT_OPERATION_EVENT_BY_EXTERNAL_EVENT_SQL,
+                {
+                    "station_code": normalized_station_code,
+                    "event_source": normalized_event_source,
+                    "external_event_id": normalized_external_event_id,
+                },
+            )
+            row = cursor.fetchone()
+    return _operation_event_row(row) if row else None
+
+
+def record_operation_event(
+    config: AppConfig,
+    *,
+    work_order_operation_id: str,
+    station_code: str,
+    event_source: str,
+    event_type: str,
+    external_event_id: str | None = None,
+    idempotency_key: str | None = None,
+    actor_id: str | None = None,
+    payload: JsonObject | None = None,
+    accepted: bool = True,
+    rejection_reason: str | None = None,
+) -> JsonObject:
+    normalized_operation_id = _text(work_order_operation_id)
+    normalized_station_code = _upper(station_code)
+    normalized_event_source = _upper(event_source)
+    if not normalized_operation_id or not normalized_station_code or not normalized_event_source or not _text(event_type):
+        raise MesqlV2Error("OPERATION_EVENT_IDENTIFIER_REQUIRED", status_code=400)
+
+    normalized_event_type = _normalize_operation_event_type(event_type)
+    normalized_external_event_id = _nullable_text(external_event_id)
+    normalized_idempotency_key = _nullable_text(idempotency_key)
+    if not normalized_idempotency_key:
+        normalized_idempotency_key = _build_operation_event_idempotency_key(
+            normalized_station_code,
+            normalized_event_source,
+            normalized_external_event_id,
+        )
+    if not normalized_idempotency_key:
+        raise MesqlV2Error("OPERATION_EVENT_IDEMPOTENCY_REQUIRED", status_code=400)
+
+    normalized_rejection_reason = _nullable_text(rejection_reason)
+    if not accepted and not normalized_rejection_reason:
+        raise MesqlV2Error("OPERATION_EVENT_REJECTION_REASON_REQUIRED", status_code=400)
+
+    existing = get_operation_event_by_idempotency_key(config, normalized_idempotency_key)
+    if existing is None and normalized_external_event_id:
+        existing = get_operation_event_by_external_event(
+            config,
+            normalized_station_code,
+            normalized_event_source,
+            normalized_external_event_id,
+        )
+    if existing is not None:
+        return _json_safe({"status": "ok", "inserted": False, "event": existing})
+
+    event_payload = dict(payload or {})
+    normalized_actor_id = _nullable_text(actor_id)
+    if normalized_actor_id:
+        event_payload.setdefault("actor_id", normalized_actor_id)
+
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with _transaction(connection):
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    INSERT_OPERATION_EVENT_SQL,
+                    {
+                        "event_id": _runtime_record_id("OP_EVENT", normalized_idempotency_key),
+                        "work_order_operation_id": normalized_operation_id,
+                        "station_code": normalized_station_code,
+                        "event_source": normalized_event_source,
+                        "event_type": normalized_event_type,
+                        "external_event_id": normalized_external_event_id,
+                        "idempotency_key": normalized_idempotency_key,
+                        "payload": _jsonb(event_payload),
+                        "accepted": bool(accepted),
+                        "rejection_reason": normalized_rejection_reason,
+                    },
+                )
+                inserted_row = cursor.fetchone()
+        commit = getattr(connection, "commit", None)
+        if callable(commit):
+            commit()
+
+    return _json_safe({
+        "status": "ok",
+        "inserted": True,
+        "event": _operation_event_row(inserted_row) if inserted_row else None,
     })
 
 

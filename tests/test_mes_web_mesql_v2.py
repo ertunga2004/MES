@@ -19,6 +19,8 @@ from mes_web.db.mesql_v2 import (
     get_execution_state,
     get_location_by_code,
     get_item_by_code,
+    get_operation_event_by_external_event,
+    get_operation_event_by_idempotency_key,
     get_operation_step,
     get_process_route,
     get_route_operation,
@@ -35,6 +37,7 @@ from mes_web.db.mesql_v2 import (
     list_station_event_sources,
     list_station_location_bindings,
     read_station_queue_v2,
+    record_operation_event,
     resolve_station_event_source,
     resolve_station_location,
     start_operation_v2,
@@ -71,6 +74,8 @@ class _Cursor:
         self.runtime_operation_row: dict | None = None
         self.execution_state_row: dict | None = None
         self.execution_step_rows: list[dict] = []
+        self.operation_event_rows: list[dict] = []
+        self.inserted_operation_event_row: dict | None = None
         self.station_exists = True
 
     def __enter__(self):
@@ -139,9 +144,51 @@ class _Cursor:
                         "metadata": self.last_params["metadata"],
                     }
                 )
+        elif "insert into mes.operation_events" in lowered:
+            row = {
+                "event_id": self.last_params["event_id"],
+                "event_time": datetime(2026, 7, 9, 12, 0, 0),
+                "received_at": datetime(2026, 7, 9, 12, 0, 1),
+                "station_code": self.last_params["station_code"],
+                "work_order_id": None,
+                "work_order_operation_id": self.last_params["work_order_operation_id"],
+                "work_order_operation_step_id": None,
+                "operation_code": None,
+                "step_code": None,
+                "event_source": self.last_params["event_source"],
+                "event_type": self.last_params["event_type"],
+                "external_event_id": self.last_params["external_event_id"],
+                "idempotency_key": self.last_params["idempotency_key"],
+                "payload": _unwrap_json_value(self.last_params["payload"]),
+                "accepted": self.last_params["accepted"],
+                "rejection_reason": self.last_params["rejection_reason"],
+                "created_at": datetime(2026, 7, 9, 12, 0, 1),
+            }
+            self.operation_event_rows.append(row)
+            self.inserted_operation_event_row = row
 
     def fetchone(self):
         lowered = self.last_sql.lower()
+        if "insert into mes.operation_events" in lowered and "returning" in lowered:
+            return self.inserted_operation_event_row
+        if "from mes.operation_events" in lowered and "idempotency_key = %(idempotency_key)s" in lowered:
+            idempotency_key = self.last_params.get("idempotency_key")
+            for row in self.operation_event_rows:
+                if row.get("idempotency_key") == idempotency_key:
+                    return row
+            return None
+        if "from mes.operation_events" in lowered and "external_event_id = %(external_event_id)s" in lowered:
+            station_code = self.last_params.get("station_code")
+            event_source = self.last_params.get("event_source")
+            external_event_id = self.last_params.get("external_event_id")
+            for row in self.operation_event_rows:
+                if (
+                    row.get("station_code") == station_code
+                    and row.get("event_source") == event_source
+                    and row.get("external_event_id") == external_event_id
+                ):
+                    return row
+            return None
         if "from mes.work_order_operation_execution_state" in lowered:
             operation_id = self.last_params.get("work_order_operation_id")
             if self.execution_state_row and self.execution_state_row.get("work_order_operation_id") == operation_id:
@@ -796,6 +843,40 @@ def _fake_execution_step(
         "created_at": datetime(2026, 7, 9, 10, 0, 0),
         "updated_at": datetime(2026, 7, 9, 10, 0, 0),
         "metadata": {"source": "runtime_engine_v0_phase1"},
+    }
+
+
+def _fake_operation_event(
+    event_id: str = "OP_EVENT_ASSEMBLY_01_COLOR_SENSOR_ENTRY_sensor-001",
+    *,
+    work_order_operation_id: str = "11111111-1111-1111-1111-111111111111",
+    station_code: str = "ASSEMBLY_01",
+    event_source: str = "COLOR_SENSOR_ENTRY",
+    event_type: str = "step_start",
+    external_event_id: str | None = "sensor-001",
+    idempotency_key: str = "ASSEMBLY_01:COLOR_SENSOR_ENTRY:sensor-001",
+    payload: dict | None = None,
+    accepted: bool = True,
+    rejection_reason: str | None = None,
+) -> dict:
+    return {
+        "event_id": event_id,
+        "event_time": datetime(2026, 7, 9, 12, 0, 0),
+        "received_at": datetime(2026, 7, 9, 12, 0, 1),
+        "station_code": station_code,
+        "work_order_id": None,
+        "work_order_operation_id": work_order_operation_id,
+        "work_order_operation_step_id": None,
+        "operation_code": None,
+        "step_code": None,
+        "event_source": event_source,
+        "event_type": event_type,
+        "external_event_id": external_event_id,
+        "idempotency_key": idempotency_key,
+        "payload": payload or {},
+        "accepted": accepted,
+        "rejection_reason": rejection_reason,
+        "created_at": datetime(2026, 7, 9, 12, 0, 1),
     }
 
 
@@ -1736,6 +1817,239 @@ class MesqlV2Tests(unittest.TestCase):
             lowered = sql.lower()
             self.assertTrue(lowered.lstrip().startswith("insert"))
             self.assertTrue(any(table_name in lowered for table_name in allowed_write_tables))
+            for table_name in forbidden_write_tables:
+                self.assertNotRegex(lowered, rf"\b(insert\s+into|update|delete\s+from)\s+{table_name}\b")
+
+    def test_get_operation_event_by_idempotency_key_returns_none_when_missing(self) -> None:
+        connection = _Connection()
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            event = get_operation_event_by_idempotency_key(AppConfig(db_enabled=True), "missing-key")
+
+        self.assertIsNone(event)
+        self.assertEqual(connection.cursor_instance.last_params["idempotency_key"], "missing-key")
+
+    def test_get_operation_event_by_external_event_returns_existing_event(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.operation_event_rows = [_fake_operation_event()]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            event = get_operation_event_by_external_event(
+                AppConfig(db_enabled=True),
+                "assembly_01",
+                "color_sensor_entry",
+                "sensor-001",
+            )
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event["event_id"], "OP_EVENT_ASSEMBLY_01_COLOR_SENSOR_ENTRY_sensor-001")
+        self.assertEqual(connection.cursor_instance.last_params["station_code"], "ASSEMBLY_01")
+        self.assertEqual(connection.cursor_instance.last_params["event_source"], "COLOR_SENSOR_ENTRY")
+
+    def test_record_operation_event_inserts_event(self) -> None:
+        connection = _Connection()
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            result = record_operation_event(
+                AppConfig(db_enabled=True),
+                work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                station_code="assembly_01",
+                event_source="color_sensor_entry",
+                event_type="step_start",
+                idempotency_key="manual-key-001",
+                actor_id="OP-001",
+                payload={"source": "unit"},
+            )
+
+        executed_sql = "\n".join(sql.lower() for sql, _params in connection.cursor_instance.executed)
+        self.assertTrue(result["inserted"])
+        self.assertEqual(result["event"]["event_type"], "step_start")
+        self.assertEqual(result["event"]["station_code"], "ASSEMBLY_01")
+        self.assertEqual(result["event"]["event_source"], "COLOR_SENSOR_ENTRY")
+        self.assertEqual(result["event"]["payload"]["actor_id"], "OP-001")
+        self.assertTrue(connection.transaction_entered)
+        self.assertTrue(connection.committed)
+        self.assertIn("insert into mes.operation_events", executed_sql)
+
+    def test_record_operation_event_uses_deterministic_idempotency_key_from_external_event(self) -> None:
+        connection = _Connection()
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            result = record_operation_event(
+                AppConfig(db_enabled=True),
+                work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                station_code="assembly_01",
+                event_source="color_sensor_entry",
+                event_type="evidence",
+                external_event_id="sensor-002",
+            )
+
+        self.assertTrue(result["inserted"])
+        self.assertEqual(result["event"]["idempotency_key"], "ASSEMBLY_01:COLOR_SENSOR_ENTRY:sensor-002")
+        insert_params = [
+            params
+            for sql, params in connection.cursor_instance.executed
+            if "insert into mes.operation_events" in sql.lower()
+        ][0]
+        self.assertEqual(insert_params["idempotency_key"], "ASSEMBLY_01:COLOR_SENSOR_ENTRY:sensor-002")
+
+    def test_record_operation_event_is_idempotent_by_idempotency_key(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.operation_event_rows = [
+            _fake_operation_event(idempotency_key="manual-key-001", external_event_id=None)
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            result = record_operation_event(
+                AppConfig(db_enabled=True),
+                work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                station_code="ASSEMBLY_01",
+                event_source="COLOR_SENSOR_ENTRY",
+                event_type="step_start",
+                idempotency_key="manual-key-001",
+            )
+
+        executed_sql = "\n".join(sql.lower() for sql, _params in connection.cursor_instance.executed)
+        self.assertFalse(result["inserted"])
+        self.assertEqual(result["event"]["idempotency_key"], "manual-key-001")
+        self.assertNotIn("insert into mes.operation_events", executed_sql)
+
+    def test_record_operation_event_is_idempotent_by_external_event(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.operation_event_rows = [_fake_operation_event()]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            result = record_operation_event(
+                AppConfig(db_enabled=True),
+                work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                station_code="assembly_01",
+                event_source="color_sensor_entry",
+                event_type="step_start",
+                idempotency_key="different-key",
+                external_event_id="sensor-001",
+            )
+
+        executed_sql = "\n".join(sql.lower() for sql, _params in connection.cursor_instance.executed)
+        self.assertFalse(result["inserted"])
+        self.assertEqual(result["event"]["external_event_id"], "sensor-001")
+        self.assertNotIn("insert into mes.operation_events", executed_sql)
+
+    def test_record_operation_event_rejects_missing_identifiers(self) -> None:
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            record_operation_event(
+                AppConfig(db_enabled=True),
+                work_order_operation_id="",
+                station_code="ASSEMBLY_01",
+                event_source="COLOR_SENSOR_ENTRY",
+                event_type="step_start",
+                idempotency_key="manual-key-001",
+            )
+
+        self.assertEqual(error.exception.detail, "OPERATION_EVENT_IDENTIFIER_REQUIRED")
+        self.assertEqual(error.exception.status_code, 400)
+
+    def test_record_operation_event_rejects_missing_idempotency(self) -> None:
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            record_operation_event(
+                AppConfig(db_enabled=True),
+                work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                station_code="ASSEMBLY_01",
+                event_source="COLOR_SENSOR_ENTRY",
+                event_type="step_start",
+            )
+
+        self.assertEqual(error.exception.detail, "OPERATION_EVENT_IDEMPOTENCY_REQUIRED")
+        self.assertEqual(error.exception.status_code, 400)
+
+    def test_record_operation_event_rejects_invalid_event_type(self) -> None:
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            record_operation_event(
+                AppConfig(db_enabled=True),
+                work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                station_code="ASSEMBLY_01",
+                event_source="COLOR_SENSOR_ENTRY",
+                event_type="start",
+                idempotency_key="manual-key-001",
+            )
+
+        self.assertEqual(error.exception.detail, "INVALID_OPERATION_EVENT_TYPE")
+        self.assertEqual(error.exception.status_code, 400)
+
+    def test_record_operation_event_json_safe_payload(self) -> None:
+        connection = _Connection()
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        payload = {
+            "quantity": Decimal("1.0"),
+            "event_time": datetime(2026, 7, 9, 12, 0, 0),
+            "operation_uuid": UUID("11111111-1111-1111-1111-111111111111"),
+        }
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            result = record_operation_event(
+                AppConfig(db_enabled=True),
+                work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                station_code="ASSEMBLY_01",
+                event_source="COLOR_SENSOR_ENTRY",
+                event_type="evidence",
+                external_event_id="sensor-json-safe",
+                payload=payload,
+            )
+
+        self.assertTrue(result["inserted"])
+        insert_params = [
+            params
+            for sql, params in connection.cursor_instance.executed
+            if "insert into mes.operation_events" in sql.lower()
+        ][0]
+        inserted_payload = _unwrap_json_value(insert_params["payload"])
+        self.assertEqual(inserted_payload["quantity"], 1)
+        self.assertEqual(inserted_payload["event_time"], "2026-07-09T12:00:00")
+        self.assertEqual(inserted_payload["operation_uuid"], "11111111-1111-1111-1111-111111111111")
+        _assert_json_serializable_without_decimal(self, insert_params["payload"])
+
+    def test_operation_event_phase_does_not_write_forbidden_tables(self) -> None:
+        write_sql_constants = [mesql_v2.INSERT_OPERATION_EVENT_SQL]
+        forbidden_write_tables = (
+            "mes.work_order_operation_execution_state",
+            "mes.work_order_operation_steps",
+            "mes.operation_approvals",
+            "mes.production_flow_events",
+            "mes.work_orders",
+            "mes.work_order_operations",
+            "mes.station_queue",
+        )
+
+        for sql in write_sql_constants:
+            lowered = sql.lower()
+            self.assertTrue(lowered.lstrip().startswith("insert"))
+            self.assertIn("insert into mes.operation_events", lowered)
             for table_name in forbidden_write_tables:
                 self.assertNotRegex(lowered, rf"\b(insert\s+into|update|delete\s+from)\s+{table_name}\b")
 

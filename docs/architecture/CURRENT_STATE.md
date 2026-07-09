@@ -391,6 +391,62 @@ or MESQL push/pull action.
   - Operation lifecycle mutation yok.
   - Work order create/change yok.
 
+## Verified Station Execution Config Read Model
+
+- Station execution config read-only helper implementation tamamlandi.
+- Degisen dosyalar:
+  - `mes_web/db/mesql_v2.py`
+  - `tests/test_mes_web_mesql_v2.py`
+- Offline unit regression:
+  - `tests.test_mes_web_mesql_v2`: `Ran 41 tests ... OK`
+- Real local PostgreSQL read smoke PASS.
+- Verified helper coverage:
+  - `list_items`
+  - `get_item_by_code`
+  - `list_process_routes`
+  - `get_process_route`
+  - `list_route_operations`
+  - `get_route_operation`
+  - `list_station_event_sources`
+  - `resolve_station_event_source`
+  - `list_operation_steps`
+  - `get_operation_step`
+  - `get_route_operation_config`
+  - `get_station_execution_config`
+- Verified seeded config:
+  - `items = 3` seed scope
+  - `ROUTE_BOX_PACKAGING_V1`, version `1`
+  - `ASSEMBLY_01` route operation count = `1`
+  - `PACKAGING_01` route operation count = `1`
+  - `ASSEMBLY_01` event source count = `3`
+  - `PACKAGING_01` event source count = `1`
+  - `OP10` step count = `3`
+  - `OP20` step count = `2`
+- Aggregate validation returned no critical warnings for seeded OP10/OP20
+  config.
+- No-write baseline retained:
+  - runtime/event/flow tables remained `0`
+  - `locations = 8`
+  - `active_station_location_bindings = 8`
+- Health / limited regression control tamamlandi:
+  - `GET /health -> ok`
+  - `GET /api/v2/locations -> 503`
+  - `GET /kiosk -> 200`
+  - `GET /static/kiosk.js -> 200`
+  - `GET /static/kiosk.css -> 200`
+- Evidence:
+  `docs/runbooks/station_execution_config_read_smoke_evidence_20260709.md`
+- Bu fazda yapilmayanlar:
+  - API route implementation yok.
+  - Kiosk dynamic action implementation yok.
+  - Runtime engine implementation yok.
+  - IoT adapter implementation yok.
+  - OEE/KPI implementation yok.
+  - Inventory movement/balance yok.
+  - MESQL push/pull yok.
+  - Operation lifecycle mutation yok.
+  - Work order create/change yok.
+
 ## Portable Path Model
 
 ```text
@@ -451,3 +507,10 @@ verification; only station execution master/config tables were seeded, and no
 runtime/event/flow data, work order data, operation lifecycle mutation, Kiosk
 dynamic action, runtime engine, IoT adapter, OEE/KPI implementation, inventory
 movement/balance implementation, or MESQL push/pull action was performed.
+
+For the verified station execution config read model checkpoint, read-only
+helper functions and offline tests were added and real local PostgreSQL read
+smoke was completed; no API route, Kiosk dynamic action, runtime engine, IoT
+adapter, OEE/KPI implementation, inventory movement/balance implementation,
+MESQL push/pull, work order mutation, queue mutation, or operation lifecycle
+mutation was performed.

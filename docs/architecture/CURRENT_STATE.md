@@ -754,3 +754,26 @@ smoke was completed; no API route, Kiosk dynamic action, runtime engine, IoT
 adapter, OEE/KPI implementation, inventory movement/balance implementation,
 MESQL push/pull, work order mutation, queue mutation, or operation lifecycle
 mutation was performed.
+
+## Accepted Observation / Quality-Control Boundary
+
+- Process-end observation is a normal operation step that can be added,
+  removed, reordered, timed, or made optional through SQL/config.
+- The target canonical step code is `PROCESS_END_OBSERVATION`; the recommended
+  prototype uses `manual_start + manual_finish`, records duration, is required
+  for completion, and does not embed approval after finish.
+- Quality control is an optional separate route operation and station model
+  with its own queue, execution state, and operation steps.
+- Final approval is a separate audit/completion-policy concern represented by
+  `mes.operation_approvals` and `operation_completion_policy`.
+- `OPERATOR_OBSERVATION_APPROVAL` remains the legacy/current V1 identifier.
+- The retained pending runtime instance and all historical evidence remain
+  unchanged; an in-place rename was rejected.
+- A new versioned route/configuration is recommended for future work-order
+  operation instances.
+- Decision: `docs/architecture/observation_quality_control_boundary_decision.md`.
+- Transition plan:
+  `docs/architecture/observation_quality_control_transition_plan.md`.
+- This checkpoint changes no Python, test, migration, seed, database state,
+  Kiosk, API, IoT, OEE, approval/completion implementation, lifecycle,
+  inventory, MESQL, or FERP behavior.

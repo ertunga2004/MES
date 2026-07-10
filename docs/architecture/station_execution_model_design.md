@@ -103,7 +103,7 @@ Sistemde hareket eden veya dönüşen nesnedir.
 - Kutu ayırma.
 - Renk sınıflandırma.
 - Robot kol ile bırakma.
-- Gözlem/onay.
+- Gözlem/onay (`V1 historical example`; canonical target separates them).
 - Paketleme.
 
 ### Operation Step
@@ -133,6 +133,9 @@ kuraldır.
 ### 4.1 ASSEMBLY_01 / İstasyon 1
 
 Bu istasyon hibrit/otomatik istasyon olarak tasarlanmalıdır.
+
+Bu bölümdeki birleşik gözlem/onay akışı ve step adı applied V1 historical
+example'dır. Target canonical model Bölüm 22'de ayrı olarak tanımlanır.
 
 İstenen mantık:
 
@@ -165,7 +168,7 @@ finish_event_source = ROBOT_ARM_DROP
 required_for_completion = true
 records_duration = true
 
-Step 30 - Operator observation approval
+Step 30 - Operator observation approval (V1 historical example)
 start_mode = implicit_start
 finish_mode = manual_finish
 required_for_completion = true
@@ -491,16 +494,22 @@ auto_complete_pending_approval
 
 ### manual_close
 
-Operasyon sadece operatör kapatınca kapanır.
+Tüm required step'ler tamamlanınca operation `evidence_completed` olur ve
+`current_step_code = null` set edilir. Operasyon yalnız explicit operation close
+action'ı sonrasında `closed` olur; required-step completion sonrasında `active`
+kalmaz.
 
 ### auto_close_on_required_steps
 
-Tüm zorunlu step'ler tamamlanınca operasyon otomatik kapanır.
+Tüm zorunlu step'ler tamamlanınca operation otomatik `closed` olur;
+`evidence_completed_at` ve `closed_at` triggering finish event zamanına set
+edilir.
 
 ### auto_complete_pending_approval
 
-Tüm zorunlu step'ler tamamlanınca operasyon `evidence_completed` olur, ancak
-tam kapanış için final approval gerekir.
+Tüm zorunlu step'ler tamamlanınca operation `pending_final_approval` olur;
+`evidence_completed_at` ve `pending_final_approval_at` triggering finish event
+zamanına set edilir. Tam kapanış için ayrı final approval gerekir.
 
 Bu bizim ana hedef modelimizdir.
 
@@ -577,9 +586,9 @@ tanımlanmalıdır.
 10. Tamam değilse operasyon active kalır.
 
 11. Tamamsa operation_completion_policy uygulanır:
-    - manual_close -> kullanıcı kapanış bekler
+    - manual_close -> evidence_completed / explicit operation close bekler
     - auto_close_on_required_steps -> closed
-    - auto_complete_pending_approval -> evidence_completed / pending_final_approval
+    - auto_complete_pending_approval -> pending_final_approval
 
 12. Operation kapanışı gerçekleştiğinde:
     - production_flow_event oluşturulabilir
@@ -1027,3 +1036,48 @@ Bu doküman için kabul kriterleri:
 - OEE/KPI için minimum veri tanımlı.
 - Riskler ve faz planı var.
 - Implementation yapılmadı.
+
+## 22. Accepted Observation / Quality-Control Boundary
+
+The accepted transition target separates five concepts that the current V1
+example previously combined:
+
+- `PROCESS_END_OBSERVATION` is an optional, regular operation step. Its row in
+  `mes.operation_steps` determines whether it exists; existing step columns
+  determine sequence, start/finish modes, duration recording, and whether it is
+  required. It requires no hardcoded engine branch or new boolean.
+- `QUALITY_CONTROL` is an optional separate `route_operation`, potentially with
+  its own station, queue, execution state, equipment, personnel, and steps. It
+  is not another name for process-end observation.
+- Final approval is an operation-level audit and completion-policy concern
+  represented through `mes.operation_approvals`; it is not embedded in the
+  observation step name.
+- Operation close is selected by `operation_completion_policy` after required
+  steps complete.
+- Work-order close is a separate lifecycle decision after route operations
+  complete and is outside this design checkpoint.
+
+The current `OPERATOR_OBSERVATION_APPROVAL` examples describe the applied V1
+seed and historical runtime. They are not to be renamed in place. New
+versioned configuration should use this prototype target:
+
+```text
+step_code = PROCESS_END_OBSERVATION
+step_name = Proses Sonu Gözlem
+start_mode = manual_start
+finish_mode = manual_finish
+records_duration = true
+required_for_completion = true
+approval_required_after_finish = false
+actor_type = operator
+```
+
+For the prototype, `auto_close_on_required_steps` is recommended so the same
+operator is not asked for a second approval/close action after completing the
+manual observation. Factories requiring an independent authorized approval
+may select `auto_complete_pending_approval`; `manual_close` remains an explicit
+close alternative.
+
+The full decision and versioned transition rules are recorded in
+`observation_quality_control_boundary_decision.md` and
+`observation_quality_control_transition_plan.md`.

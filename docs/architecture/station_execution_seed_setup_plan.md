@@ -98,6 +98,11 @@ Anlam:
 
 ## 7. Route Operations Seed Taslağı
 
+Sections 7-10, `applied V1 historical baseline` değerlerini belgeler. Bu bölümlerdeki
+identifier ve policy değerleri target V2 önerisi değildir; mevcut seed ve
+historical/runtime referansları açıklamak için korunur. V2 target yalnız Bölüm
+15'te geçiş önerisi olarak gösterilir ve henüz uygulanmamıştır.
+
 ### Operation 10 - ASSEMBLY_01
 
 ```text
@@ -332,3 +337,40 @@ Bu seed/setup planı tamamlanmış sayılır, eğer:
 - Location role çözümleme yaklaşımı belirtilmişse.
 - Setup validation checklist yazılmışsa.
 - Seed SQL veya code implementation yapılmamışsa.
+
+## 15. Versioned Canonical Transition Target
+
+Sections 7-10 document the existing V1 seed design and remain historical input
+to the applied baseline. In particular, `OPERATOR_OBSERVATION_APPROVAL` is the
+legacy/current V1 identifier; it must not be renamed through an in-place seed
+update or idempotent upsert.
+
+For a future, separately approved route/config version, the recommended
+ASSEMBLY operation target is:
+
+```text
+1. COLOR_SENSOR_ENTRY_EVIDENCE
+   auto_start + auto_finish
+
+2. ROBOT_ARM_DROP_COMPLETED
+   implicit_start + auto_finish
+
+3. PROCESS_END_OBSERVATION
+   step_name = Proses Sonu Gözlem
+   manual_start + manual_finish
+   records_duration = true
+   required_for_completion = true
+   approval_required_after_finish = false
+   actor_type = operator
+
+operation_completion_policy = auto_close_on_required_steps
+```
+
+Observation is present only when the new version contains that operation-step
+row. No `has_observation` column or engine flag is added. Alternative operation
+policies remain `manual_close` and `auto_complete_pending_approval`; the latter
+requires a distinct operation approval rather than a renamed observation step.
+
+If a route requires quality control, add a separate versioned route operation,
+for example `OP15_QUALITY_CONTROL` at `QUALITY_01`, with its own configured step
+set. This example is not part of the current seed and no SQL is created here.

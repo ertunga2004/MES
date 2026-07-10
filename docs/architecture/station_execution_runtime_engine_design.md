@@ -192,22 +192,44 @@ State anlamı:
 
 ### `manual_close`
 
-- Required steps tamamlanınca operation active kalabilir.
-- Kiosk final close action gösterir.
-- Closed transition explicit operator/system action gerektirir.
+- Tüm required steps completed olduğunda operation `evidence_completed` olur;
+  `active` kalmaz.
+- `current_step_code = null` ve `evidence_completed_at = triggering_event_time`
+  set edilir.
+- `pending_final_approval_at` ve `closed_at` null kalır.
+- Kiosk explicit operation close action gösterir; `closed` transition ayrı
+  future close helper/fazının sorumluluğudur.
 
 ### `auto_close_on_required_steps`
 
 - Tüm required steps completed olduğunda operation `closed` olur.
+- `current_step_code = null`, `evidence_completed_at = triggering_event_time`
+  ve `closed_at = triggering_event_time` set edilir.
+- `pending_final_approval_at` null kalır.
 - Final approval yoktur.
 - Production flow event closed sonrası üretilebilir.
 
 ### `auto_complete_pending_approval`
 
-- Tüm required steps completed olduğunda operation `evidence_completed` olur.
-- Approval gerekiyorsa `pending_final_approval` olur.
+- Tüm required steps completed olduğunda operation doğrudan
+  `pending_final_approval` olur.
+- `current_step_code = null`, `evidence_completed_at = triggering_event_time`
+  ve `pending_final_approval_at = triggering_event_time` set edilir.
+- `closed_at` null kalır.
 - Final approval accepted olduğunda `closed` olur.
-- Bu goal için ana hedef model budur.
+- Bu fazda approval row oluşturulmaz.
+
+Her üç policy transition'ında triggering `step_finish` event ID değeri
+`last_event_id` olur ve `updated_at = triggering_event_time` set edilir.
+Mevcut `started_at` ve `last_approval_id` korunur. Policy otoritesi
+`work_order_operation_execution_state.operation_completion_policy` veya onun
+kaynak config değeridir; `operation_steps.approval_required_after_finish` tek
+başına `pending_final_approval` transition'ı üretemez.
+
+Policy transition için ek `system_transition` event'i oluşturulmaz. Event
+insert, step completion ve policy update aynı `finish_execution_step`
+transaction/cursor akışında atomik yürür. Approval, manual close, production
+flow ve work-order lifecycle mutation ayrı future helper/fazlardır.
 
 ## 12. Approval Akışı
 
@@ -295,3 +317,31 @@ Bu runtime engine design tamamlanmış sayılır, eğer:
 - Compatibility mode mevcut lifecycle'ı koruyorsa.
 - Inventory movement/balance kapsam dışı kalıyorsa.
 - Kod veya migration üretilmemişse.
+
+## 17. Canonical Observation and Approval Semantics
+
+The runtime engine treats `PROCESS_END_OBSERVATION` exactly like any other
+configured step. Row presence and the generic `start_mode`, `finish_mode`,
+`required_for_completion`, `records_duration`, and `active` fields control its
+behavior. No step-code-specific observation branch is allowed.
+
+Final approval is a separate operation-level transition and audit record:
+
+```text
+required steps complete
+-> apply operation_completion_policy
+-> when policy requires authorization, record mes.operation_approvals
+-> close operation only after the policy condition is satisfied
+```
+
+`approval_required_after_finish` remains a compatibility field for existing V1
+configuration. The canonical observation target sets it to `false`; putting
+`APPROVAL` in an observation identifier does not create the operation-level
+audit semantics.
+
+Quality control, when configured, arrives at the engine as a distinct route
+operation and execution context with its own steps. Work-order closure remains
+outside the operation step engine and requires a separate lifecycle policy.
+
+The retained V1 `OPERATOR_OBSERVATION_APPROVAL` instance and its historical
+events are not renamed or mutated by this clarification.

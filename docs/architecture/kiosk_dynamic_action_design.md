@@ -91,9 +91,11 @@ UI davranışı:
 
 UI davranışı:
 
-- Step `active` ise bitir/onayla action'ı gösterilir.
-- `approval_required_after_finish = true` ise label `Onayla` veya `Final Onay`
-  olabilir.
+- Step `active` ise canonical label `Bitir` olur; process-end observation için
+  `Gözlemi Bitir` kullanılabilir.
+- `approval_required_after_finish = true` için `Onayla` label'ı yalnız mevcut
+  V1 compatibility metadata/display davranışıdır. Canonical final approval
+  action'ını veya operation transition'ını belirlemez.
 
 ### `auto_start`
 
@@ -135,9 +137,12 @@ MVP:
 4. İlk pending/active step'i bul.
 5. Step auto-only ise kullanıcı action'ı üretme.
 6. Step manual_start bekliyorsa tek start action üret.
-7. Step manual_finish bekliyorsa tek finish/approval action üret.
-8. Operation pending_final_approval ise final approval action üret.
-9. Aynı anda birden fazla primary action gösterme.
+7. Step manual_finish bekliyorsa tek finish action üret.
+8. Operation `pending_final_approval` ise ayrı operation-level final approval
+   action üret.
+9. Operation `evidence_completed` ve policy `manual_close` ise ayrı manual
+   operation close action üret.
+10. Aynı anda birden fazla primary action gösterme.
 ```
 
 Kritik kural:
@@ -196,3 +201,31 @@ Bu tasarım tamamlanmış sayılır, eğer:
 - Current actionable step algoritması varsa.
 - Mevcut read-only station/location kartının korunacağı yazılmışsa.
 - Implementation yapılmamışsa.
+
+## 13. Canonical Observation and Approval Actions
+
+Kiosk must derive process-end observation actions from the current runtime step
+configuration. For the recommended `PROCESS_END_OBSERVATION` target,
+`manual_start` and `manual_finish` produce separate normal actions such as
+`Gözlemi Başlat` and `Gözlemi Bitir`. Their labels must not imply final
+approval.
+
+Operation-level final approval is shown only when execution state and
+`operation_completion_policy` require it; concretely the execution must be
+`pending_final_approval`. That action is separate from a step finish action and
+writes to the approval/audit flow rather than changing the meaning of the
+observation step.
+
+Manual operation close is shown only for
+`execution_status = evidence_completed` together with
+`operation_completion_policy = manual_close`. It is not a renamed observation
+finish or final approval action.
+
+The Kiosk has no hardcoded `PROCESS_END_OBSERVATION` branch. A route version
+without the row produces no observation action. A configured quality-control
+route operation appears as its own station/queue/execution context and derives
+its actions from its own step set.
+
+`OPERATOR_OBSERVATION_APPROVAL` remains a V1 compatibility identifier for
+existing runtime and evidence. UI compatibility may display its stored name,
+but new versioned config must use the canonical separation.

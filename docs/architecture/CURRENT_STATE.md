@@ -810,3 +810,37 @@ mutation was performed.
 - No migration, seed, API, Kiosk, IoT/MQTT, Observer, OEE/KPI, approval helper,
   manual-close helper, production flow, inventory, work-order close, MESQL, or
   FERP action was performed.
+
+## Canonical V2 Route Seed Draft
+
+- An additive Canonical V2 route/config seed draft is ready for review.
+- SQL draft:
+  `db/migrations/006_station_execution_seed_canonical_v2.sql`.
+- Apply runbook:
+  `docs/runbooks/station_execution_canonical_v2_seed_apply_runbook.md`.
+- Target identity:
+  `ROUTE_BOX_PACKAGING_V2`, version `2`.
+- Route operations:
+  - `ROUTE_BOX_PACKAGING_V2_OP10` / `ASSEMBLY_COLOR_CLASSIFY`
+  - `ROUTE_BOX_PACKAGING_V2_OP20` / `PACKAGING_FINAL`
+- OP10 uses the canonical `PROCESS_END_OBSERVATION` step with manual start,
+  manual finish, duration recording, required completion, and no embedded
+  approval.
+- OP20 uses one measurable manual `PACKAGING_EXECUTION` step with no embedded
+  approval.
+- Both route operations use `auto_close_on_required_steps`.
+- The V2 draft contains no final-approval step and no quality-control route
+  operation.
+- V2 route/config rows are drafted as `active=true`: current route detail and
+  runtime initialization paths require explicit route/version or
+  route-operation identifiers, and no automatic latest-active work-order
+  selection was found.
+- New work-order selection/activation implementation remains a separate phase.
+- V1 config, retained runtime, and historical evidence were not changed.
+- The V2 SQL has not been applied to a database.
+- Repository artifact status is `reviewed seed draft, not applied to source
+  DB`; inserted rows, when applied in a future approved task, use
+  `configuration_status=canonical_v2` metadata.
+- No Python, test, API, Kiosk, IoT/MQTT, Observer, OEE/KPI, approval helper,
+  manual-close helper, production flow, inventory, lifecycle, work-order close,
+  MESQL, or FERP change was made.

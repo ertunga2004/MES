@@ -217,7 +217,7 @@ Observation metrics must not be labeled as quality-control metrics.
 
 - Python or API implementation.
 - Unit-test changes.
-- SQL migration or seed changes.
+- Applying SQL migration/seed artifacts or changing V1 configuration.
 - DB read/write smoke or retained-runtime mutation.
 - Kiosk implementation.
 - New station or route operation creation.
@@ -234,3 +234,105 @@ Observation metrics must not be labeled as quality-control metrics.
 - Optional quality control is shown only as a separate route operation.
 - Historical and retained runtime preservation rules are explicit.
 - No implementation or database mutation is performed by this plan.
+
+## Canonical V2 Route/Config Draft
+
+The reviewed additive draft uses these new identities:
+
+```text
+route_id = ROUTE_BOX_PACKAGING_V2
+route_code = ROUTE_BOX_PACKAGING_V2
+version = 2
+
+OP10 route_operation_id = ROUTE_BOX_PACKAGING_V2_OP10
+OP10 operation_code = ASSEMBLY_COLOR_CLASSIFY
+
+OP20 route_operation_id = ROUTE_BOX_PACKAGING_V2_OP20
+OP20 operation_code = PACKAGING_FINAL
+```
+
+The real schema does not make `operation_code` globally unique. It is unique
+only within `(route_code, route_version, operation_code)`, so the preferred
+canonical codes can be used without V2 suffixes.
+
+### Route Activation Decision
+
+The V2 draft sets the route, route operations, and steps to `active=true`.
+Static repository review found no automatic latest-active route selection:
+
+- Route detail lookup requires explicit `route_code + version`; its default
+  remains version `1` when the caller omits a version.
+- Route-operation detail/config lookup requires explicit
+  `route_operation_id`.
+- `initialize_execution_state` requires an explicit `route_operation_id`.
+- No current work-order create/release path selects the latest active route.
+
+V2 will therefore be visible in active read lists but cannot be selected for a
+runtime instance without an explicit identifier. Implementing and validating
+new work-order selection remains a separate future phase. If that future
+selection behavior changes, this activation decision must be reviewed before
+SQL apply.
+
+### Canonical V2 OP10
+
+```text
+ROUTE_BOX_PACKAGING_V2_OP10
+station = ASSEMBLY_01
+policy = auto_close_on_required_steps
+
+10 COLOR_SENSOR_ENTRY_EVIDENCE
+   auto_start + auto_finish
+   COLOR_SENSOR_ENTRY -> COLOR_SENSOR_ENTRY
+
+20 ROBOT_ARM_DROP_COMPLETED
+   implicit_start + auto_finish
+   null -> ROBOT_ARM_DROP
+
+30 PROCESS_END_OBSERVATION
+   manual_start + manual_finish
+   KIOSK_OPERATOR -> KIOSK_OPERATOR
+   records_duration = true
+   required_for_completion = true
+   approval_required_after_finish = false
+```
+
+### Canonical V2 OP20
+
+```text
+ROUTE_BOX_PACKAGING_V2_OP20
+station = PACKAGING_01
+policy = auto_close_on_required_steps
+
+10 PACKAGING_EXECUTION
+   manual_start + manual_finish
+   KIOSK_OPERATOR -> KIOSK_OPERATOR
+   records_duration = true
+   required_for_completion = true
+   approval_required_after_finish = false
+```
+
+V2 contains no final-approval step and no quality-control route operation.
+Final approval, if required by a future factory configuration, remains an
+operation-policy/audit concern. Quality control remains an optional separate
+route operation for a route version that explicitly needs it.
+
+Draft artifacts:
+
+- SQL:
+  `db/migrations/006_station_execution_seed_canonical_v2.sql`
+- Apply runbook:
+  `docs/runbooks/station_execution_canonical_v2_seed_apply_runbook.md`
+
+The SQL is additive and idempotent-by-insert-absence with exact-shape
+assertions. It reuses existing items, stations, station event sources,
+locations, and bindings. It has not been applied to any database. V1 config,
+retained V1 runtime, and historical evidence remain unchanged.
+
+Artifact and row metadata status are intentionally distinct:
+
+- Repository artifact status: reviewed seed draft, not applied to source DB.
+- Inserted config metadata:
+  `configuration_status = canonical_v2`.
+
+The inserted metadata identifies canonical configuration semantics; it does
+not claim that the source database has received the seed.

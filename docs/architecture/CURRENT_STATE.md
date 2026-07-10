@@ -632,6 +632,29 @@ or MESQL push/pull action.
   `docs/runbooks/station_execution_step_start_smoke_evidence_20260710.md`.
 - No API, Kiosk, IoT, OEE, MESQL, migration, or seed action was performed.
 
+## Verified Station Execution Step Finish Helper
+
+- Runtime Engine V0 Phase 2C real DB smoke PASS.
+- Implementation commit:
+  `551023e feat: add station execution step finish helper`.
+- Helper: `finish_execution_step`.
+- Smoke target: `c8f0be13-9dc7-4e66-9fbb-43547a5f1808`,
+  `COLOR_SENSOR_ENTRY_EVIDENCE`, `COLOR_SENSOR_ENTRY`, and
+  `step-finish-smoke-20260710-001`.
+- Verified transition: `active -> completed`.
+- First call returned `finished = true`, `event_inserted = true`, and
+  `implicit_started = false`; duplicate returned `finished = false` and
+  `event_inserted = false`.
+- The target start timestamp/reference were preserved. Completion timestamp and
+  reference were written from the finish event.
+- Execution remained `active`; `current_step_code` advanced to
+  `ROBOT_ARM_DROP_COMPLETED`, whose runtime row remained `pending`.
+- Completion policy, approval, production flow, lifecycle, config/master,
+  location, and binding mutations were not performed.
+- Evidence:
+  `docs/runbooks/station_execution_step_finish_smoke_evidence_20260710.md`.
+- No API, Kiosk, IoT, OEE, MESQL, migration, or seed action was performed.
+
 ## Portable Path Model
 
 ```text

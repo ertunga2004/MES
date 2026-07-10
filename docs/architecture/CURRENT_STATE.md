@@ -655,6 +655,31 @@ or MESQL push/pull action.
   `docs/runbooks/station_execution_step_finish_smoke_evidence_20260710.md`.
 - No API, Kiosk, IoT, OEE, MESQL, migration, or seed action was performed.
 
+## Verified Robot Implicit-Start Auto-Finish Transition
+
+- Runtime Engine V0 Phase 2D real DB smoke PASS.
+- Helper implementation commit: `551023e`.
+- Phase 2C documentation commit: `e417262`.
+- Target operation: `c8f0be13-9dc7-4e66-9fbb-43547a5f1808`.
+- Target/source/external event: `ROBOT_ARM_DROP_COMPLETED`, `ROBOT_ARM_DROP`,
+  and `robot-implicit-finish-smoke-20260710-001`.
+- Verified transition:
+  `pending + implicit_start + auto_finish -> completed`.
+- First call returned `finished = true`, `event_inserted = true`, and
+  `implicit_started = true`.
+- The same event produced equal start/completion timestamps and equal
+  start/completion event references.
+- Duplicate replay returned `finished = false` and `event_inserted = false`
+  without mutation.
+- Execution remained `active`; `current_step_code` advanced to
+  `OPERATOR_OBSERVATION_APPROVAL`, whose runtime row remained `pending`.
+- Completion policy, approval, production flow, lifecycle, config/master,
+  location, and binding mutations were not performed.
+- Evidence:
+  `docs/runbooks/station_execution_robot_implicit_finish_smoke_evidence_20260710.md`.
+- No API, Kiosk, IoT adapter, OEE, MESQL, migration, or seed action was
+  performed.
+
 ## Portable Path Model
 
 ```text

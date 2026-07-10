@@ -1200,9 +1200,25 @@ RETURNING
 UPDATE_EXECUTION_STATE_STEP_FINISHED_SQL = """
 UPDATE mes.work_order_operation_execution_state
 SET
-    execution_status = 'active',
+    execution_status = %(execution_status)s,
     current_step_code = %(current_step_code)s,
     started_at = COALESCE(started_at, %(event_time)s),
+    evidence_completed_at = CASE
+        WHEN %(completion_policy_applied)s THEN %(event_time)s
+        ELSE evidence_completed_at
+    END,
+    pending_final_approval_at = CASE
+        WHEN %(completion_policy_applied)s AND %(set_pending_final_approval_at)s
+            THEN %(event_time)s
+        WHEN %(completion_policy_applied)s THEN NULL
+        ELSE pending_final_approval_at
+    END,
+    closed_at = CASE
+        WHEN %(completion_policy_applied)s AND %(set_closed_at)s
+            THEN %(event_time)s
+        WHEN %(completion_policy_applied)s THEN NULL
+        ELSE closed_at
+    END,
     last_event_id = %(last_event_id)s,
     updated_at = %(event_time)s
 WHERE work_order_operation_id = %(work_order_operation_id)s
@@ -3096,6 +3112,51 @@ def _first_actionable_execution_step(steps: list[JsonObject]) -> JsonObject | No
     return None
 
 
+def _required_steps_completed(steps: list[JsonObject]) -> bool:
+    required_steps = [step for step in steps if step.get("required_for_completion") is True]
+    return bool(required_steps) and all(
+        _lower(step.get("status")) == "completed"
+        for step in required_steps
+    )
+
+
+def _resolve_completion_policy_transition(
+    *,
+    operation_completion_policy: str,
+    required_steps_completed: bool,
+) -> JsonObject:
+    policy = _lower(operation_completion_policy)
+    if not required_steps_completed:
+        return {
+            "policy_applied": False,
+            "execution_status": "active",
+            "set_pending_final_approval_at": False,
+            "set_closed_at": False,
+        }
+
+    transitions = {
+        "manual_close": {
+            "execution_status": "evidence_completed",
+            "set_pending_final_approval_at": False,
+            "set_closed_at": False,
+        },
+        "auto_close_on_required_steps": {
+            "execution_status": "closed",
+            "set_pending_final_approval_at": False,
+            "set_closed_at": True,
+        },
+        "auto_complete_pending_approval": {
+            "execution_status": "pending_final_approval",
+            "set_pending_final_approval_at": True,
+            "set_closed_at": False,
+        },
+    }
+    transition = transitions.get(policy)
+    if transition is None:
+        raise MesqlV2Error("OPERATION_COMPLETION_POLICY_UNSUPPORTED", status_code=409)
+    return {"policy_applied": True, **transition}
+
+
 def finish_execution_step(
     config: AppConfig,
     *,
@@ -3196,6 +3257,10 @@ def finish_execution_step(
                         "execution_state": execution_state,
                         "step": execution_step,
                         "next_step": _first_actionable_execution_step(execution_steps),
+                        "completion_policy_applied": False,
+                        "completion_policy": _lower(execution_state.get("operation_completion_policy")),
+                        "execution_transition": None,
+                        "required_steps_completed": _required_steps_completed(execution_steps),
                     }
                 else:
                     if _lower(execution_state.get("execution_status")) not in {"ready", "active"}:
@@ -3264,7 +3329,16 @@ def finish_execution_step(
                         completed_step if _upper(step.get("step_code")) == normalized_step_code else step
                         for step in execution_steps
                     ]
-                    next_step = _first_actionable_execution_step(resolved_steps)
+                    required_steps_completed = _required_steps_completed(resolved_steps)
+                    completion_policy = _lower(execution_state.get("operation_completion_policy"))
+                    policy_transition = _resolve_completion_policy_transition(
+                        operation_completion_policy=completion_policy,
+                        required_steps_completed=required_steps_completed,
+                    )
+                    completion_policy_applied = bool(policy_transition["policy_applied"])
+                    next_step = None if completion_policy_applied else _first_actionable_execution_step(resolved_steps)
+                    from_status = _lower(execution_state.get("execution_status"))
+                    to_status = _lower(policy_transition["execution_status"])
                     cursor.execute(
                         UPDATE_EXECUTION_STATE_STEP_FINISHED_SQL,
                         {
@@ -3272,6 +3346,12 @@ def finish_execution_step(
                             "current_step_code": _nullable_upper(next_step.get("step_code")) if next_step else None,
                             "last_event_id": event_id,
                             "event_time": event_time,
+                            "execution_status": to_status,
+                            "completion_policy_applied": completion_policy_applied,
+                            "set_pending_final_approval_at": bool(
+                                policy_transition["set_pending_final_approval_at"]
+                            ),
+                            "set_closed_at": bool(policy_transition["set_closed_at"]),
                         },
                     )
                     cursor.execute(
@@ -3291,6 +3371,14 @@ def finish_execution_step(
                         "execution_state": execution_state,
                         "step": completed_step,
                         "next_step": next_step,
+                        "completion_policy_applied": completion_policy_applied,
+                        "completion_policy": completion_policy,
+                        "execution_transition": (
+                            {"from_status": from_status, "to_status": to_status}
+                            if completion_policy_applied
+                            else None
+                        ),
+                        "required_steps_completed": required_steps_completed,
                     }
         commit = getattr(connection, "commit", None)
         if callable(commit):

@@ -174,10 +174,25 @@ class _Cursor:
             self.inserted_operation_event_row = row
         elif "update mes.work_order_operation_execution_state" in lowered:
             if self.execution_state_row is not None:
-                self.execution_state_row["execution_status"] = "active"
+                self.execution_state_row["execution_status"] = self.last_params.get(
+                    "execution_status",
+                    "active",
+                )
                 self.execution_state_row["current_step_code"] = self.last_params["current_step_code"]
                 event_time = self.last_params.get("event_time", datetime(2026, 7, 10, 9, 0, 0))
                 self.execution_state_row["started_at"] = self.execution_state_row["started_at"] or event_time
+                if self.last_params.get("completion_policy_applied"):
+                    self.execution_state_row["evidence_completed_at"] = event_time
+                    self.execution_state_row["pending_final_approval_at"] = (
+                        event_time
+                        if self.last_params.get("set_pending_final_approval_at")
+                        else None
+                    )
+                    self.execution_state_row["closed_at"] = (
+                        event_time
+                        if self.last_params.get("set_closed_at")
+                        else None
+                    )
                 self.execution_state_row["last_event_id"] = self.last_params["last_event_id"]
                 self.execution_state_row["updated_at"] = event_time
         elif "update mes.work_order_operation_steps" in lowered:
@@ -877,6 +892,8 @@ def _fake_execution_step(
     step_no: int = 10,
     station_code: str = "ASSEMBLY_01",
     status: str = "pending",
+    required_for_completion: bool = True,
+    approval_required_after_finish: bool = False,
 ) -> dict:
     return {
         "work_order_operation_step_id": f"EXEC_STEP_{work_order_operation_id}_{step_code}",
@@ -891,9 +908,9 @@ def _fake_execution_step(
         "completed_at": None,
         "started_by_event_id": None,
         "completed_by_event_id": None,
-        "required_for_completion": True,
+        "required_for_completion": required_for_completion,
         "records_duration": False,
-        "approval_required_after_finish": False,
+        "approval_required_after_finish": approval_required_after_finish,
         "created_at": datetime(2026, 7, 9, 10, 0, 0),
         "updated_at": datetime(2026, 7, 9, 10, 0, 0),
         "metadata": {"source": "runtime_engine_v0_phase1"},
@@ -1003,6 +1020,9 @@ def _seed_finishable_execution_step(
     finish_mode: str = "auto_finish",
     event_source: str = "COLOR_SENSOR_ENTRY",
     include_next_step: bool = True,
+    operation_completion_policy: str = "auto_complete_pending_approval",
+    required_for_completion: bool = True,
+    approval_required_after_finish: bool = False,
 ) -> None:
     _seed_startable_execution_step(
         cursor,
@@ -1019,6 +1039,11 @@ def _seed_finishable_execution_step(
             finish_event_source_code=event_source,
         )
     ]
+    cursor.execution_state_row["operation_completion_policy"] = operation_completion_policy
+    cursor.execution_step_rows[0]["required_for_completion"] = required_for_completion
+    cursor.execution_step_rows[0]["approval_required_after_finish"] = approval_required_after_finish
+    cursor.operation_step_rows[0]["required_for_completion"] = required_for_completion
+    cursor.operation_step_rows[0]["approval_required_after_finish"] = approval_required_after_finish
     if include_next_step:
         cursor.execution_step_rows.append(
             _fake_execution_step(
@@ -2229,6 +2254,61 @@ class MesqlV2Tests(unittest.TestCase):
         with patch.object(mesql_v2, "database_connection", fake_connection):
             return finish_execution_step(AppConfig(db_enabled=True), **defaults)
 
+    def test_completion_policy_resolver_and_required_step_predicate(self) -> None:
+        completed_required = _fake_execution_step(status="completed")
+        optional_pending = _fake_execution_step(
+            step_code="OPTIONAL_NOTE",
+            step_no=20,
+            status="pending",
+            required_for_completion=False,
+        )
+        self.assertTrue(mesql_v2._required_steps_completed([completed_required, optional_pending]))
+        self.assertFalse(mesql_v2._required_steps_completed([optional_pending]))
+
+        for blocking_status in ("pending", "active", "failed", "cancelled", "skipped"):
+            with self.subTest(blocking_status=blocking_status):
+                blocking = _fake_execution_step(
+                    step_code="BLOCKING_STEP",
+                    step_no=20,
+                    status=blocking_status,
+                )
+                self.assertFalse(
+                    mesql_v2._required_steps_completed([completed_required, blocking])
+                )
+
+        expected = {
+            "manual_close": ("evidence_completed", False, False),
+            "auto_close_on_required_steps": ("closed", False, True),
+            "auto_complete_pending_approval": ("pending_final_approval", True, False),
+        }
+        for policy, values in expected.items():
+            with self.subTest(policy=policy):
+                transition = mesql_v2._resolve_completion_policy_transition(
+                    operation_completion_policy=policy,
+                    required_steps_completed=True,
+                )
+                self.assertTrue(transition["policy_applied"])
+                self.assertEqual(
+                    (
+                        transition["execution_status"],
+                        transition["set_pending_final_approval_at"],
+                        transition["set_closed_at"],
+                    ),
+                    values,
+                )
+
+        inactive = mesql_v2._resolve_completion_policy_transition(
+            operation_completion_policy="unsupported_until_required_complete",
+            required_steps_completed=False,
+        )
+        self.assertFalse(inactive["policy_applied"])
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            mesql_v2._resolve_completion_policy_transition(
+                operation_completion_policy="unsupported",
+                required_steps_completed=True,
+            )
+        self.assertEqual(error.exception.detail, "OPERATION_COMPLETION_POLICY_UNSUPPORTED")
+
     def test_finish_execution_step_completes_active_auto_and_manual_steps(self) -> None:
         for finish_mode, event_source in (("auto_finish", "COLOR_SENSOR_ENTRY"), ("manual_finish", "KIOSK_OPERATOR")):
             with self.subTest(finish_mode=finish_mode):
@@ -2247,6 +2327,9 @@ class MesqlV2Tests(unittest.TestCase):
                 self.assertEqual(result["execution_state"]["execution_status"], "active")
                 self.assertEqual(result["execution_state"]["current_step_code"], "ROBOT_ARM_DROP_COMPLETED")
                 self.assertEqual(result["next_step"]["status"], "pending")
+                self.assertFalse(result["completion_policy_applied"])
+                self.assertFalse(result["required_steps_completed"])
+                self.assertIsNone(result["execution_transition"])
 
     def test_finish_execution_step_implicitly_starts_supported_pending_combinations(self) -> None:
         for start_mode, finish_mode in (("auto_start", "auto_finish"), ("implicit_start", "auto_finish"), ("implicit_start", "manual_finish")):
@@ -2273,32 +2356,159 @@ class MesqlV2Tests(unittest.TestCase):
         self.assertTrue(result["implicit_started"])
         self.assertEqual(result["execution_state"]["execution_status"], "active")
 
-    def test_finish_execution_step_advances_current_step_and_leaves_final_state_active(self) -> None:
+    def test_finish_execution_step_advances_current_step_and_applies_final_policy(self) -> None:
         connection = _Connection()
         _seed_finishable_execution_step(connection.cursor_instance)
         result = self._finish_step(connection)
         self.assertEqual(result["execution_state"]["current_step_code"], "ROBOT_ARM_DROP_COMPLETED")
         self.assertEqual(result["next_step"]["status"], "pending")
+        self.assertFalse(result["completion_policy_applied"])
 
         connection = _Connection()
         _seed_finishable_execution_step(connection.cursor_instance, include_next_step=False)
         result = self._finish_step(connection)
         self.assertIsNone(result["next_step"])
         self.assertIsNone(result["execution_state"]["current_step_code"])
-        self.assertEqual(result["execution_state"]["execution_status"], "active")
-        self.assertIsNone(result["execution_state"]["evidence_completed_at"])
-        self.assertIsNone(result["execution_state"]["pending_final_approval_at"])
+        self.assertEqual(result["execution_state"]["execution_status"], "pending_final_approval")
+        self.assertEqual(
+            result["execution_state"]["evidence_completed_at"],
+            result["event"]["event_time"],
+        )
+        self.assertEqual(
+            result["execution_state"]["pending_final_approval_at"],
+            result["event"]["event_time"],
+        )
         self.assertIsNone(result["execution_state"]["closed_at"])
+        self.assertTrue(result["completion_policy_applied"])
+        self.assertTrue(result["required_steps_completed"])
+
+    def test_finish_execution_step_applies_final_completion_policies(self) -> None:
+        cases = {
+            "manual_close": ("evidence_completed", False, False),
+            "auto_close_on_required_steps": ("closed", False, True),
+            "auto_complete_pending_approval": ("pending_final_approval", True, False),
+        }
+        for policy, (expected_status, expect_pending, expect_closed) in cases.items():
+            with self.subTest(policy=policy):
+                connection = _Connection()
+                _seed_finishable_execution_step(
+                    connection.cursor_instance,
+                    include_next_step=False,
+                    operation_completion_policy=policy,
+                )
+                started_at = datetime(2026, 7, 9, 11, 0, 0)
+                connection.cursor_instance.execution_state_row["started_at"] = started_at
+                connection.cursor_instance.execution_state_row["last_approval_id"] = "APPROVAL-KEPT"
+                result = self._finish_step(
+                    connection,
+                    external_event_id=f"finish-{policy}",
+                )
+                event_time = result["event"]["event_time"]
+                state = result["execution_state"]
+                self.assertEqual(state["execution_status"], expected_status)
+                self.assertIsNone(state["current_step_code"])
+                self.assertEqual(state["evidence_completed_at"], event_time)
+                self.assertEqual(
+                    state["pending_final_approval_at"],
+                    event_time if expect_pending else None,
+                )
+                self.assertEqual(state["closed_at"], event_time if expect_closed else None)
+                self.assertEqual(state["last_event_id"], result["event"]["event_id"])
+                self.assertEqual(state["updated_at"], event_time)
+                self.assertEqual(state["started_at"], started_at.isoformat())
+                self.assertEqual(state["last_approval_id"], "APPROVAL-KEPT")
+                self.assertTrue(result["completion_policy_applied"])
+                self.assertEqual(result["completion_policy"], policy)
+                self.assertEqual(
+                    result["execution_transition"],
+                    {"from_status": "active", "to_status": expected_status},
+                )
+                self.assertEqual(len(connection.cursor_instance.operation_event_rows), 1)
+
+    def test_finish_execution_step_optional_pending_does_not_block_policy(self) -> None:
+        connection = _Connection()
+        _seed_finishable_execution_step(
+            connection.cursor_instance,
+            include_next_step=False,
+            operation_completion_policy="auto_close_on_required_steps",
+        )
+        optional_step = _fake_execution_step(
+            step_code="OPTIONAL_NOTE",
+            step_no=20,
+            status="pending",
+            required_for_completion=False,
+        )
+        connection.cursor_instance.execution_step_rows.append(optional_step)
+        result = self._finish_step(connection)
+        self.assertEqual(result["execution_state"]["execution_status"], "closed")
+        self.assertIsNone(result["execution_state"]["current_step_code"])
+        self.assertIsNone(result["next_step"])
+        self.assertEqual(connection.cursor_instance.execution_step_rows[1]["status"], "pending")
+
+    def test_finish_execution_step_operation_policy_overrides_step_approval_metadata(self) -> None:
+        connection = _Connection()
+        _seed_finishable_execution_step(
+            connection.cursor_instance,
+            include_next_step=False,
+            operation_completion_policy="auto_close_on_required_steps",
+            approval_required_after_finish=True,
+        )
+        result = self._finish_step(connection)
+        self.assertTrue(result["step"]["approval_required_after_finish"])
+        self.assertEqual(result["execution_state"]["execution_status"], "closed")
+        self.assertIsNone(result["execution_state"]["pending_final_approval_at"])
+
+    def test_finish_execution_step_required_blockers_and_no_required_steps_skip_policy(self) -> None:
+        for blocking_status in ("pending", "active", "failed", "cancelled", "skipped"):
+            with self.subTest(blocking_status=blocking_status):
+                connection = _Connection()
+                _seed_finishable_execution_step(
+                    connection.cursor_instance,
+                    include_next_step=False,
+                    operation_completion_policy="auto_close_on_required_steps",
+                )
+                connection.cursor_instance.execution_step_rows.append(
+                    _fake_execution_step(
+                        step_code="BLOCKING_STEP",
+                        step_no=20,
+                        status=blocking_status,
+                    )
+                )
+                result = self._finish_step(
+                    connection,
+                    external_event_id=f"finish-blocked-{blocking_status}",
+                )
+                self.assertFalse(result["required_steps_completed"])
+                self.assertFalse(result["completion_policy_applied"])
+                self.assertEqual(result["execution_state"]["execution_status"], "active")
+
+        connection = _Connection()
+        _seed_finishable_execution_step(
+            connection.cursor_instance,
+            include_next_step=False,
+            operation_completion_policy="auto_close_on_required_steps",
+            required_for_completion=False,
+        )
+        result = self._finish_step(connection, external_event_id="finish-no-required")
+        self.assertFalse(result["required_steps_completed"])
+        self.assertFalse(result["completion_policy_applied"])
+        self.assertEqual(result["execution_state"]["execution_status"], "active")
 
     def test_finish_execution_step_duplicate_precedes_completed_validation(self) -> None:
         connection = _Connection()
         _seed_finishable_execution_step(connection.cursor_instance, step_status="completed")
         connection.cursor_instance.operation_event_rows = [_fake_operation_event(event_type="step_finish", external_event_id="finish-event-001")]
+        before_state = deepcopy(connection.cursor_instance.execution_state_row)
+        before_steps = deepcopy(connection.cursor_instance.execution_step_rows)
         result = self._finish_step(connection)
         sql = "\n".join(sql.lower() for sql, _params in connection.cursor_instance.executed)
         self.assertFalse(result["finished"])
         self.assertFalse(result["event_inserted"])
         self.assertFalse(result["implicit_started"])
+        self.assertFalse(result["completion_policy_applied"])
+        self.assertIsNone(result["execution_transition"])
+        self.assertEqual(connection.cursor_instance.execution_state_row, before_state)
+        self.assertEqual(connection.cursor_instance.execution_step_rows, before_steps)
         self.assertNotIn("insert into mes.operation_events", sql)
         self.assertNotIn("update mes.work_order_operation_steps", sql)
         self.assertNotIn("update mes.work_order_operation_execution_state", sql)
@@ -2309,6 +2519,7 @@ class MesqlV2Tests(unittest.TestCase):
         result = self._finish_step(connection, idempotency_key="finish-key-001", external_event_id=None)
         self.assertFalse(result["finished"])
         self.assertFalse(result["event_inserted"])
+        self.assertFalse(result["completion_policy_applied"])
 
     def test_finish_execution_step_rejects_terminal_statuses_and_validation_errors(self) -> None:
         for step_status, expected in (("completed", "STEP_ALREADY_COMPLETED"), ("skipped", "STEP_STATUS_NOT_FINISHABLE"), ("failed", "STEP_STATUS_NOT_FINISHABLE"), ("cancelled", "STEP_STATUS_NOT_FINISHABLE")):
@@ -2406,7 +2617,11 @@ class MesqlV2Tests(unittest.TestCase):
         for fragment in ("insert into mes.operation_events", "update mes.work_order_operation_steps", "update mes.work_order_operation_execution_state"):
             with self.subTest(fragment=fragment):
                 connection = _Connection()
-                _seed_finishable_execution_step(connection.cursor_instance)
+                _seed_finishable_execution_step(
+                    connection.cursor_instance,
+                    include_next_step=False,
+                    operation_completion_policy="auto_close_on_required_steps",
+                )
                 before_state = deepcopy(connection.cursor_instance.execution_state_row)
                 before_steps = deepcopy(connection.cursor_instance.execution_step_rows)
                 connection.cursor_instance.raise_on_sql_fragment = fragment

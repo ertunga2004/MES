@@ -573,6 +573,41 @@ or MESQL push/pull action.
 - Evidence:
   `docs/runbooks/station_execution_runtime_init_smoke_evidence_20260709.md`
 
+## Verified Station Execution Event Ledger Helper
+
+- Runtime Engine V0 Phase 2A operation event ledger helper real DB smoke PASS.
+- Implementation commit:
+  `3072de2 "feat: add station execution event ledger helpers"`
+- Verified helpers:
+  - `record_operation_event`
+  - `get_operation_event_by_idempotency_key`
+  - `get_operation_event_by_external_event`
+- Smoke target:
+  - `work_order_operation_id = c8f0be13-9dc7-4e66-9fbb-43547a5f1808`
+  - `station_code = ASSEMBLY_01`
+  - `event_source = COLOR_SENSOR_ENTRY`
+  - `event_type = evidence`
+  - `external_event_id = event-ledger-smoke-20260709-001`
+- Event ledger result:
+  - first call returned `inserted = true`
+  - second call returned `inserted = false`
+  - `event_count = 1`
+  - idempotency key:
+    `ASSEMBLY_01:COLOR_SENSOR_ENTRY:event-ledger-smoke-20260709-001`
+- Forbidden mutation verification PASS:
+  - only `operation_events` changed, `0 -> 1`
+  - `work_order_operation_execution_state` unchanged
+  - `work_order_operation_steps` unchanged
+  - `operation_approvals` unchanged
+  - `production_flow_events` unchanged
+  - `work_orders` unchanged
+  - `work_order_operations` unchanged
+  - `station_queue` unchanged
+- No step state mutation, execution state update, approval, production flow,
+  API, Kiosk, IoT, OEE, MESQL, seed, or migration action was performed.
+- Evidence:
+  `docs/runbooks/station_execution_event_ledger_smoke_evidence_20260709.md`
+
 ## Portable Path Model
 
 ```text

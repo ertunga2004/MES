@@ -777,3 +777,36 @@ mutation was performed.
 - This checkpoint changes no Python, test, migration, seed, database state,
   Kiosk, API, IoT, OEE, approval/completion implementation, lifecycle,
   inventory, MESQL, or FERP behavior.
+
+## Verified Station Execution Completion Policies
+
+- Runtime Engine V0 Phase 3B isolated PostgreSQL smoke PASS.
+- Implementation commit:
+  `e4be6ac feat: apply station execution completion policies`.
+- Source database `mes` remained unchanged across all 15 baseline/final table
+  count and digest comparisons.
+- Verification used one logical source dump restored into three disposable
+  clone databases; source `mes` was never used as a template or smoke target.
+- Verified policy transitions:
+  - `manual_close -> evidence_completed`
+  - `auto_close_on_required_steps -> closed`
+  - `auto_complete_pending_approval -> pending_final_approval`
+- Event insert, target-step completion, required-step evaluation, policy
+  transition, and execution-state update were atomic with the triggering
+  `step_finish` event.
+- Duplicate external-event replay produced no event, step, execution-state, or
+  policy mutation.
+- No additional `system_transition` event, approval row, or production-flow row
+  was created.
+- Work-order, work-order-operation, station-queue, config/master, location, and
+  binding lifecycle tables remained digest-identical in every clone.
+- Retained V1 source runtime remained `active`, with
+  `current_step_code=OPERATOR_OBSERVATION_APPROVAL` and the final step
+  `pending`; its target event count remained `4`.
+- All three task-created clone databases were dropped and their absence was
+  verified; the host backup was retained.
+- Evidence:
+  `docs/runbooks/station_execution_completion_policy_isolated_smoke_evidence_20260710.md`.
+- No migration, seed, API, Kiosk, IoT/MQTT, Observer, OEE/KPI, approval helper,
+  manual-close helper, production flow, inventory, work-order close, MESQL, or
+  FERP action was performed.

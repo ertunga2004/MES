@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-09
+Last updated: 2026-07-10
 
 ## Local MES Execution and Portable Runtime Baseline
 
@@ -607,6 +607,30 @@ or MESQL push/pull action.
   API, Kiosk, IoT, OEE, MESQL, seed, or migration action was performed.
 - Evidence:
   `docs/runbooks/station_execution_event_ledger_smoke_evidence_20260709.md`
+
+## Verified Station Execution Step Start Helper
+
+- Runtime Engine V0 Phase 2B real DB smoke PASS.
+- Implementation commit:
+  `1f9d3ee feat: add station execution step start helper`.
+- Helper: `start_execution_step`.
+- Smoke target:
+  - `work_order_operation_id = c8f0be13-9dc7-4e66-9fbb-43547a5f1808`
+  - `station_code = ASSEMBLY_01`
+  - `step_code = COLOR_SENSOR_ENTRY_EVIDENCE`
+  - `event_source = COLOR_SENSOR_ENTRY`
+  - `external_event_id = step-start-smoke-20260710-001`
+- Verified transition: `ready + pending -> active + active`.
+- First call returned `started = true` and `event_inserted = true`.
+- Duplicate replay returned `started = false` and `event_inserted = false`.
+- The smoke external event count is `1`; timestamps and first-event references
+  were preserved during replay.
+- Only `operation_events`, the target execution state, and the target runtime
+  step changed. Work orders, operations, queue, approvals, flow,
+  config/master/location data, and bindings did not change.
+- Evidence:
+  `docs/runbooks/station_execution_step_start_smoke_evidence_20260710.md`.
+- No API, Kiosk, IoT, OEE, MESQL, migration, or seed action was performed.
 
 ## Portable Path Model
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from copy import deepcopy
 from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
@@ -16,6 +17,7 @@ from mes_web.config import AppConfig
 from mes_web.db import mesql_v2
 from mes_web.db.mesql_v2 import (
     complete_operation_v2,
+    finish_execution_step,
     get_execution_state,
     get_location_by_code,
     get_item_by_code,
@@ -174,22 +176,42 @@ class _Cursor:
             if self.execution_state_row is not None:
                 self.execution_state_row["execution_status"] = "active"
                 self.execution_state_row["current_step_code"] = self.last_params["current_step_code"]
-                self.execution_state_row["started_at"] = self.execution_state_row["started_at"] or datetime(2026, 7, 10, 9, 0, 0)
+                event_time = self.last_params.get("event_time", datetime(2026, 7, 10, 9, 0, 0))
+                self.execution_state_row["started_at"] = self.execution_state_row["started_at"] or event_time
                 self.execution_state_row["last_event_id"] = self.last_params["last_event_id"]
-                self.execution_state_row["updated_at"] = datetime(2026, 7, 10, 9, 0, 0)
+                self.execution_state_row["updated_at"] = event_time
         elif "update mes.work_order_operation_steps" in lowered:
             for row in self.execution_step_rows:
                 if (
                     row.get("work_order_operation_id") == self.last_params["work_order_operation_id"]
                     and row.get("step_code") == self.last_params["step_code"]
                 ):
-                    row["status"] = "active"
-                    row["started_at"] = row["started_at"] or datetime(2026, 7, 10, 9, 0, 0)
-                    row["started_by_event_id"] = row["started_by_event_id"] or self.last_params["started_by_event_id"]
-                    row["updated_at"] = datetime(2026, 7, 10, 9, 0, 0)
+                    if "status = 'completed'" in lowered:
+                        event_time = self.last_params["event_time"]
+                        row["status"] = "completed"
+                        row["started_at"] = row["started_at"] or event_time
+                        row["completed_at"] = event_time
+                        row["started_by_event_id"] = row["started_by_event_id"] or self.last_params["event_id"]
+                        row["completed_by_event_id"] = self.last_params["event_id"]
+                        row["updated_at"] = event_time
+                    else:
+                        row["status"] = "active"
+                        row["started_at"] = row["started_at"] or datetime(2026, 7, 10, 9, 0, 0)
+                        row["started_by_event_id"] = row["started_by_event_id"] or self.last_params["started_by_event_id"]
+                        row["updated_at"] = datetime(2026, 7, 10, 9, 0, 0)
 
     def fetchone(self):
         lowered = self.last_sql.lower()
+        if "update mes.work_order_operation_steps" in lowered and "returning" in lowered:
+            operation_id = self.last_params.get("work_order_operation_id")
+            step_code = self.last_params.get("step_code")
+            return next(
+                (
+                    row for row in self.execution_step_rows
+                    if row.get("work_order_operation_id") == operation_id and row.get("step_code") == step_code
+                ),
+                None,
+            )
         if "insert into mes.operation_events" in lowered and "returning" in lowered:
             return self.inserted_operation_event_row
         if "from mes.operation_events" in lowered and "idempotency_key = %(idempotency_key)s" in lowered:
@@ -344,9 +366,13 @@ class _Connection:
         class _Transaction:
             def __enter__(self):
                 connection.transaction_entered = True
+                self.snapshot = deepcopy(connection.cursor_instance.__dict__)
                 return self
 
-            def __exit__(self, *_args):
+            def __exit__(self, exc_type, *_args):
+                if exc_type is not None:
+                    connection.cursor_instance.__dict__.clear()
+                    connection.cursor_instance.__dict__.update(self.snapshot)
                 return None
 
         return _Transaction()
@@ -966,6 +992,41 @@ def _seed_startable_execution_step(
             active=source_active,
         )
     ]
+
+
+def _seed_finishable_execution_step(
+    cursor: _Cursor,
+    *,
+    execution_status: str = "active",
+    step_status: str = "active",
+    start_mode: str = "auto_start",
+    finish_mode: str = "auto_finish",
+    event_source: str = "COLOR_SENSOR_ENTRY",
+    include_next_step: bool = True,
+) -> None:
+    _seed_startable_execution_step(
+        cursor,
+        execution_status=execution_status,
+        step_status=step_status,
+        start_mode=start_mode,
+        event_source=event_source,
+        configured_event_source="COLOR_SENSOR_ENTRY",
+    )
+    cursor.operation_step_rows = [
+        _fake_operation_step(
+            start_mode=start_mode,
+            finish_mode=finish_mode,
+            finish_event_source_code=event_source,
+        )
+    ]
+    if include_next_step:
+        cursor.execution_step_rows.append(
+            _fake_execution_step(
+                step_code="ROBOT_ARM_DROP_COMPLETED",
+                step_no=20,
+                status="pending",
+            )
+        )
 
 
 class _QueueConflictCursor:
@@ -2151,6 +2212,219 @@ class MesqlV2Tests(unittest.TestCase):
             self.assertTrue(lowered.lstrip().startswith(("insert", "update")))
             for table_name in forbidden_tables:
                 self.assertNotRegex(lowered, rf"\\b(insert\\s+into|update|delete\\s+from)\\s+{table_name}\\b")
+
+    def _finish_step(self, connection: _Connection, **values):
+        defaults = {
+            "work_order_operation_id": "11111111-1111-1111-1111-111111111111",
+            "step_code": "COLOR_SENSOR_ENTRY_EVIDENCE",
+            "event_source": "COLOR_SENSOR_ENTRY",
+            "external_event_id": "finish-event-001",
+        }
+        defaults.update(values)
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            return finish_execution_step(AppConfig(db_enabled=True), **defaults)
+
+    def test_finish_execution_step_completes_active_auto_and_manual_steps(self) -> None:
+        for finish_mode, event_source in (("auto_finish", "COLOR_SENSOR_ENTRY"), ("manual_finish", "KIOSK_OPERATOR")):
+            with self.subTest(finish_mode=finish_mode):
+                connection = _Connection()
+                _seed_finishable_execution_step(connection.cursor_instance, finish_mode=finish_mode, event_source=event_source)
+                before_step = dict(connection.cursor_instance.execution_step_rows[0])
+                result = self._finish_step(connection, event_source=event_source)
+                self.assertTrue(result["finished"])
+                self.assertTrue(result["event_inserted"])
+                self.assertFalse(result["implicit_started"])
+                self.assertEqual(result["event"]["event_type"], "step_finish")
+                self.assertEqual(result["step"]["status"], "completed")
+                self.assertEqual(result["step"]["started_at"], before_step["started_at"].isoformat())
+                self.assertEqual(result["step"]["started_by_event_id"], before_step["started_by_event_id"])
+                self.assertEqual(result["step"]["completed_by_event_id"], result["event"]["event_id"])
+                self.assertEqual(result["execution_state"]["execution_status"], "active")
+                self.assertEqual(result["execution_state"]["current_step_code"], "ROBOT_ARM_DROP_COMPLETED")
+                self.assertEqual(result["next_step"]["status"], "pending")
+
+    def test_finish_execution_step_implicitly_starts_supported_pending_combinations(self) -> None:
+        for start_mode, finish_mode in (("auto_start", "auto_finish"), ("implicit_start", "auto_finish"), ("implicit_start", "manual_finish")):
+            with self.subTest(start_mode=start_mode, finish_mode=finish_mode):
+                connection = _Connection()
+                _seed_finishable_execution_step(connection.cursor_instance, step_status="pending", start_mode=start_mode, finish_mode=finish_mode)
+                result = self._finish_step(connection, external_event_id=f"finish-{start_mode}-{finish_mode}")
+                self.assertTrue(result["finished"])
+                self.assertTrue(result["implicit_started"])
+                self.assertEqual(result["step"]["status"], "completed")
+                self.assertEqual(result["step"]["started_by_event_id"], result["event"]["event_id"])
+                self.assertEqual(result["step"]["completed_by_event_id"], result["event"]["event_id"])
+
+    def test_finish_execution_step_rejects_pending_manual_start_and_allows_ready_implicit(self) -> None:
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance, step_status="pending", start_mode="manual_start", finish_mode="manual_finish")
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            self._finish_step(connection)
+        self.assertEqual(error.exception.detail, "STEP_START_REQUIRED")
+
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance, execution_status="ready", step_status="pending")
+        result = self._finish_step(connection)
+        self.assertTrue(result["implicit_started"])
+        self.assertEqual(result["execution_state"]["execution_status"], "active")
+
+    def test_finish_execution_step_advances_current_step_and_leaves_final_state_active(self) -> None:
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance)
+        result = self._finish_step(connection)
+        self.assertEqual(result["execution_state"]["current_step_code"], "ROBOT_ARM_DROP_COMPLETED")
+        self.assertEqual(result["next_step"]["status"], "pending")
+
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance, include_next_step=False)
+        result = self._finish_step(connection)
+        self.assertIsNone(result["next_step"])
+        self.assertIsNone(result["execution_state"]["current_step_code"])
+        self.assertEqual(result["execution_state"]["execution_status"], "active")
+        self.assertIsNone(result["execution_state"]["evidence_completed_at"])
+        self.assertIsNone(result["execution_state"]["pending_final_approval_at"])
+        self.assertIsNone(result["execution_state"]["closed_at"])
+
+    def test_finish_execution_step_duplicate_precedes_completed_validation(self) -> None:
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance, step_status="completed")
+        connection.cursor_instance.operation_event_rows = [_fake_operation_event(event_type="step_finish", external_event_id="finish-event-001")]
+        result = self._finish_step(connection)
+        sql = "\n".join(sql.lower() for sql, _params in connection.cursor_instance.executed)
+        self.assertFalse(result["finished"])
+        self.assertFalse(result["event_inserted"])
+        self.assertFalse(result["implicit_started"])
+        self.assertNotIn("insert into mes.operation_events", sql)
+        self.assertNotIn("update mes.work_order_operation_steps", sql)
+        self.assertNotIn("update mes.work_order_operation_execution_state", sql)
+
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance)
+        connection.cursor_instance.operation_event_rows = [_fake_operation_event(event_type="step_finish", idempotency_key="finish-key-001", external_event_id=None)]
+        result = self._finish_step(connection, idempotency_key="finish-key-001", external_event_id=None)
+        self.assertFalse(result["finished"])
+        self.assertFalse(result["event_inserted"])
+
+    def test_finish_execution_step_rejects_terminal_statuses_and_validation_errors(self) -> None:
+        for step_status, expected in (("completed", "STEP_ALREADY_COMPLETED"), ("skipped", "STEP_STATUS_NOT_FINISHABLE"), ("failed", "STEP_STATUS_NOT_FINISHABLE"), ("cancelled", "STEP_STATUS_NOT_FINISHABLE")):
+            with self.subTest(step_status=step_status):
+                connection = _Connection()
+                _seed_finishable_execution_step(connection.cursor_instance, step_status=step_status)
+                with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                    self._finish_step(connection)
+                self.assertEqual(error.exception.detail, expected)
+        for execution_status in ("queued", "evidence_completed", "pending_final_approval", "closed", "cancelled", "failed"):
+            with self.subTest(execution_status=execution_status):
+                connection = _Connection()
+                _seed_finishable_execution_step(connection.cursor_instance, execution_status=execution_status)
+                with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                    self._finish_step(connection)
+                self.assertEqual(error.exception.detail, "EXECUTION_STATUS_NOT_FINISHABLE")
+
+    def test_finish_execution_step_validates_modes_source_actionability_and_inputs(self) -> None:
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance, finish_mode="implicit_finish")
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            self._finish_step(connection)
+        self.assertEqual(error.exception.detail, "STEP_FINISH_MODE_UNSUPPORTED")
+
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance)
+        connection.cursor_instance.station_event_source_rows = [_fake_station_event_source("ASSEMBLY_01", "KIOSK_OPERATOR")]
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            self._finish_step(connection, event_source="KIOSK_OPERATOR")
+        self.assertEqual(error.exception.detail, "STEP_FINISH_SOURCE_MISMATCH")
+
+        for source_rows in ([], [_fake_station_event_source("ASSEMBLY_01", "COLOR_SENSOR_ENTRY", active=False)]):
+            connection = _Connection()
+            _seed_finishable_execution_step(connection.cursor_instance)
+            connection.cursor_instance.station_event_source_rows = source_rows
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                self._finish_step(connection)
+            self.assertEqual(error.exception.detail, "STATION_EVENT_SOURCE_NOT_FOUND")
+
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance)
+        connection.cursor_instance.execution_step_rows[0]["status"] = "pending"
+        connection.cursor_instance.operation_step_rows.append(
+            _fake_operation_step(
+                step_code="ROBOT_ARM_DROP_COMPLETED",
+                step_no=20,
+                finish_event_source_code="ROBOT_ARM_DROP",
+            )
+        )
+        connection.cursor_instance.station_event_source_rows.append(
+            _fake_station_event_source("ASSEMBLY_01", "ROBOT_ARM_DROP")
+        )
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            self._finish_step(
+                connection,
+                step_code="ROBOT_ARM_DROP_COMPLETED",
+                event_source="ROBOT_ARM_DROP",
+            )
+        self.assertEqual(error.exception.detail, "STEP_NOT_ACTIONABLE")
+
+        for values in ({"work_order_operation_id": ""}, {"step_code": ""}, {"event_source": ""}, {"external_event_id": None, "idempotency_key": None}):
+            with self.subTest(values=values):
+                with self.assertRaises(mesql_v2.MesqlV2Error):
+                    self._finish_step(_Connection(), **values)
+
+        connection = _Connection()
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            self._finish_step(connection)
+        self.assertEqual(error.exception.detail, "EXECUTION_STATE_NOT_FOUND")
+
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance)
+        connection.cursor_instance.execution_step_rows = []
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            self._finish_step(connection)
+        self.assertEqual(error.exception.detail, "EXECUTION_STEP_NOT_FOUND")
+
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance)
+        connection.cursor_instance.operation_step_rows = []
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            self._finish_step(connection)
+        self.assertEqual(error.exception.detail, "OPERATION_STEP_CONFIG_NOT_FOUND")
+
+    def test_finish_execution_step_records_json_safe_context_and_rolls_back(self) -> None:
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance)
+        result = self._finish_step(connection, actor_id="OP-001", payload={"quantity": Decimal("1.0"), "occurred_at": datetime(2026, 7, 10, 12, 0, 0)})
+        self.assertEqual(result["event"]["work_order_id"], "WO-E2E-MAVI-001")
+        self.assertEqual(result["event"]["operation_code"], "OP10_ASSEMBLY_CLASSIFICATION")
+        self.assertEqual(result["event"]["payload"]["action"], "finish")
+        self.assertEqual(result["event"]["payload"]["quantity"], 1)
+        self.assertEqual(result["event"]["payload"]["occurred_at"], "2026-07-10T12:00:00")
+
+        for fragment in ("insert into mes.operation_events", "update mes.work_order_operation_steps", "update mes.work_order_operation_execution_state"):
+            with self.subTest(fragment=fragment):
+                connection = _Connection()
+                _seed_finishable_execution_step(connection.cursor_instance)
+                before_state = deepcopy(connection.cursor_instance.execution_state_row)
+                before_steps = deepcopy(connection.cursor_instance.execution_step_rows)
+                connection.cursor_instance.raise_on_sql_fragment = fragment
+                with self.assertRaises(RuntimeError):
+                    self._finish_step(connection)
+                self.assertFalse(connection.committed)
+                self.assertEqual(connection.cursor_instance.execution_state_row, before_state)
+                self.assertEqual(connection.cursor_instance.execution_step_rows, before_steps)
+                self.assertEqual(connection.cursor_instance.operation_event_rows, [])
+
+    def test_finish_execution_phase_writes_only_runtime_sidecar_tables(self) -> None:
+        write_sql_constants = (mesql_v2.INSERT_OPERATION_EVENT_SQL, mesql_v2.UPDATE_EXECUTION_STEP_FINISHED_SQL, mesql_v2.UPDATE_EXECUTION_STATE_STEP_FINISHED_SQL)
+        forbidden_tables = ("mes.work_orders", "mes.work_order_operations", "mes.station_queue", "mes.operation_approvals", "mes.production_flow_events", "mes.items", "mes.process_routes", "mes.route_operations", "mes.operation_steps", "mes.station_event_sources", "mes.locations", "mes.station_location_bindings")
+        for sql in write_sql_constants:
+            lowered = sql.lower()
+            self.assertTrue(lowered.lstrip().startswith(("insert", "update")))
+            for table_name in forbidden_tables:
+                self.assertNotRegex(lowered, rf"\b(insert\s+into|update|delete\s+from)\s+{table_name}\b")
 
     def test_get_operation_event_by_idempotency_key_returns_none_when_missing(self) -> None:
         connection = _Connection()

@@ -953,6 +953,32 @@ LIMIT 1
 FOR UPDATE
 """
 
+SELECT_EXECUTION_STEPS_FOR_UPDATE_SQL = """
+SELECT
+    work_order_operation_step_id,
+    work_order_operation_id,
+    work_order_id,
+    operation_code,
+    step_code,
+    step_no,
+    station_code,
+    status,
+    started_at,
+    completed_at,
+    started_by_event_id,
+    completed_by_event_id,
+    required_for_completion,
+    records_duration,
+    approval_required_after_finish,
+    created_at,
+    updated_at,
+    metadata
+FROM mes.work_order_operation_steps
+WHERE work_order_operation_id = %(work_order_operation_id)s
+ORDER BY step_no ASC
+FOR UPDATE
+"""
+
 INSERT_EXECUTION_STATE_SQL = """
 INSERT INTO mes.work_order_operation_execution_state (
     execution_state_id,
@@ -1137,6 +1163,49 @@ SET
     updated_at = now()
 WHERE work_order_operation_id = %(work_order_operation_id)s
   AND step_code = %(step_code)s
+"""
+
+UPDATE_EXECUTION_STEP_FINISHED_SQL = """
+UPDATE mes.work_order_operation_steps
+SET
+    status = 'completed',
+    started_at = COALESCE(started_at, %(event_time)s),
+    completed_at = %(event_time)s,
+    started_by_event_id = COALESCE(started_by_event_id, %(event_id)s),
+    completed_by_event_id = %(event_id)s,
+    updated_at = %(event_time)s
+WHERE work_order_operation_id = %(work_order_operation_id)s
+  AND step_code = %(step_code)s
+RETURNING
+    work_order_operation_step_id,
+    work_order_operation_id,
+    work_order_id,
+    operation_code,
+    step_code,
+    step_no,
+    station_code,
+    status,
+    started_at,
+    completed_at,
+    started_by_event_id,
+    completed_by_event_id,
+    required_for_completion,
+    records_duration,
+    approval_required_after_finish,
+    created_at,
+    updated_at,
+    metadata
+"""
+
+UPDATE_EXECUTION_STATE_STEP_FINISHED_SQL = """
+UPDATE mes.work_order_operation_execution_state
+SET
+    execution_status = 'active',
+    current_step_code = %(current_step_code)s,
+    started_at = COALESCE(started_at, %(event_time)s),
+    last_event_id = %(last_event_id)s,
+    updated_at = %(event_time)s
+WHERE work_order_operation_id = %(work_order_operation_id)s
 """
 
 SELECT_OPERATION_BY_ID_SQL = """
@@ -3012,6 +3081,216 @@ def start_execution_step(
                         "event": inserted_event,
                         "execution_state": execution_state,
                         "step": execution_step,
+                    }
+        commit = getattr(connection, "commit", None)
+        if callable(commit):
+            commit()
+
+    return _json_safe(result)
+
+
+def _first_actionable_execution_step(steps: list[JsonObject]) -> JsonObject | None:
+    for step in steps:
+        if _lower(step.get("status")) in {"pending", "active"}:
+            return step
+    return None
+
+
+def finish_execution_step(
+    config: AppConfig,
+    *,
+    work_order_operation_id: str,
+    step_code: str,
+    event_source: str,
+    external_event_id: str | None = None,
+    idempotency_key: str | None = None,
+    actor_id: str | None = None,
+    payload: JsonObject | None = None,
+) -> JsonObject:
+    normalized_operation_id = _text(work_order_operation_id)
+    normalized_step_code = _upper(step_code)
+    normalized_event_source = _upper(event_source)
+    normalized_external_event_id = _nullable_text(external_event_id)
+    normalized_idempotency_key = _nullable_text(idempotency_key)
+    normalized_actor_id = _nullable_text(actor_id)
+    if not normalized_operation_id or not normalized_step_code or not normalized_event_source:
+        raise MesqlV2Error("RUNTIME_STEP_IDENTIFIER_REQUIRED", status_code=400)
+    if not normalized_idempotency_key and not normalized_external_event_id:
+        raise MesqlV2Error("OPERATION_EVENT_IDEMPOTENCY_REQUIRED", status_code=400)
+
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with _transaction(connection):
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    SELECT_EXECUTION_STATE_FOR_UPDATE_SQL,
+                    {"work_order_operation_id": normalized_operation_id},
+                )
+                state_row = cursor.fetchone()
+                if not state_row:
+                    raise MesqlV2Error("EXECUTION_STATE_NOT_FOUND", status_code=404)
+                execution_state = _execution_state_row(state_row)
+
+                cursor.execute(
+                    SELECT_EXECUTION_STEPS_FOR_UPDATE_SQL,
+                    {"work_order_operation_id": normalized_operation_id},
+                )
+                execution_steps = [_execution_step_row(row) for row in cursor.fetchall()]
+                execution_step = next(
+                    (step for step in execution_steps if _upper(step.get("step_code")) == normalized_step_code),
+                    None,
+                )
+                if execution_step is None:
+                    raise MesqlV2Error("EXECUTION_STEP_NOT_FOUND", status_code=404)
+
+                station_code = _upper(execution_state.get("station_code"))
+                if station_code != _upper(execution_step.get("station_code")):
+                    raise MesqlV2Error("RUNTIME_STATION_MISMATCH", status_code=409)
+                if not normalized_idempotency_key:
+                    normalized_idempotency_key = _build_operation_event_idempotency_key(
+                        station_code,
+                        normalized_event_source,
+                        normalized_external_event_id,
+                    )
+
+                metadata = execution_state.get("metadata") or {}
+                route_operation_id = _upper(metadata.get("route_operation_id")) if isinstance(metadata, dict) else ""
+                if not route_operation_id:
+                    raise MesqlV2Error("RUNTIME_ROUTE_OPERATION_CONTEXT_MISSING", status_code=409)
+                operation_step = _get_operation_step_with_cursor(cursor, route_operation_id, normalized_step_code)
+                if operation_step is None:
+                    raise MesqlV2Error("OPERATION_STEP_CONFIG_NOT_FOUND", status_code=404)
+                station_event_source = _resolve_station_event_source_with_cursor(
+                    cursor,
+                    station_code,
+                    normalized_event_source,
+                )
+                if station_event_source is None or not station_event_source.get("active"):
+                    raise MesqlV2Error("STATION_EVENT_SOURCE_NOT_FOUND", status_code=404)
+                expected_source = _upper(operation_step.get("finish_event_source_code"))
+                if expected_source != normalized_event_source:
+                    raise MesqlV2Error("STEP_FINISH_SOURCE_MISMATCH", status_code=409)
+
+                existing_event = _get_operation_event_by_idempotency_key_with_cursor(
+                    cursor,
+                    normalized_idempotency_key,
+                )
+                if existing_event is None and normalized_external_event_id:
+                    existing_event = _get_operation_event_by_external_event_with_cursor(
+                        cursor,
+                        station_code,
+                        normalized_event_source,
+                        normalized_external_event_id,
+                    )
+                if existing_event is not None:
+                    result = {
+                        "status": "ok",
+                        "work_order_operation_id": normalized_operation_id,
+                        "station_code": station_code,
+                        "step_code": normalized_step_code,
+                        "finished": False,
+                        "event_inserted": False,
+                        "implicit_started": False,
+                        "event": existing_event,
+                        "execution_state": execution_state,
+                        "step": execution_step,
+                        "next_step": _first_actionable_execution_step(execution_steps),
+                    }
+                else:
+                    if _lower(execution_state.get("execution_status")) not in {"ready", "active"}:
+                        raise MesqlV2Error("EXECUTION_STATUS_NOT_FINISHABLE", status_code=409)
+                    step_status = _lower(execution_step.get("status"))
+                    if step_status == "completed":
+                        raise MesqlV2Error("STEP_ALREADY_COMPLETED", status_code=409)
+                    if step_status in {"skipped", "failed", "cancelled"}:
+                        raise MesqlV2Error("STEP_STATUS_NOT_FINISHABLE", status_code=409)
+                    current_step = _first_actionable_execution_step(execution_steps)
+                    if current_step is None or _upper(current_step.get("step_code")) != normalized_step_code:
+                        raise MesqlV2Error("STEP_NOT_ACTIONABLE", status_code=409)
+                    if any(
+                        _lower(step.get("status")) in {"failed", "cancelled"}
+                        for step in execution_steps
+                        if _safe_int(step.get("step_no"), 0) < _safe_int(execution_step.get("step_no"), 0)
+                    ):
+                        raise MesqlV2Error("STEP_NOT_ACTIONABLE", status_code=409)
+
+                    finish_mode = _lower(operation_step.get("finish_mode"))
+                    if finish_mode not in {"auto_finish", "manual_finish"}:
+                        raise MesqlV2Error("STEP_FINISH_MODE_UNSUPPORTED", status_code=409)
+
+                    start_mode = _lower(operation_step.get("start_mode"))
+                    implicit_started = step_status == "pending"
+                    if implicit_started and (start_mode, finish_mode) not in {
+                        ("auto_start", "auto_finish"),
+                        ("implicit_start", "auto_finish"),
+                        ("implicit_start", "manual_finish"),
+                    }:
+                        raise MesqlV2Error("STEP_START_REQUIRED", status_code=409)
+                    if _lower(execution_state.get("execution_status")) == "ready" and not implicit_started:
+                        raise MesqlV2Error("EXECUTION_STATUS_NOT_FINISHABLE", status_code=409)
+
+                    event_payload = dict(payload or {})
+                    event_payload["action"] = "finish"
+                    event_payload["step_code"] = normalized_step_code
+                    inserted_event = _record_operation_event_with_cursor(
+                        cursor,
+                        work_order_operation_id=normalized_operation_id,
+                        work_order_id=_nullable_text(execution_state.get("work_order_id")),
+                        work_order_operation_step_id=_nullable_text(execution_step.get("work_order_operation_step_id")),
+                        operation_code=_nullable_upper(execution_state.get("operation_code")),
+                        step_code=normalized_step_code,
+                        station_code=station_code,
+                        event_source=normalized_event_source,
+                        event_type="step_finish",
+                        external_event_id=normalized_external_event_id,
+                        idempotency_key=normalized_idempotency_key,
+                        actor_id=normalized_actor_id,
+                        payload=event_payload,
+                    )
+                    event_time = inserted_event.get("event_time")
+                    event_id = inserted_event.get("event_id")
+                    cursor.execute(
+                        UPDATE_EXECUTION_STEP_FINISHED_SQL,
+                        {
+                            "work_order_operation_id": normalized_operation_id,
+                            "step_code": normalized_step_code,
+                            "event_time": event_time,
+                            "event_id": event_id,
+                        },
+                    )
+                    completed_step = _execution_step_row(cursor.fetchone())
+                    resolved_steps = [
+                        completed_step if _upper(step.get("step_code")) == normalized_step_code else step
+                        for step in execution_steps
+                    ]
+                    next_step = _first_actionable_execution_step(resolved_steps)
+                    cursor.execute(
+                        UPDATE_EXECUTION_STATE_STEP_FINISHED_SQL,
+                        {
+                            "work_order_operation_id": normalized_operation_id,
+                            "current_step_code": _nullable_upper(next_step.get("step_code")) if next_step else None,
+                            "last_event_id": event_id,
+                            "event_time": event_time,
+                        },
+                    )
+                    cursor.execute(
+                        SELECT_EXECUTION_STATE_SQL,
+                        {"work_order_operation_id": normalized_operation_id},
+                    )
+                    execution_state = _execution_state_row(cursor.fetchone())
+                    result = {
+                        "status": "ok",
+                        "work_order_operation_id": normalized_operation_id,
+                        "station_code": station_code,
+                        "step_code": normalized_step_code,
+                        "finished": True,
+                        "event_inserted": True,
+                        "implicit_started": implicit_started,
+                        "event": inserted_event,
+                        "execution_state": execution_state,
+                        "step": completed_step,
+                        "next_step": next_step,
                     }
         commit = getattr(connection, "commit", None)
         if callable(commit):

@@ -829,6 +829,9 @@ mutation was performed.
 - OP20 uses one measurable manual `PACKAGING_EXECUTION` step with no embedded
   approval.
 - Both route operations use `auto_close_on_required_steps`.
+- OP10 uses `output_buffer` and `scrap_location_role=null`.
+- OP20 retains `output_scrap`.
+- Scrap binding validation is conditional on a configured non-null scrap role.
 - The V2 draft contains no final-approval step and no quality-control route
   operation.
 - V2 route/config rows are drafted as `active=true`: current route detail and

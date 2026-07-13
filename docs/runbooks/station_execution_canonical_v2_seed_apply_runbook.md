@@ -218,6 +218,9 @@ ROUTE_BOX_PACKAGING_V2_OP10
 sequence_no = 10
 operation_code = ASSEMBLY_COLOR_CLASSIFY
 station_code = ASSEMBLY_01
+input_location_role = input
+output_location_role = output_buffer
+scrap_location_role = null
 policy = auto_close_on_required_steps
 active = true
 ```
@@ -227,6 +230,9 @@ ROUTE_BOX_PACKAGING_V2_OP20
 sequence_no = 20
 operation_code = PACKAGING_FINAL
 station_code = PACKAGING_01
+input_location_role = input
+output_location_role = output_good
+scrap_location_role = output_scrap
 policy = auto_close_on_required_steps
 active = true
 ```
@@ -309,13 +315,16 @@ item and operation scopes:
 ASSEMBLY_01:
 - input / RAW_BOX / ASSEMBLY_COLOR_CLASSIFY
 - output_buffer / COLOR_CLASSIFIED_BOX / ASSEMBLY_COLOR_CLASSIFY
-- output_scrap / COLOR_CLASSIFIED_BOX / ASSEMBLY_COLOR_CLASSIFY
 
 PACKAGING_01:
 - input / COLOR_CLASSIFIED_BOX / PACKAGING_FINAL
 - output_good / PACKAGED_PRODUCT / PACKAGING_FINAL
 - output_scrap / PACKAGED_PRODUCT / PACKAGING_FINAL
 ```
+
+`scrap_location_role` is an optional, nullable operation capability. An active
+station/location binding is required only when the configured scrap role is
+non-null. Do not create an `ASSEMBLY_01/output_scrap` binding for OP10.
 
 The V2 seed must not insert or change locations or bindings.
 

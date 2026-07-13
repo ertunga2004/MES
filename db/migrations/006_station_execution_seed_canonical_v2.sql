@@ -169,7 +169,7 @@ FROM (
             1::numeric,
             'input',
             'output_buffer',
-            'output_scrap',
+            NULL::text,
             'auto_close_on_required_steps',
             NULL::integer,
             true,
@@ -417,7 +417,7 @@ BEGIN
           AND output_qty_per_cycle = 1
           AND input_location_role = 'input'
           AND output_location_role = 'output_buffer'
-          AND scrap_location_role = 'output_scrap'
+          AND scrap_location_role IS NULL
           AND operation_completion_policy =
               'auto_close_on_required_steps'
           AND planned_cycle_time_sec IS NULL
@@ -661,69 +661,46 @@ BEGIN
 
     IF (
         SELECT count(*)
-        FROM (
+        FROM mes.route_operations route_operation
+        CROSS JOIN LATERAL (
             VALUES
                 (
-                    'ASSEMBLY_01',
-                    'input',
-                    'RAW_BOX',
-                    'ASSEMBLY_COLOR_CLASSIFY'
+                    route_operation.input_location_role,
+                    route_operation.input_item_code
                 ),
                 (
-                    'ASSEMBLY_01',
-                    'output_buffer',
-                    'COLOR_CLASSIFIED_BOX',
-                    'ASSEMBLY_COLOR_CLASSIFY'
+                    route_operation.output_location_role,
+                    route_operation.output_item_code
                 ),
                 (
-                    'ASSEMBLY_01',
-                    'output_scrap',
-                    'COLOR_CLASSIFIED_BOX',
-                    'ASSEMBLY_COLOR_CLASSIFY'
-                ),
-                (
-                    'PACKAGING_01',
-                    'input',
-                    'COLOR_CLASSIFIED_BOX',
-                    'PACKAGING_FINAL'
-                ),
-                (
-                    'PACKAGING_01',
-                    'output_good',
-                    'PACKAGED_PRODUCT',
-                    'PACKAGING_FINAL'
-                ),
-                (
-                    'PACKAGING_01',
-                    'output_scrap',
-                    'PACKAGED_PRODUCT',
-                    'PACKAGING_FINAL'
+                    route_operation.scrap_location_role,
+                    route_operation.output_item_code
                 )
-        ) AS required_binding (
-            station_code,
-            role,
-            item_code,
-            operation_code
+        ) AS configured_role (role, item_code)
+        WHERE route_operation.route_operation_id IN (
+            'ROUTE_BOX_PACKAGING_V2_OP10',
+            'ROUTE_BOX_PACKAGING_V2_OP20'
         )
-        WHERE EXISTS (
+          AND configured_role.role IS NOT NULL
+          AND EXISTS (
             SELECT 1
             FROM mes.station_location_bindings b
             JOIN mes.locations l
               ON l.location_code = b.location_code
-            WHERE b.station_code = required_binding.station_code
-              AND b.role = required_binding.role
+            WHERE b.station_code = route_operation.station_code
+              AND b.role = configured_role.role
               AND b.active = true
               AND l.active = true
               AND (
                   b.item_scope IS NULL
-                  OR b.item_scope = required_binding.item_code
+                  OR b.item_scope = configured_role.item_code
               )
               AND (
                   b.operation_scope IS NULL
-                  OR b.operation_scope = required_binding.operation_code
+                  OR b.operation_scope = route_operation.operation_code
               )
         )
-    ) <> 6 THEN
+    ) <> 5 THEN
         RAISE EXCEPTION 'Canonical V2 location-role verification failed';
     END IF;
 END

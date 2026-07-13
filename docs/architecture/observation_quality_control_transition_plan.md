@@ -279,6 +279,8 @@ SQL apply.
 ROUTE_BOX_PACKAGING_V2_OP10
 station = ASSEMBLY_01
 policy = auto_close_on_required_steps
+output_location_role = output_buffer
+scrap_location_role = null
 
 10 COLOR_SENSOR_ENTRY_EVIDENCE
    auto_start + auto_finish
@@ -302,6 +304,8 @@ policy = auto_close_on_required_steps
 ROUTE_BOX_PACKAGING_V2_OP20
 station = PACKAGING_01
 policy = auto_close_on_required_steps
+output_location_role = output_good
+scrap_location_role = output_scrap
 
 10 PACKAGING_EXECUTION
    manual_start + manual_finish
@@ -315,6 +319,11 @@ V2 contains no final-approval step and no quality-control route operation.
 Final approval, if required by a future factory configuration, remains an
 operation-policy/audit concern. Quality control remains an optional separate
 route operation for a route version that explicitly needs it.
+
+Process-end observation is not a scrap decision, and `ASSEMBLY_01` has no real
+configured scrap output. Rework, scrap, and quality-control routes remain
+explicit future configuration. An optional capability must not require a
+physical binding that the operation does not configure.
 
 Draft artifacts:
 

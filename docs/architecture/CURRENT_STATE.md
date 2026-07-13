@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-10
+Last updated: 2026-07-13
 
 ## Local MES Execution and Portable Runtime Baseline
 
@@ -840,10 +840,45 @@ mutation was performed.
   selection was found.
 - New work-order selection/activation implementation remains a separate phase.
 - V1 config, retained runtime, and historical evidence were not changed.
-- The V2 SQL has not been applied to a database.
+- The V2 SQL has not been applied to source `mes`; apply and idempotency were
+  verified only on a disposable logical dump/restore clone.
 - Repository artifact status is `reviewed seed draft, not applied to source
   DB`; inserted rows, when applied in a future approved task, use
   `configuration_status=canonical_v2` metadata.
 - No Python, test, API, Kiosk, IoT/MQTT, Observer, OEE/KPI, approval helper,
   manual-close helper, production flow, inventory, lifecycle, work-order close,
   MESQL, or FERP change was made.
+
+## Canonical V2 Runtime Binding Blocker
+
+- Optional scrap-role correction: PASS.
+- Canonical V2 isolated first apply: PASS with 1 route, 2 operations, 4 steps,
+  and 5/5 configured location roles.
+- Canonical V2 idempotency reapply: PASS with no new rows or digest changes.
+- V1/V2 config read-model coexistence: PASS without identifier collision or
+  critical warning.
+- Runtime initialization: `BLOCKED`.
+- Eligible lifecycle candidate count: `0` for
+  `ASSEMBLY_01 / ASSEMBLY_COLOR_CLASSIFY`.
+- Existing lifecycle operation codes include `OP-ASSEMBLY` and `OP-MVP-ASM`;
+  they are not an explicit Canonical V2 route-operation binding.
+- No fixture, station/operation-code/sequence inference, operation-code
+  mutation, or retained V1 target reuse was performed.
+- Runtime initialization and step start/finish helpers were not called.
+- Source `mes` remained unchanged across 15/15 final count and digest checks;
+  its Canonical V2 route count remained zero.
+- Blocker evidence:
+  `docs/runbooks/station_execution_canonical_v2_isolated_apply_runtime_init_retry_evidence_20260710.md`.
+- Evidence commit:
+  `fcb7083 docs: record canonical v2 runtime binding blocker`.
+- An explicit immutable `work_order_operation_id -> route_operation_id`
+  sidecar binding is accepted for implementation planning.
+- Architecture decision:
+  `docs/architecture/work_order_route_operation_binding_decision.md`.
+- Implementation plan:
+  `docs/architecture/work_order_route_operation_binding_implementation_plan.md`.
+- This checkpoint is not verified runtime initialization and is not an
+  implementation checkpoint.
+- No schema, migration, seed, Python, test, database, lifecycle, queue, runtime,
+  API/Kiosk/IoT/OEE, approval, production-flow, inventory, MESQL, or FERP
+  mutation was performed.

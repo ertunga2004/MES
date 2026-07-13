@@ -334,7 +334,8 @@ Draft artifacts:
 
 The SQL is additive and idempotent-by-insert-absence with exact-shape
 assertions. It reuses existing items, stations, station event sources,
-locations, and bindings. It has not been applied to any database. V1 config,
+locations, and bindings. Apply and reapply were verified on a disposable
+logical dump/restore clone; it has not been applied to source `mes`. V1 config,
 retained V1 runtime, and historical evidence remain unchanged.
 
 Artifact and row metadata status are intentionally distinct:
@@ -345,3 +346,40 @@ Artifact and row metadata status are intentionally distinct:
 
 The inserted metadata identifies canonical configuration semantics; it does
 not claim that the source database has received the seed.
+
+## Canonical V2 Runtime Binding Checkpoint
+
+Canonical V2 seed and config behavior are no longer the runtime-init blocker:
+
+- Optional scrap-role validation passed with five configured roles.
+- First V2 apply and idempotency reapply passed on the disposable clone.
+- V1 and V2 routes, operations, steps, and station aggregates coexisted in the
+  config read model without identifier collision or critical warning.
+- Runtime candidate selection found zero eligible lifecycle operations for
+  `ASSEMBLY_01 / ASSEMBLY_COLOR_CLASSIFY`.
+- Existing lifecycle operation codes such as `OP-ASSEMBLY` and `OP-MVP-ASM`
+  are not Canonical V2 config identity.
+- No fixture, inference, operation-code change, retained-target reuse, or
+  runtime helper call was used to bypass the blocker.
+- Source `mes` remained unchanged and its Canonical V2 route count remained
+  zero.
+
+The missing contract is an explicit immutable relationship from
+`work_order_operation_id` to `route_operation_id`. Operation-code, station,
+sequence, combined-field, and latest-active inference are rejected. V2
+work-order route selection and binding creation are a separate implementation
+phase; the retained V1 runtime will not be rebound.
+
+Architecture artifacts:
+
+- Decision:
+  `docs/architecture/work_order_route_operation_binding_decision.md`
+- Implementation plan:
+  `docs/architecture/work_order_route_operation_binding_implementation_plan.md`
+- Blocker evidence:
+  `docs/runbooks/station_execution_canonical_v2_isolated_apply_runtime_init_retry_evidence_20260710.md`
+- Evidence commit:
+  `fcb7083 docs: record canonical v2 runtime binding blocker`
+
+This checkpoint is design and implementation planning only. It changes no
+schema, seed, Python, test, database, lifecycle, queue, or runtime state.

@@ -102,6 +102,16 @@ def _nullable_upper(value: Any) -> str | None:
     return text or None
 
 
+def _required_uuid_text(value: Any, *, field_name: str) -> str:
+    normalized = _text(value)
+    if not normalized:
+        raise MesqlV2Error(f"{field_name}_REQUIRED", status_code=400)
+    try:
+        return str(UUID(normalized))
+    except (TypeError, ValueError, AttributeError):
+        raise MesqlV2Error(f"{field_name}_INVALID", status_code=400) from None
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     if value in (None, ""):
         return default
@@ -752,6 +762,38 @@ SELECT
     metadata
 FROM mes.route_operations
 WHERE route_operation_id = %(route_operation_id)s
+LIMIT 1
+"""
+
+SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL = """
+SELECT
+    binding_pk,
+    binding_id,
+    work_order_operation_id,
+    route_operation_id,
+    binding_source,
+    bound_by,
+    bound_at,
+    metadata,
+    created_at
+FROM mes.work_order_operation_route_bindings
+WHERE work_order_operation_id = %(work_order_operation_id)s::uuid
+LIMIT 1
+"""
+
+SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_BY_ID_SQL = """
+SELECT
+    binding_pk,
+    binding_id,
+    work_order_operation_id,
+    route_operation_id,
+    binding_source,
+    bound_by,
+    bound_at,
+    metadata,
+    created_at
+FROM mes.work_order_operation_route_bindings
+WHERE binding_id = %(binding_id)s
 LIMIT 1
 """
 
@@ -1917,6 +1959,20 @@ def _route_operation_row(row: Any) -> JsonObject:
     })
 
 
+def _work_order_operation_route_binding_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "binding_pk": _field(row, 0, "binding_pk"),
+        "binding_id": _field(row, 1, "binding_id"),
+        "work_order_operation_id": _field(row, 2, "work_order_operation_id"),
+        "route_operation_id": _field(row, 3, "route_operation_id"),
+        "binding_source": _field(row, 4, "binding_source"),
+        "bound_by": _field(row, 5, "bound_by"),
+        "bound_at": _field(row, 6, "bound_at"),
+        "metadata": _field(row, 7, "metadata") or {},
+        "created_at": _field(row, 8, "created_at"),
+    })
+
+
 def _station_event_source_row(row: Any) -> JsonObject:
     return _json_safe({
         "station_code": _upper(_field(row, 0, "station_code")),
@@ -2249,6 +2305,47 @@ def get_route_operation(config: AppConfig, route_operation_id: str) -> JsonObjec
             )
             row = cursor.fetchone()
     return _route_operation_row(row) if row else None
+
+
+def get_work_order_operation_route_binding(
+    config: AppConfig,
+    work_order_operation_id: str,
+) -> JsonObject | None:
+    normalized_operation_id = _required_uuid_text(
+        work_order_operation_id,
+        field_name="WORK_ORDER_OPERATION_ID",
+    )
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL,
+                {"work_order_operation_id": normalized_operation_id},
+            )
+            row = cursor.fetchone()
+    return _work_order_operation_route_binding_row(row) if row else None
+
+
+def get_work_order_operation_route_binding_by_id(
+    config: AppConfig,
+    binding_id: str,
+) -> JsonObject | None:
+    if not isinstance(binding_id, str):
+        raise MesqlV2Error("BINDING_ID_INVALID", status_code=400)
+    normalized_binding_id = binding_id.strip()
+    if not normalized_binding_id:
+        raise MesqlV2Error("BINDING_ID_REQUIRED", status_code=400)
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_BY_ID_SQL,
+                {"binding_id": normalized_binding_id},
+            )
+            row = cursor.fetchone()
+    return _work_order_operation_route_binding_row(row) if row else None
 
 
 def list_station_event_sources(

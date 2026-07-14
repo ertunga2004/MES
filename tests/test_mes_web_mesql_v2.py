@@ -29,6 +29,8 @@ from mes_web.db.mesql_v2 import (
     get_route_operation_config,
     get_station_location_context,
     get_station_execution_config,
+    get_work_order_operation_route_binding,
+    get_work_order_operation_route_binding_by_id,
     initialize_execution_state,
     list_locations,
     list_execution_steps,
@@ -64,6 +66,7 @@ class _Cursor:
         self.location_row: dict | None = None
         self.binding_rows: list[dict] = []
         self.resolved_binding_row: dict | None = None
+        self.work_order_operation_route_binding_rows: list[dict] = []
         self.item_rows: list[dict] = []
         self.item_row: dict | None = None
         self.process_route_rows: list[dict] = []
@@ -81,11 +84,13 @@ class _Cursor:
         self.inserted_operation_event_row: dict | None = None
         self.station_exists = True
         self.raise_on_sql_fragment: str | None = None
+        self.exited = False
 
     def __enter__(self):
         return self
 
     def __exit__(self, *_args):
+        self.exited = True
         return None
 
     def execute(self, sql: str, params: dict | None = None) -> None:
@@ -217,6 +222,27 @@ class _Cursor:
 
     def fetchone(self):
         lowered = self.last_sql.lower()
+        if "from mes.work_order_operation_route_bindings" in lowered:
+            if "where work_order_operation_id" in lowered:
+                operation_id = self.last_params.get("work_order_operation_id")
+                return next(
+                    (
+                        row
+                        for row in self.work_order_operation_route_binding_rows
+                        if str(row.get("work_order_operation_id")) == operation_id
+                    ),
+                    None,
+                )
+            if "where binding_id" in lowered:
+                binding_id = self.last_params.get("binding_id")
+                return next(
+                    (
+                        row
+                        for row in self.work_order_operation_route_binding_rows
+                        if row.get("binding_id") == binding_id
+                    ),
+                    None,
+                )
         if "update mes.work_order_operation_steps" in lowered and "returning" in lowered:
             operation_id = self.last_params.get("work_order_operation_id")
             step_code = self.last_params.get("step_code")
@@ -704,6 +730,31 @@ def _fake_binding(
             }
         )
     return row
+
+
+def _fake_work_order_operation_route_binding(
+    *,
+    binding_pk: int = 101,
+    binding_id: str = "BINDING-WO-OP-001",
+    work_order_operation_id: UUID | None = None,
+    route_operation_id: str = "ROUTE_BOX_PACKAGING_V2_OP10",
+    binding_source: str = "manual_setup",
+    bound_by: str = "SYSTEM",
+    metadata: dict | None = None,
+) -> dict:
+    timestamp = datetime(2026, 7, 14, 10, 0, 0)
+    return {
+        "binding_pk": binding_pk,
+        "binding_id": binding_id,
+        "work_order_operation_id": work_order_operation_id
+        or UUID("11111111-2222-3333-4444-555555555555"),
+        "route_operation_id": route_operation_id,
+        "binding_source": binding_source,
+        "bound_by": bound_by,
+        "bound_at": timestamp,
+        "metadata": metadata if metadata is not None else {"purpose": "unit_test"},
+        "created_at": timestamp,
+    }
 
 
 def _fake_item(
@@ -1620,6 +1671,312 @@ class MesqlV2Tests(unittest.TestCase):
 
         self.assertIsNone(operation)
         self.assertEqual(connection.cursor_instance.last_params["route_operation_id"], "MISSING")
+
+    def test_binding_read_sql_is_select_only_and_explicit(self) -> None:
+        expected_columns = (
+            "binding_pk",
+            "binding_id",
+            "work_order_operation_id",
+            "route_operation_id",
+            "binding_source",
+            "bound_by",
+            "bound_at",
+            "metadata",
+            "created_at",
+        )
+        for sql in (
+            mesql_v2.SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL,
+            mesql_v2.SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_BY_ID_SQL,
+        ):
+            with self.subTest(sql=sql):
+                lowered = sql.lower()
+                select_clause = lowered.split("from", 1)[0]
+                self.assertTrue(lowered.lstrip().startswith("select"))
+                self.assertNotIn("*", select_clause)
+                for column in expected_columns:
+                    self.assertRegex(select_clause, rf"\b{column}\b")
+                self.assertNotRegex(
+                    lowered,
+                    r"\b(insert|update|delete|drop|truncate|alter|create|call)\b",
+                )
+                self.assertNotRegex(lowered, r"\bfor\s+update\b|\block\s+table\b")
+
+    def test_binding_read_sql_has_no_inference_or_forbidden_tables(self) -> None:
+        forbidden_terms = (
+            "station_code",
+            "operation_code",
+            "sequence_no",
+            "route_code",
+            "route_version",
+            "latest active",
+        )
+        forbidden_tables = (
+            "mes.work_order_operations",
+            "mes.route_operations",
+            "mes.work_orders",
+            "mes.station_queue",
+            "mes.work_order_operation_execution_state",
+        )
+        for sql in (
+            mesql_v2.SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL,
+            mesql_v2.SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_BY_ID_SQL,
+        ):
+            with self.subTest(sql=sql):
+                lowered = sql.lower()
+                self.assertEqual(
+                    lowered.count("from mes.work_order_operation_route_bindings"),
+                    1,
+                )
+                self.assertNotIn(" join ", lowered)
+                for term in forbidden_terms:
+                    self.assertNotIn(term, lowered)
+                for table_name in forbidden_tables:
+                    self.assertNotIn(table_name, lowered)
+
+    def test_get_work_order_operation_route_binding_maps_exact_row(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.work_order_operation_route_binding_rows = [
+            _fake_work_order_operation_route_binding()
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            binding = get_work_order_operation_route_binding(
+                AppConfig(db_enabled=True),
+                "11111111-2222-3333-4444-555555555555",
+            )
+
+        self.assertEqual(
+            binding,
+            {
+                "binding_pk": 101,
+                "binding_id": "BINDING-WO-OP-001",
+                "work_order_operation_id": "11111111-2222-3333-4444-555555555555",
+                "route_operation_id": "ROUTE_BOX_PACKAGING_V2_OP10",
+                "binding_source": "manual_setup",
+                "bound_by": "SYSTEM",
+                "bound_at": "2026-07-14T10:00:00",
+                "metadata": {"purpose": "unit_test"},
+                "created_at": "2026-07-14T10:00:00",
+            },
+        )
+        self.assertEqual(
+            connection.cursor_instance.last_params["work_order_operation_id"],
+            "11111111-2222-3333-4444-555555555555",
+        )
+
+    def test_get_work_order_operation_route_binding_returns_none_when_missing(self) -> None:
+        connection = _Connection()
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            binding = get_work_order_operation_route_binding(
+                AppConfig(db_enabled=True),
+                "11111111-2222-3333-4444-555555555555",
+            )
+
+        self.assertIsNone(binding)
+
+    def test_get_work_order_operation_route_binding_rejects_blank_uuid_before_db(self) -> None:
+        with patch.object(mesql_v2, "database_connection") as connection_factory:
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                get_work_order_operation_route_binding(AppConfig(db_enabled=True), "   ")
+
+        self.assertEqual(error.exception.detail, "WORK_ORDER_OPERATION_ID_REQUIRED")
+        self.assertEqual(error.exception.status_code, 400)
+        connection_factory.assert_not_called()
+
+    def test_get_work_order_operation_route_binding_rejects_invalid_uuid_before_db(self) -> None:
+        with patch.object(mesql_v2, "database_connection") as connection_factory:
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                get_work_order_operation_route_binding(AppConfig(db_enabled=True), "not-a-uuid")
+
+        self.assertEqual(error.exception.detail, "WORK_ORDER_OPERATION_ID_INVALID")
+        self.assertEqual(error.exception.status_code, 400)
+        connection_factory.assert_not_called()
+
+    def test_get_work_order_operation_route_binding_by_id_maps_row_and_preserves_case(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.work_order_operation_route_binding_rows = [
+            _fake_work_order_operation_route_binding(binding_id="Bind-Case-01")
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            binding = get_work_order_operation_route_binding_by_id(
+                AppConfig(db_enabled=True),
+                "  Bind-Case-01  ",
+            )
+
+        self.assertIsNotNone(binding)
+        self.assertEqual(binding["binding_id"], "Bind-Case-01")
+        self.assertEqual(connection.cursor_instance.last_params["binding_id"], "Bind-Case-01")
+
+    def test_get_work_order_operation_route_binding_by_id_returns_none_when_missing(self) -> None:
+        connection = _Connection()
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            binding = get_work_order_operation_route_binding_by_id(
+                AppConfig(db_enabled=True),
+                "MISSING-BINDING",
+            )
+
+        self.assertIsNone(binding)
+
+    def test_get_work_order_operation_route_binding_by_id_rejects_blank_before_db(self) -> None:
+        for binding_id in ("", "   "):
+            with self.subTest(binding_id=binding_id):
+                with patch.object(mesql_v2, "database_connection") as connection_factory:
+                    with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                        get_work_order_operation_route_binding_by_id(
+                            AppConfig(db_enabled=True),
+                            binding_id,
+                        )
+                self.assertEqual(error.exception.detail, "BINDING_ID_REQUIRED")
+                connection_factory.assert_not_called()
+
+    def test_get_work_order_operation_route_binding_by_id_rejects_non_string_before_db(self) -> None:
+        with patch.object(mesql_v2, "database_connection") as connection_factory:
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                get_work_order_operation_route_binding_by_id(
+                    AppConfig(db_enabled=True),
+                    None,
+                )
+
+        self.assertEqual(error.exception.detail, "BINDING_ID_INVALID")
+        self.assertEqual(error.exception.status_code, 400)
+        connection_factory.assert_not_called()
+
+    def test_binding_read_helpers_match_database_disabled_contract(self) -> None:
+        for helper, identifier in (
+            (
+                get_work_order_operation_route_binding,
+                "11111111-2222-3333-4444-555555555555",
+            ),
+            (get_work_order_operation_route_binding_by_id, "BINDING-WO-OP-001"),
+        ):
+            with self.subTest(helper=helper.__name__):
+                with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                    helper(AppConfig(db_enabled=False), identifier)
+                self.assertEqual(error.exception.detail, "DATABASE_DISABLED")
+                self.assertEqual(error.exception.status_code, 503)
+
+    def test_binding_read_helpers_do_not_commit(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.work_order_operation_route_binding_rows = [
+            _fake_work_order_operation_route_binding()
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            get_work_order_operation_route_binding(
+                AppConfig(db_enabled=True),
+                "11111111-2222-3333-4444-555555555555",
+            )
+            get_work_order_operation_route_binding_by_id(
+                AppConfig(db_enabled=True),
+                "BINDING-WO-OP-001",
+            )
+
+        self.assertFalse(connection.committed)
+        self.assertFalse(connection.transaction_entered)
+
+    def test_binding_read_helper_propagates_database_error_and_cleans_up(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.raise_on_sql_fragment = (
+            "from mes.work_order_operation_route_bindings"
+        )
+        cleanup = {"connection": False}
+
+        @contextmanager
+        def fake_connection(_config):
+            try:
+                yield connection
+            finally:
+                cleanup["connection"] = True
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            with self.assertRaisesRegex(RuntimeError, "forced cursor failure"):
+                get_work_order_operation_route_binding(
+                    AppConfig(db_enabled=True),
+                    "11111111-2222-3333-4444-555555555555",
+                )
+
+        self.assertTrue(connection.cursor_instance.exited)
+        self.assertTrue(cleanup["connection"])
+        self.assertFalse(connection.committed)
+
+    def test_binding_read_helper_missing_table_error_is_not_none(self) -> None:
+        connection = _Connection()
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        missing_table_error = RuntimeError(
+            'relation "mes.work_order_operation_route_bindings" does not exist'
+        )
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            with patch.object(
+                connection.cursor_instance,
+                "execute",
+                side_effect=missing_table_error,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "does not exist"):
+                    get_work_order_operation_route_binding_by_id(
+                        AppConfig(db_enabled=True),
+                        "BINDING-WO-OP-001",
+                    )
+
+        self.assertTrue(connection.cursor_instance.exited)
+        self.assertFalse(connection.committed)
+
+    def test_binding_read_response_has_no_inferred_fields(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.work_order_operation_route_binding_rows = [
+            _fake_work_order_operation_route_binding()
+        ]
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            binding = get_work_order_operation_route_binding_by_id(
+                AppConfig(db_enabled=True),
+                "BINDING-WO-OP-001",
+            )
+
+        self.assertEqual(
+            set(binding or {}),
+            {
+                "binding_pk",
+                "binding_id",
+                "work_order_operation_id",
+                "route_operation_id",
+                "binding_source",
+                "bound_by",
+                "bound_at",
+                "metadata",
+                "created_at",
+            },
+        )
 
     def test_list_station_event_sources_filters_by_station(self) -> None:
         connection = _Connection()

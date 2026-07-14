@@ -947,3 +947,34 @@ mutation was performed.
   `docs/runbooks/work_order_route_operation_binding_migration_isolated_smoke_evidence_20260714.md`.
 - No Python, test, helper, runtime-init, work-order release, API/Kiosk/IoT/OEE,
   MESQL, or FERP implementation was changed.
+
+## Verified Work-Order Route-Operation Binding Read Helpers
+
+- Last updated: `2026-07-14`.
+- Implementation commit:
+  `6e7a880 feat: add work-order route-operation binding read helpers`.
+- Verified helpers:
+  - `get_work_order_operation_route_binding`
+  - `get_work_order_operation_route_binding_by_id`
+- Unit regression: targeted `106` tests and combined `142` tests, both `OK`.
+- Source `mes` binding table remained absent.
+- Before clone migration, the real lifecycle-operation helper propagated
+  PostgreSQL `UndefinedTable` (`42P01`) without converting it to `None`.
+- Migration `009_work_order_operation_route_binding.sql` was applied only to
+  disposable clone `mes_binding_read_smoke_20260714_133559`.
+- One clone-only binding fixture was created for read-helper verification; it
+  is not accepted as a production semantic mapping.
+- Lifecycle-operation lookup and exact binding-ID lookup: `PASS`.
+- Missing lifecycle UUID, missing binding ID, and case-mismatched binding ID
+  returned `None`; exact binding-ID case was preserved.
+- Repeated reads preserved all result values and timestamps and produced no
+  mutation.
+- Binding count/digest and all existing 15 table counts/digests remained equal
+  across helper calls.
+- Source `mes` final 15/15 counts/digests matched baseline, retained V1 state
+  was unchanged, and the disposable clone was dropped.
+- Evidence:
+  `docs/runbooks/work_order_route_operation_binding_read_helper_isolated_smoke_evidence_20260714.md`.
+- No binding write helper or runtime-init/work-order-release integration was
+  added.
+- No API, Kiosk, IoT/MQTT, Observer, OEE/KPI, MESQL, or FERP change was made.

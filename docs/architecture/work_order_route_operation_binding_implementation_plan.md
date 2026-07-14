@@ -27,24 +27,27 @@ implementation.
 - Do not combine binding work with work-order close, inventory, approval,
   production-flow, Kiosk, IoT, OEE, MESQL, or FERP changes.
 
-## Proposed Schema
+## Selected Phase 1 Schema
 
-Future additive table:
+Selected additive table:
 
 `mes.work_order_operation_route_bindings`
 
-Planned fields:
+Exact Phase 1 fields:
 
-- Surrogate local primary key following `004_station_execution_schema.sql`
-  conventions.
-- Stable unique `binding_id`.
-- Unique `work_order_operation_id` UUID FK.
-- `route_operation_id` text FK.
-- Controlled `binding_source`.
-- Nonblank `bound_by` actor/service identity.
-- `bound_at` semantic timestamp.
-- JSON metadata for non-identity correlation/audit context.
-- `created_at` storage timestamp.
+- `binding_pk BIGSERIAL PRIMARY KEY`.
+- `binding_id TEXT NOT NULL` with a stable unique constraint and nonblank
+  check.
+- `work_order_operation_id UUID NOT NULL` with a unique constraint and FK to
+  `mes.work_order_operations(work_order_operation_id)`.
+- `route_operation_id TEXT NOT NULL` with FK to
+  `mes.route_operations(route_operation_id)`.
+- `binding_source TEXT NOT NULL`, limited to `manual_setup` and
+  `work_order_release`.
+- `bound_by TEXT NOT NULL` with a nonblank actor/service check.
+- `bound_at TIMESTAMPTZ NOT NULL DEFAULT now()`.
+- `metadata JSONB NOT NULL DEFAULT '{}'::jsonb`, constrained to a JSON object.
+- `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`.
 
 Do not add `active`, `updated_at`, soft-delete, effective-date, or supersession
 fields in the MVP. The accepted model is insert-once and immutable.
@@ -58,20 +61,38 @@ Required constraints and indexes:
 - Controlled source check.
 - Lookup index by `route_operation_id` for audit/reverse inspection.
 
-The migration must not alter existing lifecycle or runtime tables.
+Foreign keys use PostgreSQL `NO ACTION` for delete and update. The
+`UNIQUE(work_order_operation_id)` constraint supplies the lifecycle lookup
+index, so no duplicate standalone index is added. `route_operation_id` is not
+unique because one route-operation definition can bind many lifecycle
+instances.
+
+The migration must not alter existing lifecycle or runtime tables. It creates
+no binding row and contains no legacy backfill. The selected artifacts are:
+
+- Migration draft:
+  `db/migrations/009_work_order_operation_route_binding.sql`.
+- Physical schema plan:
+  `docs/architecture/work_order_route_operation_binding_schema_plan.md`.
+- Future apply runbook:
+  `docs/runbooks/work_order_route_operation_binding_migration_apply_runbook.md`.
+
+The migration has not been applied and the binding table has not been created
+in the source database by this planning phase.
 
 ## Migration Strategy
 
 Phase 1 - additive binding schema:
 
-1. Precheck real migration ordering and table/constraint names.
-2. Create only the sidecar table, constraints, and indexes.
-3. Do not backfill legacy rows.
-4. Verify a second apply is idempotent or fails only by the repository's
-   accepted migration convention.
-5. Verify V1/V2 config and all lifecycle/runtime table counts and digests are
+1. Review `009_work_order_operation_route_binding.sql` against the schema plan.
+2. Create only the sidecar table, constraints, and route-operation index.
+3. Permit only `manual_setup` and `work_order_release` source values.
+4. Do not seed bindings or backfill legacy rows.
+5. Require exact-shape assertions after `IF NOT EXISTS` creation.
+6. Require a successful, no-change second apply for the exact reviewed shape.
+7. Verify V1/V2 config and all lifecycle/runtime table counts and digests are
    unchanged.
-6. Apply only to disposable clones before any separately approved source apply.
+8. Apply only to disposable clones before any separately approved source apply.
 
 No destructive rollback SQL should be embedded. Operational rollback disables
 new readers/writers while retaining the additive audit table.
@@ -151,26 +172,6 @@ Suggested error categories for later implementation review:
 - selected route mismatch;
 - binding immutable.
 
-## Work-Order Release Integration
-
-Phase 5 - implement release as one transaction:
-
-1. Accept product/item plus explicit `route_code + version`, or an already
-   resolved explicit route identity.
-2. Validate the selected route and item relationship.
-3. Read its active route operations in sequence.
-4. Create lifecycle `work_order_operations` from those definitions.
-5. Create one `work_order_release` binding per lifecycle operation.
-6. Create/update station queue rows using the lifecycle operation IDs.
-7. Commit work-order operations, bindings, and initial queue state together.
-
-After selection, the transaction must not re-query latest-active route.
-Failure to create any binding must roll back the complete release.
-
-Existing `upsert_mesql_queue_items` is an integration mirror, not this target
-release flow. Do not silently attach inferred bindings to its imported legacy
-operation codes.
-
 ## Runtime Init Integration
 
 Phase 4 - transition validation:
@@ -193,6 +194,26 @@ Target behavior after Phase 5:
 - Config and station validation use the bound route operation.
 - Missing binding fails before mutation.
 - The production caller no longer chooses config independently.
+
+## Work-Order Release Integration
+
+Phase 5 - implement release as one transaction:
+
+1. Accept product/item plus explicit `route_code + version`, or an already
+   resolved explicit route identity.
+2. Validate the selected route and item relationship.
+3. Read its active route operations in sequence.
+4. Create lifecycle `work_order_operations` from those definitions.
+5. Create one `work_order_release` binding per lifecycle operation.
+6. Create/update station queue rows using the lifecycle operation IDs.
+7. Commit work-order operations, bindings, and initial queue state together.
+
+After selection, the transaction must not re-query latest-active route.
+Failure to create any binding must roll back the complete release.
+
+Existing `upsert_mesql_queue_items` is an integration mirror, not this target
+release flow. Do not silently attach inferred bindings to its imported legacy
+operation codes.
 
 ## Existing Helper Compatibility
 

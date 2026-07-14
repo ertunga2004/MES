@@ -882,3 +882,37 @@ mutation was performed.
 - No schema, migration, seed, Python, test, database, lifecycle, queue, runtime,
   API/Kiosk/IoT/OEE, approval, production-flow, inventory, MESQL, or FERP
   mutation was performed.
+
+## Work-Order Route-Operation Binding Schema Draft
+
+- Phase 4B architecture commit:
+  `1d48613 docs: define work-order route-operation binding`.
+- Accepted identity contract:
+  explicit immutable `work_order_operation_id -> route_operation_id` binding.
+- Selected sidecar table:
+  `mes.work_order_operation_route_bindings`.
+- Cardinality invariant: one lifecycle operation instance has at most one
+  route-operation binding; one route operation may bind many lifecycle
+  instances.
+- The binding preserves the selected stable route-operation and route-version
+  identity for the lifecycle operation's history.
+- Accepted Phase 4C binding sources:
+  - `manual_setup`
+  - `work_order_release`
+- Automatic legacy backfill is not included. Existing unsupported records
+  remain `unbound legacy`; station, operation-code, sequence, combined-field,
+  and latest-active inference remain rejected.
+- The MVP is insert-only. It has no active flag, update/delete path, rebind,
+  effective-date, soft-delete, or supersession model.
+- Migration draft:
+  `db/migrations/009_work_order_operation_route_binding.sql`.
+- Schema plan:
+  `docs/architecture/work_order_route_operation_binding_schema_plan.md`.
+- Future apply runbook:
+  `docs/runbooks/work_order_route_operation_binding_migration_apply_runbook.md`.
+- The migration has not been applied. The binding table has not been created
+  in the source database and no binding row exists as a result of this phase.
+- No Python, test, helper, runtime-init, work-order release, lifecycle, runtime,
+  queue, config, API/Kiosk/IoT/OEE, approval, production-flow, inventory,
+  MESQL, or FERP change was made.
+- Next phase: controlled migration review and disposable-clone apply.

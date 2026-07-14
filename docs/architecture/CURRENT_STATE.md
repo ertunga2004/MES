@@ -978,3 +978,39 @@ mutation was performed.
 - No binding write helper or runtime-init/work-order-release integration was
   added.
 - No API, Kiosk, IoT/MQTT, Observer, OEE/KPI, MESQL, or FERP change was made.
+
+## Verified Controlled Work-Order Route-Operation Binding Writes
+
+- Last updated: `2026-07-14`.
+- Implementation commit:
+  `d67a3fb feat: add controlled work-order route-operation binding writes`.
+- Helper: `create_work_order_operation_route_binding`.
+- Unit regression: targeted `143` tests and combined `179` tests, both `OK`.
+- Source `mes` binding table remained absent and no helper was called against
+  the source database.
+- Before clone migration, the real write helper propagated PostgreSQL
+  `UndefinedTable` (`42P01`) without returning replay or conflict.
+- Migration `009_work_order_operation_route_binding.sql` was applied only to
+  disposable clone `mes_binding_write_smoke_20260714_140320`.
+- Binding A first insert returned `created=true`; its exact replay returned
+  `created=false` with unchanged PK, timestamps, and metadata.
+- Binding B first insert returned `created=true`; its exact replay returned
+  `created=false` with unchanged PK, timestamps, and metadata.
+- Final clone binding row count was `2`.
+- Operation-already-bound, binding-ID reuse, metadata, source, actor, and
+  crossed-unique conflicts returned
+  `409 WORK_ORDER_OPERATION_ROUTE_BINDING_CONFLICT` without partial rows.
+- Missing lifecycle and route-operation parents propagated PostgreSQL
+  `ForeignKeyViolation` (`23503`) without conflict masking or partial rows.
+- Post-error Binding A/B exact replays succeeded, proving clean subsequent
+  connection/transaction behavior.
+- Binding count/digest and all existing 15 table counts/digests were unchanged
+  throughout conflict, FK, and recovery calls.
+- The clone-only bindings were created for helper verification and are not
+  accepted production semantic mappings.
+- Source `mes` remained unchanged, the disposable clone was dropped, and its
+  absence was verified.
+- Evidence:
+  `docs/runbooks/work_order_route_operation_binding_write_helper_isolated_smoke_evidence_20260714.md`.
+- No runtime-init or work-order-release integration was added.
+- No API, Kiosk, IoT/MQTT, Observer, OEE/KPI, MESQL, or FERP change was made.

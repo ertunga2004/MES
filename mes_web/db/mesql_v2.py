@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -20,6 +21,7 @@ STATION_LOCATION_READ_MODEL_FEATURE_FLAG = "MES_WEB_DB_STATION_LOCATION_READ_MOD
 READY_OPERATION_STATUSES = {"queued", "ready"}
 ACTIVE_OPERATION_STATUSES = {"active", "in_progress"}
 COMPLETED_OPERATION_STATUSES = {"completed", "done"}
+BINDING_SOURCES = {"manual_setup", "work_order_release"}
 
 
 def _json_safe(value: Any) -> Any:
@@ -110,6 +112,15 @@ def _required_uuid_text(value: Any, *, field_name: str) -> str:
         return str(UUID(normalized))
     except (TypeError, ValueError, AttributeError):
         raise MesqlV2Error(f"{field_name}_INVALID", status_code=400) from None
+
+
+def _required_case_preserving_text(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise MesqlV2Error(f"{field_name}_INVALID", status_code=400)
+    normalized = value.strip()
+    if not normalized:
+        raise MesqlV2Error(f"{field_name}_REQUIRED", status_code=400)
+    return normalized
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -795,6 +806,35 @@ SELECT
 FROM mes.work_order_operation_route_bindings
 WHERE binding_id = %(binding_id)s
 LIMIT 1
+"""
+
+INSERT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL = """
+INSERT INTO mes.work_order_operation_route_bindings (
+    binding_id,
+    work_order_operation_id,
+    route_operation_id,
+    binding_source,
+    bound_by,
+    metadata
+) VALUES (
+    %(binding_id)s,
+    %(work_order_operation_id)s::uuid,
+    %(route_operation_id)s,
+    %(binding_source)s,
+    %(bound_by)s,
+    %(metadata)s::jsonb
+)
+ON CONFLICT DO NOTHING
+RETURNING
+    binding_pk,
+    binding_id,
+    work_order_operation_id,
+    route_operation_id,
+    binding_source,
+    bound_by,
+    bound_at,
+    metadata,
+    created_at
 """
 
 SELECT_STATION_EVENT_SOURCES_SQL = """
@@ -1973,6 +2013,52 @@ def _work_order_operation_route_binding_row(row: Any) -> JsonObject:
     })
 
 
+def _get_work_order_operation_route_binding_with_cursor(
+    cursor: Any,
+    work_order_operation_id: str,
+) -> JsonObject | None:
+    cursor.execute(
+        SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL,
+        {"work_order_operation_id": work_order_operation_id},
+    )
+    row = cursor.fetchone()
+    return _work_order_operation_route_binding_row(row) if row else None
+
+
+def _get_work_order_operation_route_binding_by_id_with_cursor(
+    cursor: Any,
+    binding_id: str,
+) -> JsonObject | None:
+    cursor.execute(
+        SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_BY_ID_SQL,
+        {"binding_id": binding_id},
+    )
+    row = cursor.fetchone()
+    return _work_order_operation_route_binding_row(row) if row else None
+
+
+def _binding_matches_request(binding: JsonObject, request: JsonObject) -> bool:
+    return all(
+        binding.get(field) == request.get(field)
+        for field in (
+            "binding_id",
+            "work_order_operation_id",
+            "route_operation_id",
+            "binding_source",
+            "bound_by",
+            "metadata",
+        )
+    )
+
+
+def _same_binding_identity(left: JsonObject, right: JsonObject) -> bool:
+    return (
+        left.get("binding_id") == right.get("binding_id")
+        and left.get("work_order_operation_id")
+        == right.get("work_order_operation_id")
+    )
+
+
 def _station_event_source_row(row: Any) -> JsonObject:
     return _json_safe({
         "station_code": _upper(_field(row, 0, "station_code")),
@@ -2319,33 +2405,141 @@ def get_work_order_operation_route_binding(
         if connection is None:
             raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
         with connection.cursor() as cursor:
-            cursor.execute(
-                SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL,
-                {"work_order_operation_id": normalized_operation_id},
+            return _get_work_order_operation_route_binding_with_cursor(
+                cursor,
+                normalized_operation_id,
             )
-            row = cursor.fetchone()
-    return _work_order_operation_route_binding_row(row) if row else None
 
 
 def get_work_order_operation_route_binding_by_id(
     config: AppConfig,
     binding_id: str,
 ) -> JsonObject | None:
-    if not isinstance(binding_id, str):
-        raise MesqlV2Error("BINDING_ID_INVALID", status_code=400)
-    normalized_binding_id = binding_id.strip()
-    if not normalized_binding_id:
-        raise MesqlV2Error("BINDING_ID_REQUIRED", status_code=400)
+    normalized_binding_id = _required_case_preserving_text(
+        binding_id,
+        field_name="BINDING_ID",
+    )
     with database_connection(config) as connection:
         if connection is None:
             raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
         with connection.cursor() as cursor:
-            cursor.execute(
-                SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_BY_ID_SQL,
-                {"binding_id": normalized_binding_id},
+            return _get_work_order_operation_route_binding_by_id_with_cursor(
+                cursor,
+                normalized_binding_id,
             )
-            row = cursor.fetchone()
-    return _work_order_operation_route_binding_row(row) if row else None
+
+
+def create_work_order_operation_route_binding(
+    config: AppConfig,
+    *,
+    binding_id: str,
+    work_order_operation_id: str,
+    route_operation_id: str,
+    binding_source: str,
+    bound_by: str,
+    metadata: JsonObject | None = None,
+) -> JsonObject:
+    normalized_binding_id = _required_case_preserving_text(
+        binding_id,
+        field_name="BINDING_ID",
+    )
+    normalized_operation_id = _required_uuid_text(
+        work_order_operation_id,
+        field_name="WORK_ORDER_OPERATION_ID",
+    )
+    normalized_route_operation_id = _required_case_preserving_text(
+        route_operation_id,
+        field_name="ROUTE_OPERATION_ID",
+    )
+    normalized_binding_source = _required_case_preserving_text(
+        binding_source,
+        field_name="BINDING_SOURCE",
+    )
+    if normalized_binding_source not in BINDING_SOURCES:
+        raise MesqlV2Error("BINDING_SOURCE_INVALID", status_code=400)
+    normalized_bound_by = _required_case_preserving_text(
+        bound_by,
+        field_name="BOUND_BY",
+    )
+    if metadata is None:
+        normalized_metadata: JsonObject = {}
+    elif isinstance(metadata, dict):
+        try:
+            normalized_metadata = _json_safe(metadata)
+            json.dumps(normalized_metadata)
+        except (TypeError, ValueError, RecursionError):
+            raise MesqlV2Error(
+                "BINDING_METADATA_INVALID",
+                status_code=400,
+            ) from None
+    else:
+        raise MesqlV2Error("BINDING_METADATA_INVALID", status_code=400)
+
+    request = {
+        "binding_id": normalized_binding_id,
+        "work_order_operation_id": normalized_operation_id,
+        "route_operation_id": normalized_route_operation_id,
+        "binding_source": normalized_binding_source,
+        "bound_by": normalized_bound_by,
+        "metadata": normalized_metadata,
+    }
+    created = False
+    binding: JsonObject | None = None
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with _transaction(connection):
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    INSERT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL,
+                    {
+                        **request,
+                        "metadata": _jsonb(normalized_metadata),
+                    },
+                )
+                inserted_row = cursor.fetchone()
+                if inserted_row:
+                    created = True
+                    binding = _work_order_operation_route_binding_row(inserted_row)
+                else:
+                    existing_by_operation = (
+                        _get_work_order_operation_route_binding_with_cursor(
+                            cursor,
+                            normalized_operation_id,
+                        )
+                    )
+                    existing_by_id = (
+                        _get_work_order_operation_route_binding_by_id_with_cursor(
+                            cursor,
+                            normalized_binding_id,
+                        )
+                    )
+                    if (
+                        existing_by_operation is not None
+                        and existing_by_id is not None
+                        and not _same_binding_identity(
+                            existing_by_operation,
+                            existing_by_id,
+                        )
+                    ):
+                        raise MesqlV2Error(
+                            "WORK_ORDER_OPERATION_ROUTE_BINDING_CONFLICT",
+                            status_code=409,
+                        )
+                    binding = existing_by_operation or existing_by_id
+                    if binding is None or not _binding_matches_request(
+                        binding,
+                        request,
+                    ):
+                        raise MesqlV2Error(
+                            "WORK_ORDER_OPERATION_ROUTE_BINDING_CONFLICT",
+                            status_code=409,
+                        )
+        commit = getattr(connection, "commit", None)
+        if created and callable(commit):
+            commit()
+
+    return _json_safe({"created": created, "binding": binding})
 
 
 def list_station_event_sources(

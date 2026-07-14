@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 ## Local MES Execution and Portable Runtime Baseline
 
@@ -916,3 +916,34 @@ mutation was performed.
   queue, config, API/Kiosk/IoT/OEE, approval, production-flow, inventory,
   MESQL, or FERP change was made.
 - Next phase: controlled migration review and disposable-clone apply.
+
+## Verified Work-Order Route-Operation Binding Schema Migration
+
+- Phase 4C artifact commit:
+  `5c57f70 feat: add work-order route-operation binding schema`.
+- Migration:
+  `db/migrations/009_work_order_operation_route_binding.sql`.
+- The migration was not applied to source `mes`.
+- First apply on disposable primary clone: PASS.
+- Idempotency reapply: PASS; table OID and exact schema digests were preserved.
+- Negative malformed-schema rejection: PASS; the malformed table was not
+  silently accepted or repaired, and the explicit nine-column assertion was
+  observed.
+- Verified table: `mes.work_order_operation_route_bindings`.
+- Verified column / constraint / index counts: `9 / 9 / 4`.
+- Binding-table row count after first apply and reapply: `0`.
+- Existing-table no-write verification: `15/15` count and digest PASS after
+  first apply and reapply.
+- No lifecycle, config, runtime, event, approval, production-flow, queue,
+  location, or binding row mutation occurred.
+- Source `mes` binding table remained absent; its final 15/15 counts and
+  digests matched the pre-smoke baseline.
+- Retained V1 remained `active` at
+  `OPERATOR_OBSERVATION_APPROVAL`, with final step `pending` and event /
+  approval / production-flow counts `4 / 0 / 0`.
+- Primary and negative disposable clones were dropped and their absence was
+  verified.
+- Evidence:
+  `docs/runbooks/work_order_route_operation_binding_migration_isolated_smoke_evidence_20260714.md`.
+- No Python, test, helper, runtime-init, work-order release, API/Kiosk/IoT/OEE,
+  MESQL, or FERP implementation was changed.

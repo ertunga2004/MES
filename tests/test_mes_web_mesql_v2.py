@@ -12,6 +12,7 @@ from unittest.mock import patch
 from uuid import UUID
 
 from fastapi.testclient import TestClient
+from psycopg.errors import UndefinedTable
 
 import mes_web.app as app_module
 from mes_web.config import AppConfig
@@ -89,6 +90,7 @@ class _Cursor:
         self.inserted_operation_event_row: dict | None = None
         self.station_exists = True
         self.raise_on_sql_fragment: str | None = None
+        self.exception_on_sql_fragment: tuple[str, Exception] | None = None
         self.exited = False
 
     def __enter__(self):
@@ -103,6 +105,11 @@ class _Cursor:
         self.last_params = dict(params or {})
         self.executed.append((sql, dict(params or {})))
         lowered = sql.lower()
+        if (
+            self.exception_on_sql_fragment is not None
+            and self.exception_on_sql_fragment[0] in lowered
+        ):
+            raise self.exception_on_sql_fragment[1]
         if self.raise_on_sql_fragment and self.raise_on_sql_fragment in lowered:
             raise RuntimeError(f"forced cursor failure: {self.raise_on_sql_fragment}")
         if "insert into mes.work_order_operation_route_bindings" in lowered:
@@ -436,6 +443,7 @@ class _Connection:
         self.committed = False
         self.transaction_entered = False
         self.transaction_rolled_back = False
+        self.transaction_sql_history: list[tuple[str, dict]] = []
 
     def cursor(self):
         return self.cursor_instance
@@ -447,9 +455,13 @@ class _Connection:
             def __enter__(self):
                 connection.transaction_entered = True
                 self.snapshot = deepcopy(connection.cursor_instance.__dict__)
+                self.start_index = len(connection.cursor_instance.executed)
                 return self
 
             def __exit__(self, exc_type, *_args):
+                connection.transaction_sql_history = deepcopy(
+                    connection.cursor_instance.executed[self.start_index :]
+                )
                 if exc_type is not None:
                     connection.cursor_instance.__dict__.clear()
                     connection.cursor_instance.__dict__.update(self.snapshot)
@@ -1062,6 +1074,20 @@ def _seed_valid_route_operation_config(cursor: _Cursor) -> None:
     cursor.runtime_operation_row = _fake_runtime_operation()
 
 
+def _seed_matching_runtime_binding(
+    cursor: _Cursor,
+    *,
+    work_order_operation_id: str = "11111111-1111-1111-1111-111111111111",
+    route_operation_id: str = "ROUTE_BOX_PACKAGING_V1_OP10",
+) -> None:
+    cursor.work_order_operation_route_binding_rows = [
+        _fake_work_order_operation_route_binding(
+            work_order_operation_id=UUID(work_order_operation_id),
+            route_operation_id=route_operation_id,
+        )
+    ]
+
+
 def _seed_startable_execution_step(
     cursor: _Cursor,
     *,
@@ -1255,6 +1281,23 @@ class MesqlV2Tests(unittest.TestCase):
         self.assertEqual(error.exception.detail, detail)
         self.assertEqual(error.exception.status_code, 400)
         connection_factory.assert_not_called()
+
+    def _initialize_runtime(self, connection: _Connection, **overrides):
+        values = {
+            "work_order_operation_id": "11111111-1111-1111-1111-111111111111",
+            "route_operation_id": "ROUTE_BOX_PACKAGING_V1_OP10",
+            "station_code": "ASSEMBLY_01",
+        }
+        values.update(overrides)
+        with patch.object(
+            mesql_v2,
+            "database_connection",
+            side_effect=lambda _config: _yield_connection(connection),
+        ):
+            return initialize_execution_state(
+                AppConfig(db_enabled=True),
+                **values,
+            )
 
     def test_migration_is_additive_and_defines_v2_tables(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "db" / "migrations" / "008_mesql_integration_v2.sql").read_text(encoding="utf-8").lower()
@@ -2791,6 +2834,7 @@ class MesqlV2Tests(unittest.TestCase):
     def test_initialize_execution_state_inserts_state_and_steps(self) -> None:
         connection = _Connection()
         _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(connection.cursor_instance)
 
         @contextmanager
         def fake_connection(_config):
@@ -2889,6 +2933,470 @@ class MesqlV2Tests(unittest.TestCase):
                 )
 
         self.assertEqual(error.exception.detail, "ROUTE_OPERATION_CONFIG_INVALID")
+        self.assertEqual(error.exception.status_code, 409)
+
+    def test_runtime_init_binding_validation_reuses_select_only_sql(self) -> None:
+        sql = mesql_v2.SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL.lower()
+        source = inspect.getsource(initialize_execution_state).lower()
+
+        self.assertTrue(sql.lstrip().startswith("select"))
+        self.assertEqual(sql.count("from mes.work_order_operation_route_bindings"), 1)
+        self.assertNotRegex(sql, r"\b(insert|update|delete|merge|truncate)\b")
+        self.assertIn("_get_work_order_operation_route_binding_with_cursor", source)
+        self.assertNotIn("create_work_order_operation_route_binding", source)
+        self.assertNotRegex(
+            source,
+            r"(insert\s+into|update|delete\s+from)\s+mes\.work_order_operation_route_bindings",
+        )
+
+    def test_runtime_init_binding_validation_has_no_inference_query(self) -> None:
+        sql = mesql_v2.SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL.lower()
+        source = inspect.getsource(initialize_execution_state).lower()
+
+        for forbidden in (
+            "station_code",
+            "operation_code",
+            "sequence_no",
+            "route_code",
+            "route_version",
+            "product_code",
+            "latest active",
+            "execution_state metadata",
+        ):
+            self.assertNotIn(forbidden, sql)
+        self.assertNotIn("list_route_operations", source)
+        self.assertNotIn("latest", source)
+
+    def test_initialize_execution_state_public_signature_is_unchanged(self) -> None:
+        signature = inspect.signature(initialize_execution_state)
+
+        self.assertEqual(
+            list(signature.parameters),
+            [
+                "config",
+                "work_order_operation_id",
+                "route_operation_id",
+                "station_code",
+                "actor_id",
+            ],
+        )
+
+    def test_binding_helper_public_contracts_are_unchanged(self) -> None:
+        self.assertEqual(
+            list(inspect.signature(get_work_order_operation_route_binding).parameters),
+            ["config", "work_order_operation_id"],
+        )
+        self.assertEqual(
+            list(inspect.signature(get_work_order_operation_route_binding_by_id).parameters),
+            ["config", "binding_id"],
+        )
+        self.assertEqual(
+            list(inspect.signature(create_work_order_operation_route_binding).parameters),
+            [
+                "config",
+                "binding_id",
+                "work_order_operation_id",
+                "route_operation_id",
+                "binding_source",
+                "bound_by",
+                "metadata",
+            ],
+        )
+
+    def test_initialize_execution_state_accepts_matching_binding(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(connection.cursor_instance)
+
+        result = self._initialize_runtime(connection)
+
+        self.assertTrue(result["initialized"])
+        self.assertEqual(result["execution_state"]["execution_status"], "ready")
+        self.assertEqual(len(result["steps"]), 1)
+
+    def test_runtime_init_binding_lookup_precedes_state_and_step_inserts(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(connection.cursor_instance)
+
+        self._initialize_runtime(connection)
+        statements = [sql.lower() for sql, _params in connection.transaction_sql_history]
+        binding_index = next(
+            index
+            for index, sql in enumerate(statements)
+            if "from mes.work_order_operation_route_bindings" in sql
+        )
+        state_insert_index = next(
+            index
+            for index, sql in enumerate(statements)
+            if "insert into mes.work_order_operation_execution_state" in sql
+        )
+        step_insert_index = next(
+            index
+            for index, sql in enumerate(statements)
+            if "insert into mes.work_order_operation_steps" in sql
+        )
+
+        self.assertLess(binding_index, state_insert_index)
+        self.assertLess(binding_index, step_insert_index)
+
+    def test_runtime_init_binding_lookup_and_writes_share_transaction_cursor(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(connection.cursor_instance)
+
+        self._initialize_runtime(connection)
+        transaction_sql = "\n".join(
+            sql.lower() for sql, _params in connection.transaction_sql_history
+        )
+
+        self.assertTrue(connection.transaction_entered)
+        self.assertFalse(connection.transaction_rolled_back)
+        self.assertIn("from mes.work_order_operation_route_bindings", transaction_sql)
+        self.assertIn("insert into mes.work_order_operation_execution_state", transaction_sql)
+        self.assertIn("insert into mes.work_order_operation_steps", transaction_sql)
+
+    def test_runtime_init_return_shape_does_not_expose_binding(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(connection.cursor_instance)
+
+        result = self._initialize_runtime(connection)
+
+        self.assertEqual(
+            set(result),
+            {
+                "status",
+                "work_order_operation_id",
+                "route_operation_id",
+                "station_code",
+                "initialized",
+                "execution_state",
+                "steps",
+            },
+        )
+        for forbidden in (
+            "binding",
+            "binding_id",
+            "binding_source",
+            "bound_at",
+            "binding_validated",
+        ):
+            self.assertNotIn(forbidden, result)
+
+    def test_runtime_init_requires_binding_for_new_execution_state(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            self._initialize_runtime(connection)
+
+        self.assertEqual(
+            error.exception.detail,
+            "WORK_ORDER_OPERATION_ROUTE_BINDING_REQUIRED",
+        )
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertTrue(connection.transaction_rolled_back)
+
+    def test_missing_runtime_binding_performs_no_runtime_write(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+
+        with self.assertRaises(mesql_v2.MesqlV2Error):
+            self._initialize_runtime(connection)
+        transaction_sql = "\n".join(
+            sql.lower() for sql, _params in connection.transaction_sql_history
+        )
+
+        self.assertNotIn("insert into mes.work_order_operation_execution_state", transaction_sql)
+        self.assertNotIn("insert into mes.work_order_operation_steps", transaction_sql)
+        self.assertIsNone(connection.cursor_instance.execution_state_row)
+        self.assertEqual(connection.cursor_instance.execution_step_rows, [])
+        self.assertFalse(connection.committed)
+
+    def test_missing_runtime_binding_does_not_infer_or_create_binding(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+
+        with self.assertRaises(mesql_v2.MesqlV2Error):
+            self._initialize_runtime(connection)
+        transaction_sql = "\n".join(
+            sql.lower() for sql, _params in connection.transaction_sql_history
+        )
+
+        self.assertEqual(
+            transaction_sql.count("from mes.work_order_operation_route_bindings"),
+            1,
+        )
+        self.assertNotIn("insert into mes.work_order_operation_route_bindings", transaction_sql)
+        self.assertNotIn("from mes.route_operations", transaction_sql)
+        self.assertNotIn("sequence_no", transaction_sql)
+
+    def test_runtime_init_rejects_binding_route_mismatch(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(
+            connection.cursor_instance,
+            route_operation_id="ROUTE_BOX_PACKAGING_V1_OP20",
+        )
+
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            self._initialize_runtime(connection)
+
+        self.assertEqual(
+            error.exception.detail,
+            "WORK_ORDER_OPERATION_ROUTE_BINDING_MISMATCH",
+        )
+        self.assertEqual(error.exception.status_code, 409)
+
+    def test_runtime_binding_mismatch_performs_no_runtime_write(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(
+            connection.cursor_instance,
+            route_operation_id="ROUTE_BOX_PACKAGING_V1_OP20",
+        )
+
+        with self.assertRaises(mesql_v2.MesqlV2Error):
+            self._initialize_runtime(connection)
+        transaction_sql = "\n".join(
+            sql.lower() for sql, _params in connection.transaction_sql_history
+        )
+
+        self.assertNotIn("insert into mes.work_order_operation_execution_state", transaction_sql)
+        self.assertNotIn("insert into mes.work_order_operation_steps", transaction_sql)
+        self.assertIsNone(connection.cursor_instance.execution_state_row)
+        self.assertEqual(connection.cursor_instance.execution_step_rows, [])
+        self.assertTrue(connection.transaction_rolled_back)
+
+    def test_runtime_binding_mismatch_does_not_mutate_binding(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(
+            connection.cursor_instance,
+            route_operation_id="ROUTE_BOX_PACKAGING_V1_OP20",
+        )
+        before = deepcopy(
+            connection.cursor_instance.work_order_operation_route_binding_rows
+        )
+
+        with self.assertRaises(mesql_v2.MesqlV2Error):
+            self._initialize_runtime(connection)
+        transaction_sql = "\n".join(
+            sql.lower() for sql, _params in connection.transaction_sql_history
+        )
+
+        self.assertEqual(
+            connection.cursor_instance.work_order_operation_route_binding_rows,
+            before,
+        )
+        self.assertNotRegex(
+            transaction_sql,
+            r"(insert\s+into|update|delete\s+from)\s+mes\.work_order_operation_route_bindings",
+        )
+
+    def test_existing_execution_state_is_grandfathered_without_binding(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        connection.cursor_instance.execution_state_row = _fake_execution_state()
+        connection.cursor_instance.execution_step_rows = [_fake_execution_step()]
+
+        result = self._initialize_runtime(connection)
+
+        self.assertFalse(result["initialized"])
+        self.assertEqual(len(result["steps"]), 1)
+
+    def test_grandfathered_runtime_does_not_query_binding_table(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        connection.cursor_instance.execution_state_row = _fake_execution_state()
+        connection.cursor_instance.execution_step_rows = [_fake_execution_step()]
+
+        self._initialize_runtime(connection)
+        transaction_sql = "\n".join(
+            sql.lower() for sql, _params in connection.transaction_sql_history
+        )
+
+        self.assertNotIn("from mes.work_order_operation_route_bindings", transaction_sql)
+
+    def test_grandfathered_runtime_survives_missing_binding_table_behavior(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        connection.cursor_instance.execution_state_row = _fake_execution_state()
+        connection.cursor_instance.execution_step_rows = [_fake_execution_step()]
+        connection.cursor_instance.exception_on_sql_fragment = (
+            "from mes.work_order_operation_route_bindings",
+            UndefinedTable('relation "mes.work_order_operation_route_bindings" does not exist'),
+        )
+
+        result = self._initialize_runtime(connection)
+
+        self.assertFalse(result["initialized"])
+        self.assertFalse(connection.transaction_rolled_back)
+
+    def test_grandfathered_runtime_preserves_state_fields_and_timestamps(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        state = _fake_execution_state(execution_status="active")
+        state["current_step_code"] = "COLOR_SENSOR_ENTRY_EVIDENCE"
+        state["started_at"] = datetime(2026, 7, 9, 11, 0, 0)
+        connection.cursor_instance.execution_state_row = state
+        connection.cursor_instance.execution_step_rows = [_fake_execution_step(status="active")]
+        before = deepcopy(state)
+
+        result = self._initialize_runtime(connection)
+
+        self.assertFalse(result["initialized"])
+        self.assertEqual(connection.cursor_instance.execution_state_row, before)
+        self.assertEqual(result["execution_state"]["execution_status"], "active")
+        self.assertEqual(
+            result["execution_state"]["current_step_code"],
+            "COLOR_SENSOR_ENTRY_EVIDENCE",
+        )
+
+    def test_grandfathered_runtime_does_not_duplicate_steps(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        connection.cursor_instance.execution_state_row = _fake_execution_state()
+        connection.cursor_instance.execution_step_rows = [_fake_execution_step()]
+        before = deepcopy(connection.cursor_instance.execution_step_rows)
+
+        result = self._initialize_runtime(connection)
+
+        self.assertFalse(result["initialized"])
+        self.assertEqual(connection.cursor_instance.execution_step_rows, before)
+        transaction_sql = "\n".join(
+            sql.lower() for sql, _params in connection.transaction_sql_history
+        )
+        self.assertNotIn("insert into mes.work_order_operation_steps", transaction_sql)
+
+    def test_new_runtime_init_propagates_binding_undefined_table(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        connection.cursor_instance.exception_on_sql_fragment = (
+            "from mes.work_order_operation_route_bindings",
+            UndefinedTable('relation "mes.work_order_operation_route_bindings" does not exist'),
+        )
+
+        with self.assertRaises(UndefinedTable):
+            self._initialize_runtime(connection)
+
+        self.assertTrue(connection.transaction_rolled_back)
+        self.assertIsNone(connection.cursor_instance.execution_state_row)
+
+    def test_new_runtime_init_propagates_generic_binding_select_error(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        connection.cursor_instance.exception_on_sql_fragment = (
+            "from mes.work_order_operation_route_bindings",
+            RuntimeError("binding lookup failed"),
+        )
+        cleanup = {"connection": False}
+
+        @contextmanager
+        def fake_connection(_config):
+            try:
+                yield connection
+            finally:
+                cleanup["connection"] = True
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            with self.assertRaisesRegex(RuntimeError, "binding lookup failed"):
+                initialize_execution_state(
+                    AppConfig(db_enabled=True),
+                    work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                    route_operation_id="ROUTE_BOX_PACKAGING_V1_OP10",
+                    station_code="ASSEMBLY_01",
+                )
+
+        self.assertTrue(cleanup["connection"])
+        self.assertTrue(connection.transaction_rolled_back)
+        self.assertFalse(connection.committed)
+        self.assertIsNone(connection.cursor_instance.execution_state_row)
+
+    def test_matching_binding_wrong_station_preserves_station_guard(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(connection.cursor_instance)
+
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            self._initialize_runtime(connection, station_code="PACKAGING_01")
+
+        self.assertEqual(error.exception.detail, "ROUTE_OPERATION_STATION_MISMATCH")
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertFalse(connection.transaction_entered)
+        self.assertIsNone(connection.cursor_instance.execution_state_row)
+
+    def test_matching_binding_creates_exact_config_step_count(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        connection.cursor_instance.operation_step_rows.append(
+            _fake_operation_step(step_code="ROBOT_ARM_DROP_COMPLETED", step_no=20)
+        )
+        _seed_matching_runtime_binding(connection.cursor_instance)
+
+        result = self._initialize_runtime(connection)
+
+        self.assertTrue(result["initialized"])
+        self.assertEqual(len(result["steps"]), 2)
+        self.assertEqual(
+            [step["step_code"] for step in result["steps"]],
+            ["COLOR_SENSOR_ENTRY_EVIDENCE", "ROBOT_ARM_DROP_COMPLETED"],
+        )
+
+    def test_matching_binding_keeps_work_order_operation_runtime_identity(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(connection.cursor_instance)
+
+        result = self._initialize_runtime(connection)
+
+        operation_id = "11111111-1111-1111-1111-111111111111"
+        self.assertEqual(result["work_order_operation_id"], operation_id)
+        self.assertEqual(
+            result["execution_state"]["work_order_operation_id"],
+            operation_id,
+        )
+        self.assertTrue(
+            all(step["work_order_operation_id"] == operation_id for step in result["steps"])
+        )
+
+    def test_runtime_step_insert_failure_rolls_back_matching_init(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(connection.cursor_instance)
+        connection.cursor_instance.raise_on_sql_fragment = (
+            "insert into mes.work_order_operation_steps"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "forced cursor failure"):
+            self._initialize_runtime(connection)
+
+        self.assertTrue(connection.transaction_rolled_back)
+        self.assertFalse(connection.committed)
+        self.assertIsNone(connection.cursor_instance.execution_state_row)
+        self.assertEqual(connection.cursor_instance.execution_step_rows, [])
+        transaction_sql = "\n".join(
+            sql.lower() for sql, _params in connection.transaction_sql_history
+        )
+        self.assertIn("insert into mes.work_order_operation_execution_state", transaction_sql)
+        self.assertIn("insert into mes.work_order_operation_steps", transaction_sql)
+
+    def test_existing_operation_station_mismatch_guard_is_preserved(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        connection.cursor_instance.runtime_operation_row = _fake_runtime_operation(
+            station_code="PACKAGING_01"
+        )
+        connection.cursor_instance.execution_state_row = _fake_execution_state()
+
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            self._initialize_runtime(connection)
+
+        self.assertEqual(
+            error.exception.detail,
+            "WORK_ORDER_OPERATION_STATION_MISMATCH",
+        )
         self.assertEqual(error.exception.status_code, 409)
 
     def test_runtime_initialize_does_not_write_forbidden_tables(self) -> None:

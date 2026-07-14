@@ -2874,6 +2874,23 @@ def initialize_execution_state(
                 initialized = existing_state is None
 
                 if initialized:
+                    binding = _get_work_order_operation_route_binding_with_cursor(
+                        cursor,
+                        normalized_operation_id,
+                    )
+                    if binding is None:
+                        raise MesqlV2Error(
+                            "WORK_ORDER_OPERATION_ROUTE_BINDING_REQUIRED",
+                            status_code=409,
+                        )
+                    if (
+                        _text(binding.get("route_operation_id"))
+                        != normalized_route_operation_id
+                    ):
+                        raise MesqlV2Error(
+                            "WORK_ORDER_OPERATION_ROUTE_BINDING_MISMATCH",
+                            status_code=409,
+                        )
                     state_metadata = {
                         "source": "runtime_engine_v0_phase1",
                         "route_operation_id": normalized_route_operation_id,

@@ -1099,3 +1099,70 @@ mutation was performed.
 - The execution flow verified runtime-engine behavior only; no work-order
   lifecycle, inventory movement, or work-order release integration occurred.
 - No API, Kiosk, IoT/MQTT, Observer, OEE/KPI, MESQL, or FERP change was made.
+
+## Work-Order Release and Route-Binding Architecture
+
+- Last updated: `2026-07-15`.
+- OP10 execution documentation commit:
+  `34d89f1 docs: record canonical v2 op10 execution smoke`.
+- Verified current runtime boundary: Canonical V2 OP10 can initialize from an
+  explicit immutable binding, execute its three required steps, and reach
+  runtime `closed`.
+- Runtime close does not currently mutate lifecycle or queue: the verified
+  candidate lifecycle operation and station queue row remained
+  `queued / queued`.
+- Repository creation behavior has two separate paths:
+  - JSON/FERP runtime import and its database mirror create/update work-order
+    state and legacy queue projection but do not create the complete database
+    lifecycle-operation set or select a route version.
+  - MESQL pull atomically upserts a work order, one payload-defined lifecycle
+    operation, and its queue row, but does not select/freeze route identity or
+    create operation bindings.
+- No production `release_work_order` flow, distinct `released` status, or
+  persistent work-order route/version selection currently exists. `queued` is
+  the current release-equivalent status.
+- Accepted model: controlled hybrid with mutually exclusive
+  `route_generated` and `explicit_existing_operation_mapping` modes.
+  `route_generated` is the default for new local MES work; explicit mapping is
+  reserved for a clean complete set of pre-existing operations with stable
+  lifecycle UUIDs.
+- Route selection is always explicit `route_code + route_version`, resolved to
+  one `process_route_id`. Active status is a selection-time validation guard;
+  no latest-version, product, station, operation-code, or sequence inference is
+  allowed.
+- Selected work-order persistence is an additive immutable
+  `mes.work_order_route_releases` sidecar carrying release identity, exact
+  process route/code/version, mode, count/digest, actor/source, timestamps, and
+  audit metadata.
+- Route-generated lifecycle UUIDs are server-controlled and retry-stable
+  UUIDv5 values. Explicit mapping requires exact set equality. Lifecycle
+  station/code/sequence fields are validated snapshots; config identity remains
+  the immutable operation binding.
+- Release record, generated/validated lifecycle operation set, all binding
+  rows, one initial queue row, and work-order `queued` state must share one
+  local PostgreSQL transaction. Failure leaves no partial artifact; exact
+  replay returns `released=false` without mutation.
+- Release queues only the smallest unique route sequence. Queue identity stays
+  `work_order_operation_id`; config identity stays
+  `binding.route_operation_id`. Existing successor activation remains a
+  lifecycle sequence/UUID concern.
+- Runtime `closed -> lifecycle completed -> successor queued` is a separate
+  completion-bridge phase. It is not part of work-order release; Phase 5F
+  designs it and Phase 5G implements/smokes OP10 completion and OP20 queueing.
+- Existing work orders receive no automatic backfill. Retained V1 historical
+  replay remains compatible; partial/ambiguous legacy bindings are not inferred
+  or completed automatically, and manual migration requires separate approval
+  and evidence.
+- FERP may later provide work-order identity and explicit route/mapping data,
+  but local PostgreSQL remains the atomic release boundary. MESQL is not the
+  route source of truth. FERP acknowledgement/outbox, MESQL reconciliation,
+  API, and feature-flag work are deferred to Phase 5H or later.
+- Decision:
+  `docs/architecture/work_order_release_route_binding_decision.md`.
+- Implementation plan:
+  `docs/architecture/work_order_release_route_binding_implementation_plan.md`.
+- Disposable smoke plan:
+  `docs/runbooks/work_order_release_route_binding_isolated_smoke_plan.md`.
+- This checkpoint changes no Python, tests, migration, seed, database, Docker,
+  runtime, lifecycle, binding, queue, API, Kiosk, IoT/OEE, approval,
+  production-flow, inventory, FERP, or MESQL behavior.

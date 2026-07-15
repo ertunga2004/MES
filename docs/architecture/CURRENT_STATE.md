@@ -1232,3 +1232,40 @@ mutation was performed.
   implementation, API/feature flag, lifecycle/binding/queue write, runtime
   helper, completion bridge, FERP, MESQL, Kiosk, IoT/OEE, approval,
   production-flow, or inventory action was performed.
+
+## Verified Work-Order Route-Release Schema Migration
+
+- Schema commit:
+  `3e4771154d19d43da6aee42a8939632e19e1c324` (`3e47711`), migration
+  `db/migrations/010_work_order_route_release.sql`.
+- Source `mes` was not migrated. Migration apply, Canonical V2 seed, and
+  fixtures were confined to disposable `template0` plus logical-dump clones.
+- First apply: PASS with exact physical shape `14 / 15 / 5` columns,
+  constraints, and indexes; no-backfill release count was `0`.
+- Exact parent `uq_mes_process_routes_identity_snapshot` covered
+  `(route_id, route_code, version)`. Exact child composite
+  `fk_mes_work_order_route_releases_route_identity` covered
+  `(process_route_id, route_code, route_version)` and referenced the parent
+  columns in the same order.
+- The same-row invalid route-identity insert failed with SQLSTATE `23503` and
+  rolled back.
+- Existing 15-table count/digest no-write comparison: PASS.
+- Empty reapply: PASS; table/sequence/schema identity, parent constraint, and
+  zero release rows were preserved without duplicate objects.
+- Data-bearing reapply: PASS; fixture PK, values, metadata, timestamps, row
+  digest, sequence state, and schema identity were preserved.
+- Negative cases all PASS: missing column, wrong digest check, wrong route FK,
+  wrong mode allowlist, and unexpected extra index.
+- The documented assertion prefix was observed in all negative cases; silent
+  repair was absent and every malformed migration transaction rolled back to
+  its pre-attempt catalog/data snapshot.
+- Source final integrity: PASS. Source release/binding tables and parent
+  snapshot constraint remained absent, Canonical V2 route count remained `0`,
+  retained V1 was unchanged, and all clone-only IDs were absent.
+- All primary/negative clones were dropped; health remained HTTP `200` with
+  `status=ok`.
+- No Python/read-helper/write-helper/API/release execution, lifecycle/binding/
+  queue/runtime action, completion bridge, inference/backfill, or Docker
+  rebuild/recreate/restart/down/volume operation occurred.
+- Evidence:
+  `docs/runbooks/work_order_route_release_migration_isolated_smoke_evidence_20260715.md`.

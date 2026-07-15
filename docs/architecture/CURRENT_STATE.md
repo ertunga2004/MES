@@ -1512,3 +1512,65 @@ mutation was performed.
   `docs/architecture/runtime_lifecycle_completion_bridge_concurrency_plan.md`.
 - Future isolated smoke plan:
   `docs/runbooks/runtime_lifecycle_completion_bridge_isolated_smoke_plan.md`.
+
+## Verified Runtime-to-Lifecycle Completion Bridge
+
+- Last verified: `2026-07-15`.
+- Phase 5G-B implementation commit:
+  `0910a145c73d2c0791fe1a1dd178702e01d04e55`.
+- The first Phase 5G-C isolated smoke failed only at concurrent duplicate
+  replay because stale preflight lifecycle `status/completed_at` values were
+  compared with post-lock progressed state. Its committed FAIL evidence is
+  retained unchanged as historical evidence.
+- Phase 5G-BR1 hotfix commit:
+  `2c62ad9ea3473886a51a0d1fa61bb25c10c0667f`
+  (`fix: allow completion bridge replay after concurrent progress`).
+- Post-lock preflight revalidation now covers only immutable lifecycle UUID,
+  work-order ID, operation code, sequence, station, and exact
+  `source/release_id` marker identity. Mutable status/timestamp progression is
+  handled by the authoritative replay classifier.
+- Focused review found no P1/P2 issue. Regression passed at targeted `600` and
+  combined `636`; compile and diff checks passed.
+- A fresh `template0` plus logical-restore disposable clone passed the complete
+  PostgreSQL retry matrix. Pre-sidecar legacy returned
+  `completion_bridge=None` with zero sidecar queries; marker-present missing
+  schema returned `503 RUNTIME_COMPLETION_BRIDGE_SCHEMA_NOT_READY` with zero
+  writes; unclassified `UndefinedTable` propagated unchanged.
+- Route-generated release through OP10 close, OP20 activation/queue, OP20
+  close, and final work-order completion passed with exact authoritative
+  timestamps and immutable snapshot preservation. Immediate and progressed
+  replays returned `bridged=false` with zero writes.
+- Real synchronized concurrent duplicate finish produced one
+  `finished/event_inserted/bridged=true` result and one all-false replay.
+  Persisted state contained one event/runtime close/current completion/current
+  queue terminalization/successor activation/successor queue; loser advisory,
+  rank-read, and write calls were all zero.
+- Same-successor-station concurrency produced two successful bridges with
+  distinct ranks and lexical unique station locks. High-rank `ready` state was
+  excluded from active-rank allocation. Equal current/successor station state
+  returned the deterministic queue conflict with full rollback.
+- Live queue `23505` closed and rolled back the first context, used a fresh
+  PostgreSQL backend for authoritative classification, performed no rank
+  retry, returned `RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT`, and succeeded on
+  explicit retry after blocker removal.
+- Unknown `23505`, `23503`, `40P01`, `40001`, `08006`, `XX000`, and generic
+  errors propagated unchanged with rollback and clean retry. All `12/12`
+  real-transaction failure injections had zero row-digest delta and clean
+  retry success.
+- The bridge emitted no additional system-transition event, approval,
+  production flow/completion, work-order event, outbox, package-state, or
+  inventory effect.
+- Source `mes` remained read-only. Final integrity matched the retained
+  baseline for all `38/38` source tables and established `15/15` counts and
+  digests; retained V1 was `1/2/5`, source V2 remained `0`, sidecars remained
+  absent, audit remained `4/0/0`, and retry fixture count remained `0`.
+- Exact clones and container temporary files were removed; matching clone
+  count is `0`. The host backup is retained. Health is HTTP `200`,
+  `status=ok`, and container health is `healthy`.
+- Status: `VERIFIED`. API, Kiosk, IoT, FERP, MESQL, inventory, backfill,
+  reconciliation, manual/approval close paths, and source rollout remain
+  deferred.
+- Historical FAIL evidence:
+  `docs/runbooks/runtime_lifecycle_completion_bridge_isolated_smoke_evidence_20260715.md`.
+- Successful retry evidence that supersedes the failed acceptance result:
+  `docs/runbooks/runtime_lifecycle_completion_bridge_isolated_smoke_retry_evidence_20260715.md`.

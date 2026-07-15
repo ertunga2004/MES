@@ -1644,3 +1644,57 @@ mutation was performed.
   `docs/runbooks/canonical_v2_source_schema_seed_apply_runbook.md`.
 - Future source-local functional smoke plan:
   `docs/runbooks/canonical_v2_source_local_functional_smoke_plan.md`.
+
+## Applied Canonical V2 Source Schema and Seed
+
+- Applied and verified: `2026-07-15`.
+- Repository implementation baseline:
+  `e2cc8c47acd8df573f4d055e3a6ead09ff9c2ae0`. No implementation,
+  migration, seed, Python, test, API, or runtime file was changed by the
+  rollout evidence task.
+- Exact source target was `mes_postgres / mes / mes`, PostgreSQL `16.14`, host
+  port `5433`. Every mutation checkpoint began with zero other database
+  sessions; verification used read-only repeatable-read snapshots.
+- A byte-safe plain backup was written container-side with `pg_dump -f`,
+  validated, copied, and revalidated on the host. The retained backup is
+  `C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups\mes_before_canonical_v2_source_rollout_20260715-204246.sql`,
+  `2881697` bytes, SHA-256
+  `252726A3E63CBB4ED8B494ABD340BB3B7894CB459996D7B8DBD80634AAEB1535`.
+  The container backup was removed only after exact host equality; no restore
+  was run.
+- Migration `009`, migration `010`, and Canonical V2 seed `006` were applied
+  in that exact order. Every first apply and exact reapply used its own
+  `psql -X -v ON_ERROR_STOP=1 -f` process and the artifact-owned transaction;
+  no outer transaction or multi-file concatenation was used.
+- Migration `009` verified the binding sidecar at `9 / 9 / 4` columns,
+  constraints, and indexes with zero rows. Exact reapply preserved table and
+  sequence OIDs, catalog definitions, base-table set, and every row digest.
+- Migration `010` verified the release sidecar at `14 / 15 / 5` with zero
+  rows plus exact nondeferrable
+  `uq_mes_process_routes_identity_snapshot UNIQUE (route_id, route_code,
+  version)`. Exact reapply had zero catalog/data delta and preserved the
+  binding sidecar.
+- Seed `006` added only Canonical V2 route/operations/steps `1 / 2 / 4` with
+  OP10/OP20 steps `3 / 1`, exact event/step identity, both
+  `auto_close_on_required_steps` policies, and configured/resolved location
+  roles `5 / 5`. Exact reapply returned three `INSERT 0 0` results and the
+  full ordered verification snapshot was unchanged.
+- The authoritative final base-table set equals the exact 38-table preflight
+  set plus only `work_order_operation_route_bindings` and
+  `work_order_route_releases`; the secondary helper count is `40`. Sequences
+  and other relation types were excluded. All 35 unaffected original tables
+  were count/digest-identical; only the three configuration tables had the
+  exact `+1 / +2 / +4` additive delta.
+- Retained V1 remained `1 / 2 / 5` with exact scoped digests. Audit remained
+  `4 / 0 / 0`; binding/release sidecars remained empty; existing work orders,
+  lifecycle, queue, runtime, locations, station bindings, events, approvals,
+  flow, outbox, package, and inventory state remained unchanged. No
+  `PHASE5HC-SOURCE-SMOKE-%` fixture exists.
+- PostgreSQL remained `running / healthy`; `GET /health` returned
+  `200 / status=ok`. Exact rollout container temp files were removed and the
+  verified host backup remains retained.
+- Phase 5H-B status: `PASS / APPLIED_CANONICAL_V2_SOURCE_SCHEMA_AND_SEED`.
+- Phase 5H-C was not started and requires separate explicit approval. Status:
+  `READY_FOR_SEPARATELY_APPROVED_SOURCE_LOCAL_FUNCTIONAL_SMOKE`.
+- Apply evidence:
+  `docs/runbooks/canonical_v2_source_schema_seed_apply_evidence_20260715.md`.

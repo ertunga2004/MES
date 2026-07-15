@@ -1574,3 +1574,73 @@ mutation was performed.
   `docs/runbooks/runtime_lifecycle_completion_bridge_isolated_smoke_evidence_20260715.md`.
 - Successful retry evidence that supersedes the failed acceptance result:
   `docs/runbooks/runtime_lifecycle_completion_bridge_isolated_smoke_retry_evidence_20260715.md`.
+
+## Canonical V2 Controlled Source Rollout Design
+
+- Last updated: `2026-07-15`.
+- Verified completion-bridge documentation closure commit:
+  `7e94382a90c6bdfba81928588785a08b37e18fa3`
+  (`docs: record verified runtime lifecycle completion bridge`). The commit
+  contains only `CURRENT_STATE.md` and the successful retry evidence; the
+  historical FAIL evidence remains unchanged.
+- The accepted evidence-based source baseline remains: migration `009` absent,
+  migration `010` absent, Canonical V2 absent, retained V1
+  route/operations/steps `1 / 2 / 5`, and audit events/approvals/flow
+  `4 / 0 / 0`. Live source truth must be revalidated read-only in Phase 5H-B.
+- Phase 5H-B is schema/config readiness only. Its exact order is binding
+  migration `009`, release migration `010`, then Canonical V2 seed `006`.
+  Work-order release, runtime initialization, step execution and completion
+  bridge are excluded.
+- Every SQL artifact already owns its `BEGIN/COMMIT` transaction and will run
+  through a separate `psql -X -v ON_ERROR_STOP=1 -f` call. No outer transaction
+  or multi-artifact concatenation is permitted. Each first apply and exact
+  reapply has a stop-after-verification checkpoint.
+- Phase 5H-B requires exact source identity, a retained plain logical backup at
+  `mes_before_canonical_v2_source_rollout_<timestamp>.sql`, one read-only
+  repeatable-read preflight, established count/digest capture, and exact
+  partial-state absence. Unexpected sidecars, parent constraint, V2 rows or
+  identifier collisions block apply; no state is adopted or repaired.
+- The logical backup is written byte-safely to an exact container-side file by
+  `pg_dump -f`, validated in the container, copied with `docker cp`, and
+  validated again on the host. Positive size, dump header, and container/host
+  SHA-256 equality are mandatory. PowerShell native dump redirection is
+  forbidden; the container temporary file is removed only after full host
+  validation and hash equality. Any backup/copy/hash failure blocks Phase 5H-B
+  before migration `009`.
+- The authoritative relation invariant is set-based: the final `mes` base-table
+  set must equal the preflight base-table set plus exactly
+  `work_order_operation_route_bindings` and `work_order_route_releases`.
+  `information_schema.tables` with `table_type='BASE TABLE'` is used; sequences
+  and other relations are excluded. A final helper count of `40` is expected
+  only when the verified baseline helper count is `38`.
+- Expected Phase 5H-B outcome is binding `9 / 9 / 4` with zero rows, release
+  `14 / 15 / 5` with zero rows, exact parent route identity constraint, V2
+  route/operations/steps `1 / 2 / 4`, OP10/OP20 steps `3 / 1`, both operations
+  using `auto_close_on_required_steps`, and location roles `5 / 5`.
+- On failure, the current artifact transaction rolls back and subsequent
+  artifacts and Phase 5H-C do not start. Prior successful additive checkpoints
+  are not dropped. Reapply and backup restore require separate approval; restore
+  is a destructive recovery decision.
+- Phase 5H-C is a separate, explicitly approved source-local functional smoke.
+  It uses one retained nonproduction identity prefixed
+  `PHASE5HC-SOURCE-SMOKE-`, exercises release through OP10/OP20 and final
+  completion, and then proves exact replays. Successful or partial-failure
+  fixture rows are not silently deleted.
+- The retained fixture must carry `disposable_test=true`,
+  `production_release=false`, `exclude_from_analytics=true`, and
+  `retention_reason=source_rollout_validation`. Future OEE, KPI, analytics,
+  reporting, FERP and export consumers must exclude it by exact order prefix or
+  metadata. Consumer filter implementation is a mandatory deferred requirement,
+  not part of Phase 5H-A/B/C.
+- No release API, feature flag, Kiosk action, FERP/MESQL input, automatic route
+  selection, analytics filter, inventory behavior, DB apply, Docker action or
+  source fixture was added in Phase 5H-A.
+- Phase 5H-B status: `READY_FOR_CONTROLLED_SOURCE_SCHEMA_SEED_APPLY`.
+- Phase 5H-C status:
+  `PLANNED_REQUIRES_PHASE_5H_B_PASS_AND_SEPARATE_APPROVAL`.
+- Rollout design:
+  `docs/architecture/canonical_v2_source_rollout_design.md`.
+- Future schema/seed apply runbook:
+  `docs/runbooks/canonical_v2_source_schema_seed_apply_runbook.md`.
+- Future source-local functional smoke plan:
+  `docs/runbooks/canonical_v2_source_local_functional_smoke_plan.md`.

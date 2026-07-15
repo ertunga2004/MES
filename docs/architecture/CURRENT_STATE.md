@@ -1368,3 +1368,62 @@ mutation was performed.
   `docs/architecture/work_order_release_concurrency_idempotency_plan.md`.
 - Future isolated smoke plan:
   `docs/runbooks/work_order_release_writer_isolated_smoke_plan.md`.
+
+## Verified Work-Order Route-Release Writer
+
+- Last verified: `2026-07-15`.
+- Phase 5D-C implementation commit:
+  `e123a7d38e13fa64cabce71531b74fcfce12d7ff` (`e123a7d`,
+  `feat: add work-order route release writer`). This supersedes the historical
+  pre-implementation status in the Phase 5D-A design checkpoint above.
+- Focused review found no actionable P1 or P2 issue. The committed scope is
+  exactly `mes_web/db/mesql_v2.py` and `tests/test_mes_web_mesql_v2.py`.
+- Regression passed: targeted MESQL V2 `403` tests and combined
+  station-execution config/location/MESQL V2 `439` tests, both `OK`; compile
+  and diff checks also passed.
+- Public support remains intentionally limited to
+  `route_generated / local_planning`. Explicit mapping, FERP, MESQL, reroute,
+  cancellation, and backfill remain disabled or deferred.
+- First release atomically persisted one release, two deterministic lifecycle
+  operations, two immutable lifecycle-UUID bindings, only the OP10 initial
+  queue row, and queued work-order state.
+- Immediate replay and replay after mutable lifecycle/work-order/queue
+  progression both returned `released=false` with zero rewind. Immutable
+  release, static operation snapshots, binding set, and digest remained exact.
+- The five Phase 5C read helpers agreed with writer output; foreign work-order
+  bindings were excluded and the initial queue remained scoped to the first
+  lifecycle UUID.
+- Existing runtime init remained compatible: OP10 initialized `ready` with
+  three pending steps, no current step, no step execution, and no event,
+  approval, production-flow, lifecycle, binding, or queue mutation.
+- Full deterministic conflict and eligibility matrices passed with no partial
+  writes. Exact route/version resolution performed no fallback or inference.
+- Concurrency passed: identical requests produced one first release and one
+  replay; cross-order duplicate release IDs produced one success and one ID
+  conflict; same-station releases received distinct ranks and no OP20 queue.
+- Queue allocation matched the partial unique index exactly:
+  `status IN ('queued', 'active', 'pending_approval')`; a high-rank `ready`
+  row did not affect allocation.
+- Controlled non-cooperating queue `23505` rolled the first transaction back,
+  then authoritative readback opened a new context on a different PostgreSQL
+  backend and returned `WORK_ORDER_RELEASE_QUEUE_CONFLICT`. There was no rank
+  retry; clean caller retry succeeded after blocker removal.
+- Unrelated real `23505`, SQLSTATE `23503`, `40P01`, `40001`, `08006`,
+  `XX000`, and a generic failure propagated as their original error objects.
+- All `12/12` real-transaction failure-injection points left zero artefact
+  delta and unchanged work-order state; every clean retry succeeded.
+- Source `mes` remained read-only. A retained logical backup was restored into
+  an empty `template0` clone; migrations `009`/`010` and Canonical V2 seed
+  `006` ran only on that clone.
+- Pre-migration writer failure was unmasked SQLSTATE `42P01`. Post-migration
+  binding/release/V2 prerequisite shapes were `9/9/4`, `14/15/5`, and
+  `1/2/4` with OP10/OP20 steps `3/1`.
+- The exact clone was dropped and matching clone count is `0`. Final source
+  integrity is `15/15` counts and `15/15` digests; extended/V1 state and
+  `4/0/0` event/approval/flow counts are unchanged. Health is HTTP `200`,
+  `status=ok`.
+- Status: `READY_FOR_PHASE_5F_DESIGN`. No Phase 5F implementation, API,
+  completion bridge, FERP/MESQL, inventory, migration, source rollout, Docker
+  lifecycle, or push action occurred.
+- Evidence:
+  `docs/runbooks/work_order_release_writer_isolated_smoke_evidence_20260715.md`.

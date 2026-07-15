@@ -1060,3 +1060,42 @@ mutation was performed.
   and no matching disposable database remained.
 - No step execution or work-order release integration was performed.
 - No API, Kiosk, IoT/MQTT, Observer, OEE/KPI, MESQL, or FERP change was made.
+
+## Verified Canonical V2 OP10 Execution Flow
+
+- Execution date: `2026-07-15`.
+- Runtime-init retry documentation commit: `6f701b9`.
+- Evidence:
+  `docs/runbooks/station_execution_canonical_v2_op10_execution_isolated_smoke_evidence_20260715.md`.
+- Source `mes` binding table remained absent and Canonical V2 route count
+  remained `0`.
+- Binding migration and Canonical V2 seed were applied only to disposable
+  clone `mes_canonical_v2_op10_flow_20260715_101356`.
+- Candidate:
+  `WO-E2E-SARI-001 / 7db278d4-2246-45d8-8d0f-18618113d7f7 / ASSEMBLY_01 / OP-ASSEMBLY / 10 / queued`.
+- Explicit clone-only V2 OP10 binding first create / replay returned
+  `true / false`; it verifies runtime behavior and is not an accepted
+  production semantic mapping.
+- Initialization returned `ready`, `current_step_code=NULL`, and three pending
+  steps; exact duplicate initialization returned `initialized=false` with no
+  mutation.
+- Color sensor start and finish passed with configured source
+  `COLOR_SENSOR_ENTRY`; both exact duplicate calls were no-ops.
+- Robot `implicit_start + auto_finish` passed with source `ROBOT_ARM_DROP`;
+  its duplicate finish was a no-op and its start/completion timestamp and event
+  reference pairs were equal.
+- Observation manual start/finish passed with `KIOSK_OPERATOR` and actor
+  `SMOKE_OPERATOR`; duration was nonnegative and both duplicate calls were
+  no-ops.
+- `auto_close_on_required_steps` produced final state `closed`,
+  `current_step_code=NULL`, with all three required steps completed.
+- Operation-event delta was exactly `5`; additional `system_transition` events
+  were `0` and approval / production-flow deltas were `0 / 0`.
+- Binding, lifecycle, queue, config/master, and location snapshots were
+  unchanged through execution; candidate lifecycle / queue stayed
+  `queued / queued`.
+- Source 15/15 counts and digests remained unchanged, the clone was dropped,
+  and no matching disposable database remained.
+- The execution flow verified runtime-engine behavior only; no work-order
+  lifecycle, inventory movement, or work-order release integration occurred.
+- No API, Kiosk, IoT/MQTT, Observer, OEE/KPI, MESQL, or FERP change was made.

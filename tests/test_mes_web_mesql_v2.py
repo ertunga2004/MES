@@ -8,6 +8,7 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from threading import Barrier, Lock, Thread
 from unittest.mock import patch
 from uuid import UUID
 
@@ -8795,6 +8796,167 @@ for _name, _metadata in {
     setattr(CompletionBridgePrimitiveTests, f"test_marker_error_{_name}", _make_bridge_marker_error_test(_metadata))
 
 
+def _completion_bridge_preflight_pair(test_case):
+    preflight = deepcopy(test_case.operations[0])
+    authoritative = deepcopy(test_case.operations[0])
+    return preflight, authoritative
+
+
+def _test_preflight_revalidation_accepts_exact_identity(self):
+    preflight, authoritative = _completion_bridge_preflight_pair(self)
+    self.assertIsNone(mesql_v2._compare_completion_bridge_preflight_identity(
+        preflight, authoritative
+    ))
+
+
+setattr(
+    CompletionBridgePrimitiveTests,
+    "test_preflight_revalidation_accepts_exact_identity",
+    _test_preflight_revalidation_accepts_exact_identity,
+)
+
+
+def _make_preflight_progression_ignored_test(field_name, before, after):
+    def test(self):
+        preflight, authoritative = _completion_bridge_preflight_pair(self)
+        preflight[field_name] = deepcopy(before)
+        authoritative[field_name] = deepcopy(after)
+        mesql_v2._compare_completion_bridge_preflight_identity(
+            preflight, authoritative
+        )
+    return test
+
+
+for _name, _field_name, _before, _after in (
+    ("status", "status", "queued", "completed"),
+    ("completed_at", "completed_at", None, "2026-07-15T11:00:00+00:00"),
+    ("work_order_status", "work_order_status", "queued", "completed"),
+    ("queue_status", "queue_status", "queued", "completed"),
+    ("runtime_status", "runtime_status", "active", "closed"),
+):
+    setattr(
+        CompletionBridgePrimitiveTests,
+        f"test_preflight_progression_ignored_{_name}",
+        _make_preflight_progression_ignored_test(
+            _field_name, _before, _after
+        ),
+    )
+
+
+def _test_preflight_status_and_completed_at_progression_are_ignored(self):
+    preflight, authoritative = _completion_bridge_preflight_pair(self)
+    authoritative.update(
+        status="completed",
+        completed_at="2026-07-15T11:00:00+00:00",
+    )
+    mesql_v2._compare_completion_bridge_preflight_identity(
+        preflight, authoritative
+    )
+
+
+def _test_preflight_nonmarker_metadata_is_not_identity(self):
+    preflight, authoritative = _completion_bridge_preflight_pair(self)
+    preflight["metadata"]["diagnostic"] = "before"
+    authoritative["metadata"]["diagnostic"] = "after"
+    mesql_v2._compare_completion_bridge_preflight_identity(
+        preflight, authoritative
+    )
+
+
+setattr(
+    CompletionBridgePrimitiveTests,
+    "test_preflight_status_and_completed_at_progression_are_ignored",
+    _test_preflight_status_and_completed_at_progression_are_ignored,
+)
+setattr(
+    CompletionBridgePrimitiveTests,
+    "test_preflight_nonmarker_metadata_is_not_identity",
+    _test_preflight_nonmarker_metadata_is_not_identity,
+)
+
+
+def _make_preflight_identity_mismatch_test(field_name, value):
+    def test(self):
+        preflight, authoritative = _completion_bridge_preflight_pair(self)
+        authoritative[field_name] = value
+        self._error(
+            "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT",
+            lambda: mesql_v2._compare_completion_bridge_preflight_identity(
+                preflight, authoritative
+            ),
+        )
+    return test
+
+
+for _name, _field_name, _value in (
+    ("lifecycle_uuid", "work_order_operation_id", "00000000-0000-0000-0000-000000000000"),
+    ("order", "order_id", "WO-OTHER"),
+    ("operation_code", "operation_code", "OP-OTHER"),
+    ("sequence", "sequence_no", 20),
+    ("station", "station_code", "ST-OTHER"),
+):
+    setattr(
+        CompletionBridgePrimitiveTests,
+        f"test_preflight_identity_mismatch_{_name}",
+        _make_preflight_identity_mismatch_test(_field_name, _value),
+    )
+
+
+def _make_preflight_marker_mismatch_test(field_name, value):
+    def test(self):
+        preflight, authoritative = _completion_bridge_preflight_pair(self)
+        authoritative["metadata"][field_name] = value
+        self._error(
+            "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT",
+            lambda: mesql_v2._compare_completion_bridge_preflight_identity(
+                preflight, authoritative
+            ),
+        )
+    return test
+
+
+for _name, _field_name, _value in (
+    ("source", "source", "WORK_ORDER_RELEASE"),
+    ("release_id", "release_id", "release-5g-a-001"),
+):
+    setattr(
+        CompletionBridgePrimitiveTests,
+        f"test_preflight_marker_mismatch_{_name}",
+        _make_preflight_marker_mismatch_test(_field_name, _value),
+    )
+
+
+def _make_preflight_malformed_marker_test(target, metadata):
+    def test(self):
+        preflight, authoritative = _completion_bridge_preflight_pair(self)
+        if target == "preflight":
+            preflight["metadata"] = deepcopy(metadata)
+        else:
+            authoritative["metadata"] = deepcopy(metadata)
+        self._error(
+            "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT",
+            lambda: mesql_v2._compare_completion_bridge_preflight_identity(
+                preflight, authoritative
+            ),
+        )
+    return test
+
+
+for _name, _target, _metadata in (
+    ("preflight_removed", "preflight", {}),
+    ("authoritative_removed", "authoritative", {}),
+    ("authoritative_missing_release", "authoritative", {"source": "work_order_release"}),
+    ("authoritative_missing_source", "authoritative", {"release_id": "REL"}),
+    ("authoritative_blank_release", "authoritative", {"source": "work_order_release", "release_id": " "}),
+    ("authoritative_non_object", "authoritative", None),
+):
+    setattr(
+        CompletionBridgePrimitiveTests,
+        f"test_preflight_malformed_marker_{_name}",
+        _make_preflight_malformed_marker_test(_target, _metadata),
+    )
+
+
 def _make_bridge_readiness_test(row, expected):
     def test(self):
         self.assertEqual(
@@ -9594,6 +9756,227 @@ setattr(
     CompletionBridgeIntegrationTests,
     "test_queue_recovery_uses_fresh_context_and_maps_evidence",
     _test_queue_recovery_uses_fresh_context_and_maps_evidence,
+)
+
+
+def _test_concurrent_duplicate_revalidates_progressed_lifecycle_and_replays(self):
+    fx = self.fixture
+    shared = {
+        "work_order": deepcopy(fx.work_order),
+        "release": deepcopy(fx.release),
+        "operations": deepcopy(fx.operations),
+        "bindings": deepcopy(fx.bindings),
+        "queues": [deepcopy(fx.initial_queue)],
+        "event_exists": False,
+    }
+    preflight_barrier = Barrier(2)
+    work_order_lock = Lock()
+    results = {}
+    errors = []
+    counters = {
+        "event_insert": 0,
+        "connection-a": {
+            "advisory": 0, "lifecycle": 0, "current_queue": 0,
+            "successor": 0, "successor_queue": 0,
+        },
+        "connection-b": {
+            "advisory": 0, "lifecycle": 0, "current_queue": 0,
+            "successor": 0, "successor_queue": 0,
+        },
+    }
+
+    class _ConcurrentCursor:
+        def __init__(self, name):
+            self.name = name
+            self.holds_work_order_lock = False
+
+    def lock_work_order(cursor, work_order_id):
+        self.assertEqual(work_order_id, fx.order_id)
+        work_order_lock.acquire()
+        cursor.holds_work_order_lock = True
+        return deepcopy(shared["work_order"])
+
+    def read_release(_cursor, work_order_id):
+        self.assertEqual(work_order_id, fx.order_id)
+        return deepcopy(shared["release"])
+
+    def read_operations(_cursor, work_order_id):
+        self.assertEqual(work_order_id, fx.order_id)
+        return deepcopy(shared["operations"])
+
+    def read_bindings(_cursor, work_order_id):
+        self.assertEqual(work_order_id, fx.order_id)
+        return deepcopy(shared["bindings"])
+
+    def read_execution(_cursor, work_order_operation_id):
+        self.assertEqual(work_order_operation_id, fx.operation_ids[0])
+        return {"execution_state_pk": 1, **deepcopy(fx.runtime)}
+
+    def read_runtime_steps(_cursor, work_order_operation_id):
+        self.assertEqual(work_order_operation_id, fx.operation_ids[0])
+        return []
+
+    def lock_stations(cursor, station_codes):
+        counters[cursor.name]["advisory"] += 1
+        return list(station_codes)
+
+    def read_station_queues(_cursor, _station_codes):
+        return deepcopy(shared["queues"])
+
+    def complete_lifecycle(cursor, *, work_order_operation_id, closed_at):
+        counters[cursor.name]["lifecycle"] += 1
+        operation = next(
+            item for item in shared["operations"]
+            if item["work_order_operation_id"] == work_order_operation_id
+        )
+        operation.update(status="completed", completed_at=closed_at)
+        return deepcopy(operation)
+
+    def complete_current_queue(cursor, *, station_queue_pk):
+        counters[cursor.name]["current_queue"] += 1
+        queue = next(
+            item for item in shared["queues"]
+            if item["station_queue_pk"] == station_queue_pk
+        )
+        queue["status"] = "completed"
+        return deepcopy(queue)
+
+    def queue_successor(cursor, *, work_order_operation_id):
+        counters[cursor.name]["successor"] += 1
+        operation = next(
+            item for item in shared["operations"]
+            if item["work_order_operation_id"] == work_order_operation_id
+        )
+        operation["status"] = "queued"
+        return deepcopy(operation)
+
+    def insert_successor_queue(cursor, queue_snapshot):
+        counters[cursor.name]["successor_queue"] += 1
+        queue = {
+            "station_queue_pk": 11,
+            **deepcopy(queue_snapshot),
+            "created_at": None,
+            "updated_at": None,
+        }
+        shared["queues"].append(queue)
+        return deepcopy(queue)
+
+    def read_replay_queues(_cursor, **_kwargs):
+        return deepcopy(shared["queues"])
+
+    def read_snapshot(_cursor, **_kwargs):
+        return {
+            "execution_state": deepcopy(fx.runtime),
+            "completed_operation": deepcopy(shared["operations"][0]),
+            "completed_queue": deepcopy(shared["queues"][0]),
+            "successor_operation": deepcopy(shared["operations"][1]),
+            "successor_queue": deepcopy(shared["queues"][1]),
+            "work_order": deepcopy(shared["work_order"]),
+        }
+
+    def run(cursor):
+        applicability = {
+            name: deepcopy(fx.operations[0].get(name))
+            for name in (
+                "work_order_operation_id", "order_id", "operation_code",
+                "sequence_no", "station_code", "status", "completed_at",
+                "payload", "metadata",
+            )
+        }
+        try:
+            preflight_barrier.wait(timeout=5)
+            context = mesql_v2._prepare_runtime_completion_bridge_cursor(
+                cursor, applicability=applicability
+            )
+            event_inserted = not shared["event_exists"]
+            if event_inserted:
+                shared["event_exists"] = True
+                counters["event_insert"] += 1
+            bridge = mesql_v2._apply_runtime_completion_bridge_cursor(
+                cursor,
+                work_order_operation_id=fx.operation_ids[0],
+                locked_context=context,
+                runtime_state=deepcopy(fx.runtime),
+            )
+            results[cursor.name] = {
+                "finished": event_inserted,
+                "event_inserted": event_inserted,
+                "completion_bridge": bridge,
+            }
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            if cursor.holds_work_order_lock:
+                work_order_lock.release()
+
+    with ExitStack() as stack:
+        for name, side_effect in (
+            ("_select_completion_bridge_work_order_for_update_cursor", lock_work_order),
+            ("_select_completion_bridge_release_for_update_cursor", read_release),
+            ("_list_completion_bridge_operations_for_update_cursor", read_operations),
+            ("_list_completion_bridge_bindings_for_update_cursor", read_bindings),
+            ("_select_completion_bridge_execution_state_for_update_cursor", read_execution),
+            ("_list_completion_bridge_runtime_steps_for_update_cursor", read_runtime_steps),
+            ("_lock_completion_bridge_station_scopes_cursor", lock_stations),
+            ("_list_completion_bridge_station_queue_rows_for_update_cursor", read_station_queues),
+            ("_complete_lifecycle_operation_from_runtime_cursor", complete_lifecycle),
+            ("_complete_current_queue_from_runtime_cursor", complete_current_queue),
+            ("_queue_successor_lifecycle_cursor", queue_successor),
+            ("_insert_completion_bridge_successor_queue_cursor", insert_successor_queue),
+            ("_completion_bridge_replay_queue_rows_cursor", read_replay_queues),
+            ("_read_completion_bridge_snapshot_cursor", read_snapshot),
+        ):
+            stack.enter_context(patch.object(mesql_v2, name, side_effect=side_effect))
+        stack.enter_context(patch.object(
+            mesql_v2,
+            "_validate_completion_bridge_first_write_invariants_cursor",
+            return_value={},
+        ))
+        threads = [
+            Thread(target=run, args=(_ConcurrentCursor(name),), name=name)
+            for name in ("connection-a", "connection-b")
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+
+    self.assertEqual(errors, [])
+    self.assertEqual(counters["event_insert"], 1)
+    self.assertEqual(
+        sorted(
+            (
+                result["finished"],
+                result["event_inserted"],
+                result["completion_bridge"]["bridged"],
+            )
+            for result in results.values()
+        ),
+        [(False, False, False), (True, True, True)],
+    )
+    winner = next(
+        name for name, result in results.items()
+        if result["completion_bridge"]["bridged"]
+    )
+    loser = next(name for name in results if name != winner)
+    self.assertEqual(counters[winner], {
+        "advisory": 1, "lifecycle": 1, "current_queue": 1,
+        "successor": 1, "successor_queue": 1,
+    })
+    self.assertEqual(counters[loser], {
+        "advisory": 0, "lifecycle": 0, "current_queue": 0,
+        "successor": 0, "successor_queue": 0,
+    })
+    self.assertEqual(len(shared["queues"]), 2)
+    self.assertEqual(shared["operations"][0]["status"], "completed")
+    self.assertEqual(shared["operations"][1]["status"], "queued")
+
+
+setattr(
+    CompletionBridgeIntegrationTests,
+    "test_concurrent_duplicate_revalidates_progressed_lifecycle_and_replays",
+    _test_concurrent_duplicate_revalidates_progressed_lifecycle_and_replays,
 )
 
 

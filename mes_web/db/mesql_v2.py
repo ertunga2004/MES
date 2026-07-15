@@ -4490,6 +4490,50 @@ def _is_completion_bridge_applicable(lifecycle_row: JsonObject | None) -> bool:
     )
 
 
+def _compare_completion_bridge_preflight_identity(
+    preflight_lifecycle: JsonObject,
+    authoritative_lifecycle: JsonObject,
+) -> None:
+    if not isinstance(preflight_lifecycle, dict) or not isinstance(
+        authoritative_lifecycle, dict
+    ):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
+    for field_name in (
+        "work_order_operation_id",
+        "order_id",
+        "operation_code",
+        "sequence_no",
+        "station_code",
+    ):
+        if _json_safe(preflight_lifecycle.get(field_name)) != _json_safe(
+            authoritative_lifecycle.get(field_name)
+        ):
+            _completion_bridge_error(
+                "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT"
+            )
+
+    markers = []
+    for lifecycle in (preflight_lifecycle, authoritative_lifecycle):
+        metadata = lifecycle.get("metadata")
+        if not isinstance(metadata, dict):
+            _completion_bridge_error(
+                "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT"
+            )
+        source = metadata.get("source")
+        release_id = metadata.get("release_id")
+        if (
+            source != "work_order_release"
+            or not isinstance(release_id, str)
+            or not release_id.strip()
+        ):
+            _completion_bridge_error(
+                "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT"
+            )
+        markers.append((source, release_id))
+    if markers[0] != markers[1]:
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
+
+
 def _get_completion_bridge_schema_readiness_cursor(cursor: Any) -> JsonObject:
     cursor.execute(SELECT_COMPLETION_BRIDGE_SCHEMA_READINESS_CURSOR_SQL)
     row = cursor.fetchone()
@@ -6831,14 +6875,7 @@ def _prepare_runtime_completion_bridge_cursor(
     )
     if current is None or execution_state is None:
         _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
-    for field_name in (
-        "work_order_operation_id", "order_id", "operation_code", "sequence_no",
-        "station_code", "status", "completed_at", "payload", "metadata",
-    ):
-        if _json_safe(current.get(field_name)) != _json_safe(
-            applicability.get(field_name)
-        ):
-            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
+    _compare_completion_bridge_preflight_identity(applicability, current)
     _validate_completion_bridge_release_identity(release, operations)
     _validate_completion_bridge_binding_set(release, operations, bindings)
     if _recompute_completion_bridge_operation_set_digest(

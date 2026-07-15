@@ -8768,8 +8768,11 @@ class CompletionBridgePrimitiveTests(unittest.TestCase):
             self.assertNotIn(".commit(", source)
             self.assertNotIn(".rollback(", source)
 
-    def test_finish_execution_step_has_no_bridge_integration(self):
-        self.assertNotIn("completion_bridge", inspect.getsource(mesql_v2.finish_execution_step))
+    def test_finish_execution_step_uses_private_bridge_integration_only(self):
+        source = inspect.getsource(mesql_v2.finish_execution_step)
+        self.assertIn("_finish_execution_step_transaction", source)
+        self.assertIn("_recover_runtime_completion_bridge_queue_violation", source)
+        self.assertNotIn("database_connection", source)
 
 
 def _make_bridge_marker_error_test(metadata):
@@ -8929,6 +8932,669 @@ for _status, _included in (
         f"test_rank_status_{_status}",
         _make_rank_status_test(_status, _included),
     )
+
+
+class CompletionBridgeIntegrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        fixture = CompletionBridgePrimitiveTests(methodName="runTest")
+        fixture.setUp()
+        self.fixture = fixture
+
+    def _nested_bridge(self, bridged=True):
+        return {
+            "bridged": bridged,
+            "execution_state": {"execution_status": "closed"},
+            "completed_operation": {"status": "completed"},
+            "completed_queue": {"status": "completed"},
+            "successor_operation": {"status": "queued"},
+            "successor_queue": {"status": "queued", "queue_rank": 8},
+            "work_order": {"status": "queued"},
+        }
+
+    def _call(
+        self,
+        connection,
+        *,
+        applicable=False,
+        apply_result=None,
+        apply_error=None,
+        external_event_id="finish-event-001",
+    ):
+        applicability = {
+            "work_order_operation_id": "11111111-1111-1111-1111-111111111111",
+            "order_id": "WO-E2E-MAVI-001",
+            "operation_code": "OP10_ASSEMBLY_CLASSIFICATION",
+            "sequence_no": 10,
+            "station_code": "ASSEMBLY_01",
+            "status": "active",
+            "completed_at": None,
+            "payload": {},
+            "metadata": (
+                {"source": "work_order_release", "release_id": "REL-1"}
+                if applicable else {}
+            ),
+        }
+        context = {
+            "work_order": {"order_id": "WO-E2E-MAVI-001", "status": "queued"},
+            "release": {"order_id": "WO-E2E-MAVI-001"},
+            "lifecycle_operations": [],
+            "bindings": [],
+            "execution_state": mesql_v2._json_safe(deepcopy(connection.cursor_instance.execution_state_row)),
+            "runtime_steps": mesql_v2._json_safe(deepcopy(connection.cursor_instance.execution_step_rows)),
+        }
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(mesql_v2, "database_connection", fake_connection))
+            stack.enter_context(patch.object(
+                mesql_v2, "_select_completion_bridge_applicability_cursor",
+                return_value=applicability,
+            ))
+            if applicable:
+                stack.enter_context(patch.object(
+                    mesql_v2, "_get_completion_bridge_schema_readiness_cursor",
+                    return_value={
+                        "release_table_ready": True,
+                        "binding_table_ready": True,
+                        "ready": True,
+                    },
+                ))
+                stack.enter_context(patch.object(
+                    mesql_v2, "_prepare_runtime_completion_bridge_cursor",
+                    return_value=context,
+                ))
+                apply_mock = stack.enter_context(patch.object(
+                    mesql_v2, "_apply_runtime_completion_bridge_cursor",
+                    return_value=(apply_result or self._nested_bridge()),
+                    side_effect=apply_error,
+                ))
+            else:
+                apply_mock = stack.enter_context(patch.object(
+                    mesql_v2, "_apply_runtime_completion_bridge_cursor",
+                    side_effect=AssertionError("legacy bridge apply"),
+                ))
+            result = mesql_v2.finish_execution_step(
+                AppConfig(db_enabled=True),
+                work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                step_code="COLOR_SENSOR_ENTRY_EVIDENCE",
+                event_source="COLOR_SENSOR_ENTRY",
+                external_event_id=external_event_id,
+            )
+        return result, apply_mock
+
+    def test_legacy_response_adds_none_without_sidecar_access(self):
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance)
+        result, apply_mock = self._call(connection)
+        self.assertIsNone(result["completion_bridge"])
+        apply_mock.assert_not_called()
+        sql = "\n".join(item[0].lower() for item in connection.cursor_instance.executed)
+        self.assertNotIn("work_order_route_releases", sql)
+        self.assertNotIn("work_order_operation_route_bindings", sql)
+        self.assertNotIn("to_regclass", sql)
+
+    def test_first_closed_bridge_returns_true_authoritative_object(self):
+        connection = _Connection()
+        _seed_finishable_execution_step(
+            connection.cursor_instance, include_next_step=False,
+            operation_completion_policy="auto_close_on_required_steps",
+        )
+        nested = self._nested_bridge(True)
+        result, apply_mock = self._call(
+            connection, applicable=True, apply_result=nested
+        )
+        self.assertTrue(result["finished"])
+        self.assertTrue(result["event_inserted"])
+        self.assertEqual(result["completion_bridge"], nested)
+        apply_mock.assert_called_once()
+
+    def test_nonclosed_marker_path_returns_none(self):
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance)
+        result, apply_mock = self._call(connection, applicable=True)
+        self.assertEqual(result["execution_state"]["execution_status"], "active")
+        self.assertIsNone(result["completion_bridge"])
+        apply_mock.assert_not_called()
+
+    def test_supported_closed_duplicate_reaches_replay(self):
+        connection = _Connection()
+        _seed_finishable_execution_step(
+            connection.cursor_instance, include_next_step=False,
+            operation_completion_policy="auto_close_on_required_steps",
+            step_status="completed",
+        )
+        closed_at = datetime(2026, 7, 15, 12, 0, 0)
+        connection.cursor_instance.execution_state_row.update({
+            "execution_status": "closed",
+            "closed_at": closed_at,
+            "evidence_completed_at": closed_at,
+        })
+        connection.cursor_instance.operation_event_rows = [
+            _fake_operation_event(
+                event_type="step_finish", external_event_id="finish-event-001"
+            )
+        ]
+        nested = self._nested_bridge(False)
+        result, apply_mock = self._call(
+            connection, applicable=True, apply_result=nested
+        )
+        self.assertFalse(result["finished"])
+        self.assertFalse(result["event_inserted"])
+        self.assertFalse(result["completion_bridge"]["bridged"])
+        apply_mock.assert_called_once()
+        self.assertEqual(connection.cursor_instance.operation_event_rows.__len__(), 1)
+
+    def test_schema_not_ready_precedes_event_write(self):
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance)
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        marker = {"metadata": {"source": "work_order_release", "release_id": "REL"}}
+        with patch.object(mesql_v2, "database_connection", fake_connection), patch.object(
+            mesql_v2, "_select_completion_bridge_applicability_cursor", return_value=marker
+        ), patch.object(
+            mesql_v2, "_get_completion_bridge_schema_readiness_cursor",
+            return_value={"release_table_ready": False, "binding_table_ready": True, "ready": False},
+        ):
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                mesql_v2.finish_execution_step(
+                    AppConfig(db_enabled=True),
+                    work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                    step_code="COLOR_SENSOR_ENTRY_EVIDENCE",
+                    event_source="COLOR_SENSOR_ENTRY",
+                    external_event_id="finish-event-001",
+                )
+        self.assertEqual(error.exception.detail, "RUNTIME_COMPLETION_BRIDGE_SCHEMA_NOT_READY")
+        self.assertEqual(connection.cursor_instance.operation_event_rows, [])
+
+    def test_unexplained_undefined_table_propagates(self):
+        connection = _Connection()
+        _seed_finishable_execution_step(connection.cursor_instance)
+        undefined = UndefinedTable("unexplained")
+
+        @contextmanager
+        def fake_connection(_config):
+            yield connection
+
+        marker = {"metadata": {"source": "work_order_release", "release_id": "REL"}}
+        with patch.object(mesql_v2, "database_connection", fake_connection), patch.object(
+            mesql_v2, "_select_completion_bridge_applicability_cursor", return_value=marker
+        ), patch.object(
+            mesql_v2, "_get_completion_bridge_schema_readiness_cursor", side_effect=undefined
+        ):
+            with self.assertRaises(UndefinedTable) as error:
+                mesql_v2.finish_execution_step(
+                    AppConfig(db_enabled=True),
+                    work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                    step_code="COLOR_SENSOR_ENTRY_EVIDENCE",
+                    event_source="COLOR_SENSOR_ENTRY",
+                    external_event_id="finish-event-001",
+                )
+        self.assertIs(error.exception, undefined)
+
+    def test_bridge_conflict_rolls_back_event_and_runtime(self):
+        connection = _Connection()
+        _seed_finishable_execution_step(
+            connection.cursor_instance, include_next_step=False,
+            operation_completion_policy="auto_close_on_required_steps",
+        )
+        before_state = deepcopy(connection.cursor_instance.execution_state_row)
+        before_steps = deepcopy(connection.cursor_instance.execution_step_rows)
+        with self.assertRaises(mesql_v2.MesqlV2Error):
+            self._call(
+                connection, applicable=True,
+                apply_error=mesql_v2.MesqlV2Error(
+                    "RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT", status_code=409
+                ),
+            )
+        self.assertFalse(connection.committed)
+        self.assertTrue(connection.transaction_rolled_back)
+        self.assertEqual(connection.cursor_instance.operation_event_rows, [])
+        self.assertEqual(connection.cursor_instance.execution_state_row, before_state)
+        self.assertEqual(connection.cursor_instance.execution_step_rows, before_steps)
+
+    def test_prepare_lock_prefix_is_normative(self):
+        fx = self.fixture
+        applicability = {
+            name: deepcopy(fx.operations[0].get(name))
+            for name in (
+                "work_order_operation_id", "order_id", "operation_code",
+                "sequence_no", "station_code", "status", "completed_at",
+                "payload", "metadata",
+            )
+        }
+        order = []
+        state = {"execution_state_pk": 1, **deepcopy(fx.runtime)}
+        state["execution_status"] = "active"
+        state["closed_at"] = None
+        with ExitStack() as stack:
+            for name, value, label in (
+                ("_select_completion_bridge_work_order_for_update_cursor", fx.work_order, "work_order"),
+                ("_select_completion_bridge_release_for_update_cursor", fx.release, "release"),
+                ("_list_completion_bridge_operations_for_update_cursor", fx.operations, "operations"),
+                ("_list_completion_bridge_bindings_for_update_cursor", fx.bindings, "bindings"),
+                ("_select_completion_bridge_execution_state_for_update_cursor", state, "execution"),
+                ("_list_completion_bridge_runtime_steps_for_update_cursor", [], "steps"),
+            ):
+                stack.enter_context(patch.object(
+                    mesql_v2, name,
+                    side_effect=lambda *_args, value=value, label=label: (
+                        order.append(label), deepcopy(value)
+                    )[1],
+                ))
+            result = mesql_v2._prepare_runtime_completion_bridge_cursor(
+                object(), applicability=applicability
+            )
+        self.assertEqual(order, [
+            "work_order", "release", "operations", "bindings", "execution", "steps"
+        ])
+        self.assertNotIn("execution_state_pk", result["execution_state"])
+
+    def test_exact_replay_takes_no_advisory_or_write(self):
+        fx = self.fixture
+        context = {
+            "work_order": fx.work_order,
+            "release": fx.release,
+            "lifecycle_operations": deepcopy(fx.operations),
+            "bindings": fx.bindings,
+        }
+        context["lifecycle_operations"][0].update(
+            status="completed", completed_at=fx.runtime["closed_at"]
+        )
+        snapshot = {"execution_state": fx.runtime, "completed_operation": {},
+                    "completed_queue": {}, "successor_operation": {},
+                    "successor_queue": {}, "work_order": fx.work_order}
+        with patch.object(
+            mesql_v2, "_completion_bridge_replay_queue_rows_cursor", return_value=[]
+        ), patch.object(
+            mesql_v2, "_classify_completion_bridge_state",
+            return_value={"classification": "exact_replay"},
+        ), patch.object(
+            mesql_v2, "_read_completion_bridge_snapshot_cursor", return_value=snapshot
+        ), patch.object(
+            mesql_v2, "_lock_completion_bridge_station_scopes_cursor"
+        ) as station_lock, patch.object(
+            mesql_v2, "_complete_lifecycle_operation_from_runtime_cursor"
+        ) as lifecycle_write:
+            result = mesql_v2._apply_runtime_completion_bridge_cursor(
+                object(), work_order_operation_id=fx.operation_ids[0],
+                locked_context=context, runtime_state=fx.runtime,
+            )
+        self.assertFalse(result["bridged"])
+        station_lock.assert_not_called()
+        lifecycle_write.assert_not_called()
+
+    def test_queue_conflict_evidence_exact_predicates(self):
+        recovery = {
+            "constraint_name": "uq_mes_station_queue_station_active_rank",
+            "station_code": "ST", "queue_rank": 4, "order_id": "WO",
+            "successor_work_order_operation_id": "OP",
+        }
+        self.assertTrue(mesql_v2._completion_bridge_queue_conflict_evidence(
+            [{"station_code": "ST", "queue_rank": 4, "status": "active"}], recovery
+        ))
+        self.assertFalse(mesql_v2._completion_bridge_queue_conflict_evidence(
+            [{"station_code": "ST", "queue_rank": 4, "status": "ready"}], recovery
+        ))
+
+    def test_public_signature_is_unchanged_and_has_no_bridge_parameter(self):
+        self.assertEqual(list(inspect.signature(mesql_v2.finish_execution_step).parameters), [
+            "config", "work_order_operation_id", "step_code", "event_source",
+            "external_event_id", "idempotency_key", "actor_id", "payload",
+        ])
+
+
+def _make_legacy_completion_bridge_none_test(policy, include_next):
+    def test(self):
+        connection = _Connection()
+        _seed_finishable_execution_step(
+            connection.cursor_instance,
+            include_next_step=include_next,
+            operation_completion_policy=policy,
+        )
+        result, apply_mock = self._call(connection)
+        self.assertIn("completion_bridge", result)
+        self.assertIsNone(result["completion_bridge"])
+        apply_mock.assert_not_called()
+    return test
+
+
+for _index, (_policy, _include_next) in enumerate(
+    (
+        ("manual_close", False),
+        ("auto_close_on_required_steps", False),
+        ("auto_complete_pending_approval", False),
+        ("manual_close", True),
+        ("auto_close_on_required_steps", True),
+        ("auto_complete_pending_approval", True),
+    ) * 2
+):
+    setattr(
+        CompletionBridgeIntegrationTests,
+        f"test_legacy_none_case_{_index:02d}",
+        _make_legacy_completion_bridge_none_test(_policy, _include_next),
+    )
+
+
+def _make_bridge_conflict_rollback_test(detail):
+    def test(self):
+        connection = _Connection()
+        _seed_finishable_execution_step(
+            connection.cursor_instance, include_next_step=False,
+            operation_completion_policy="auto_close_on_required_steps",
+        )
+        before = deepcopy(connection.cursor_instance.__dict__)
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            self._call(
+                connection, applicable=True,
+                apply_error=mesql_v2.MesqlV2Error(detail, status_code=409),
+            )
+        self.assertEqual(error.exception.detail, detail)
+        self.assertTrue(connection.transaction_rolled_back)
+        self.assertEqual(connection.cursor_instance.operation_event_rows, [])
+        self.assertEqual(
+            connection.cursor_instance.execution_state_row,
+            before["execution_state_row"],
+        )
+        self.assertEqual(
+            connection.cursor_instance.execution_step_rows,
+            before["execution_step_rows"],
+        )
+    return test
+
+
+for _detail in (
+    "RUNTIME_COMPLETION_BRIDGE_RELEASE_CONFLICT",
+    "RUNTIME_COMPLETION_BRIDGE_BINDING_CONFLICT",
+    "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT",
+    "RUNTIME_COMPLETION_BRIDGE_SEQUENCE_CONFLICT",
+    "RUNTIME_COMPLETION_BRIDGE_OPERATION_STATE_CONFLICT",
+    "RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT",
+    "RUNTIME_COMPLETION_BRIDGE_SUCCESSOR_CONFLICT",
+    "RUNTIME_COMPLETION_BRIDGE_WORK_ORDER_CONFLICT",
+):
+    setattr(
+        CompletionBridgeIntegrationTests,
+        f"test_conflict_rollback_{_detail.lower()}",
+        _make_bridge_conflict_rollback_test(_detail),
+    )
+
+
+def _make_bridge_failure_injection_test(point):
+    def test(self):
+        connection = _Connection()
+        _seed_finishable_execution_step(
+            connection.cursor_instance, include_next_step=False,
+            operation_completion_policy="auto_close_on_required_steps",
+        )
+        before_state = deepcopy(connection.cursor_instance.execution_state_row)
+        before_steps = deepcopy(connection.cursor_instance.execution_step_rows)
+        with self.assertRaises(RuntimeError) as error:
+            self._call(
+                connection, applicable=True,
+                apply_error=RuntimeError(f"failure:{point}"),
+            )
+        self.assertEqual(str(error.exception), f"failure:{point}")
+        self.assertTrue(connection.transaction_rolled_back)
+        self.assertFalse(connection.committed)
+        self.assertEqual(connection.cursor_instance.operation_event_rows, [])
+        self.assertEqual(connection.cursor_instance.execution_state_row, before_state)
+        self.assertEqual(connection.cursor_instance.execution_step_rows, before_steps)
+    return test
+
+
+for _point in (
+    "after_finish_event_insert", "after_runtime_step_completion",
+    "after_runtime_closed_transition", "after_current_lifecycle_completion",
+    "after_current_queue_terminalization", "after_successor_resolution",
+    "after_successor_lifecycle_update", "after_all_station_advisory_locks",
+    "after_successor_queue_insert", "after_final_work_order_completion",
+    "before_invariant_validation", "before_authoritative_snapshot",
+    "before_transaction_exit",
+):
+    setattr(
+        CompletionBridgeIntegrationTests,
+        f"test_failure_injection_{_point}",
+        _make_bridge_failure_injection_test(_point),
+    )
+
+
+def _make_response_field_preservation_test(field_name):
+    def test(self):
+        connection = _Connection()
+        _seed_finishable_execution_step(
+            connection.cursor_instance, include_next_step=False,
+            operation_completion_policy="auto_close_on_required_steps",
+        )
+        result, _apply = self._call(connection, applicable=True)
+        self.assertIn(field_name, result)
+        self.assertIn("completion_bridge", result)
+    return test
+
+
+for _field_name in (
+    "status", "work_order_operation_id", "station_code", "step_code",
+    "finished", "event_inserted", "implicit_started", "event",
+    "execution_state", "step", "next_step", "completion_policy_applied",
+    "completion_policy", "execution_transition", "required_steps_completed",
+):
+    setattr(
+        CompletionBridgeIntegrationTests,
+        f"test_response_preserves_{_field_name}",
+        _make_response_field_preservation_test(_field_name),
+    )
+
+
+def _make_queue_evidence_test(constraint, row, expected):
+    def test(self):
+        recovery = {
+            "constraint_name": constraint,
+            "station_code": "ST", "queue_rank": 4, "order_id": "WO",
+            "successor_work_order_operation_id": "OP",
+        }
+        self.assertIs(
+            mesql_v2._completion_bridge_queue_conflict_evidence([deepcopy(row)], recovery),
+            expected,
+        )
+    return test
+
+
+for _name, _constraint, _row, _expected in (
+    ("rank_queued", "uq_mes_station_queue_station_active_rank", {"station_code": "ST", "queue_rank": 4, "status": "queued"}, True),
+    ("rank_active", "uq_mes_station_queue_station_active_rank", {"station_code": "ST", "queue_rank": 4, "status": "active"}, True),
+    ("rank_pending", "uq_mes_station_queue_station_active_rank", {"station_code": "ST", "queue_rank": 4, "status": "pending_approval"}, True),
+    ("rank_ready", "uq_mes_station_queue_station_active_rank", {"station_code": "ST", "queue_rank": 4, "status": "ready"}, False),
+    ("rank_other", "uq_mes_station_queue_station_active_rank", {"station_code": "ST", "queue_rank": 5, "status": "active"}, False),
+    ("order_exact", "uq_mes_station_queue_station_order", {"station_code": "ST", "order_id": "WO"}, True),
+    ("order_other", "uq_mes_station_queue_station_order", {"station_code": "ST", "order_id": "OTHER"}, False),
+    ("operation_exact", "uq_mes_station_queue_station_operation", {"station_code": "ST", "work_order_operation_id": "OP"}, True),
+    ("operation_other", "uq_mes_station_queue_station_operation", {"station_code": "ST", "work_order_operation_id": "OTHER"}, False),
+    ("foreign_station", "uq_mes_station_queue_station_order", {"station_code": "OTHER", "order_id": "WO"}, False),
+):
+    setattr(
+        CompletionBridgeIntegrationTests,
+        f"test_queue_evidence_{_name}",
+        _make_queue_evidence_test(_constraint, _row, _expected),
+    )
+
+
+def _make_finish_original_error_propagation_test(error):
+    def test(self):
+        with patch.object(
+            mesql_v2, "_finish_execution_step_transaction", side_effect=error
+        ):
+            with self.assertRaises(type(error)) as caught:
+                mesql_v2.finish_execution_step(
+                    object(),
+                    work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                    step_code="STEP",
+                    event_source="SOURCE",
+                    external_event_id="event",
+                )
+        self.assertIs(caught.exception, error)
+    return test
+
+
+for _name, _error in (
+    ("foreign_key", _FakePgError("23503")),
+    ("deadlock", _FakePgError("40P01")),
+    ("serialization", _FakePgError("40001")),
+    ("connection", _FakePgError("08006")),
+    ("unknown_db", _FakePgError("XX000")),
+    ("generic", RuntimeError("generic")),
+):
+    setattr(
+        CompletionBridgeIntegrationTests,
+        f"test_finish_propagates_original_{_name}",
+        _make_finish_original_error_propagation_test(_error),
+    )
+
+
+def _bridge_first_apply_patches(test_case, insert_error):
+    fx = test_case.fixture
+    context = {
+        "work_order": fx.work_order,
+        "release": fx.release,
+        "lifecycle_operations": deepcopy(fx.operations),
+        "bindings": fx.bindings,
+    }
+    classified = {
+        "classification": "first_bridge",
+        "current_operation": context["lifecycle_operations"][0],
+        "current_queue": deepcopy(fx.initial_queue),
+        "successor_operation": context["lifecycle_operations"][1],
+        "successor_queue": None,
+        "final_operation": False,
+        "runtime_state": fx.runtime,
+        "work_order": fx.work_order,
+        "release": fx.release,
+    }
+    stack = ExitStack()
+    stack.enter_context(patch.object(
+        mesql_v2, "_lock_completion_bridge_station_scopes_cursor"
+    ))
+    stack.enter_context(patch.object(
+        mesql_v2, "_list_completion_bridge_station_queue_rows_for_update_cursor",
+        return_value=[deepcopy(fx.initial_queue)],
+    ))
+    stack.enter_context(patch.object(
+        mesql_v2, "_classify_completion_bridge_state", return_value=classified
+    ))
+    stack.enter_context(patch.object(
+        mesql_v2, "_complete_lifecycle_operation_from_runtime_cursor",
+        return_value={"status": "completed"},
+    ))
+    stack.enter_context(patch.object(
+        mesql_v2, "_complete_current_queue_from_runtime_cursor",
+        return_value={"status": "completed"},
+    ))
+    stack.enter_context(patch.object(
+        mesql_v2, "_queue_successor_lifecycle_cursor",
+        return_value={"status": "queued"},
+    ))
+    stack.enter_context(patch.object(
+        mesql_v2, "_insert_completion_bridge_successor_queue_cursor",
+        side_effect=insert_error,
+    ))
+    return stack, context
+
+
+def _test_apply_wraps_known_queue_23505(self):
+    original = _FakePgError("23505", "uq_mes_station_queue_station_active_rank")
+    stack, context = _bridge_first_apply_patches(self, original)
+    with stack:
+        with self.assertRaises(mesql_v2._CompletionBridgeQueueViolation) as error:
+            mesql_v2._apply_runtime_completion_bridge_cursor(
+                object(),
+                work_order_operation_id=self.fixture.operation_ids[0],
+                locked_context=context,
+                runtime_state=self.fixture.runtime,
+            )
+    self.assertIs(error.exception.original_error, original)
+    self.assertEqual(error.exception.recovery["queue_rank"], 0)
+
+
+def _test_apply_propagates_unknown_queue_23505(self):
+    original = _FakePgError("23505", "uq_unknown")
+    stack, context = _bridge_first_apply_patches(self, original)
+    with stack:
+        with self.assertRaises(_FakePgError) as error:
+            mesql_v2._apply_runtime_completion_bridge_cursor(
+                object(),
+                work_order_operation_id=self.fixture.operation_ids[0],
+                locked_context=context,
+                runtime_state=self.fixture.runtime,
+            )
+    self.assertIs(error.exception, original)
+
+
+setattr(
+    CompletionBridgeIntegrationTests,
+    "test_apply_wraps_known_queue_23505",
+    _test_apply_wraps_known_queue_23505,
+)
+setattr(
+    CompletionBridgeIntegrationTests,
+    "test_apply_propagates_unknown_queue_23505",
+    _test_apply_propagates_unknown_queue_23505,
+)
+
+
+def _test_queue_recovery_uses_fresh_context_and_maps_evidence(self):
+    original = _FakePgError("23505", "uq_mes_station_queue_station_active_rank")
+    violation = mesql_v2._CompletionBridgeQueueViolation(
+        original,
+        {
+            "constraint_name": "uq_mes_station_queue_station_active_rank",
+            "work_order_operation_id": "11111111-1111-1111-1111-111111111111",
+            "order_id": "WO",
+            "successor_work_order_operation_id": "22222222-2222-2222-2222-222222222222",
+            "station_code": "ST",
+            "queue_rank": 4,
+        },
+    )
+    connection = _Connection()
+    lifecycle = []
+
+    @contextmanager
+    def fresh_connection(_config):
+        lifecycle.append("open")
+        try:
+            yield connection
+        finally:
+            lifecycle.append("closed")
+
+    with patch.object(mesql_v2, "database_connection", fresh_connection), patch.object(
+        mesql_v2, "_select_completion_bridge_applicability_cursor",
+        return_value={"metadata": {"source": "work_order_release", "release_id": "REL"}},
+    ), patch.object(
+        mesql_v2, "_get_completion_bridge_schema_readiness_cursor",
+        return_value={"release_table_ready": True, "binding_table_ready": True, "ready": True},
+    ), patch.object(
+        mesql_v2, "_lock_completion_bridge_station_scopes_cursor"
+    ), patch.object(
+        mesql_v2, "_list_completion_bridge_station_queue_rows_for_update_cursor",
+        return_value=[{"station_code": "ST", "queue_rank": 4, "status": "active"}],
+    ):
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            mesql_v2._recover_runtime_completion_bridge_queue_violation(
+                object(), violation
+            )
+    self.assertEqual(error.exception.detail, "RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT")
+    self.assertEqual(lifecycle, ["open", "closed"])
+
+
+setattr(
+    CompletionBridgeIntegrationTests,
+    "test_queue_recovery_uses_fresh_context_and_maps_evidence",
+    _test_queue_recovery_uses_fresh_context_and_maps_evidence,
+)
 
 
 if __name__ == "__main__":

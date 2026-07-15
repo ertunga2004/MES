@@ -1427,3 +1427,88 @@ mutation was performed.
   lifecycle, or push action occurred.
 - Evidence:
   `docs/runbooks/work_order_release_writer_isolated_smoke_evidence_20260715.md`.
+
+## Runtime-to-Lifecycle Completion Bridge Design
+
+- Last updated: `2026-07-15`.
+- Phase 5E documentation closure commit:
+  `02f0fcf71f3eedfd7e58e7fe0e7a28d6e711864f` (`02f0fcf`,
+  `docs: record work-order route release writer smoke`). The commit contains
+  only Phase 5E evidence and its prior `CURRENT_STATE` closure; no push was
+  performed.
+- Phase 5E route-release writer is verified and ready. Phase 5F status is
+  `READY_FOR_COMPLETION_BRIDGE_IMPLEMENTATION`.
+- Existing `finish_execution_step` atomically inserts the triggering finish
+  event and updates runtime step/execution state, but currently stops at
+  runtime completion policy. Only `auto_close_on_required_steps` reaches
+  `closed`; manual-close and approval-close transitions are not implemented.
+- Existing `complete_operation_v2` separately completes lifecycle/queue,
+  infers and upserts a successor, mutates quantities, and writes completion,
+  work-order event, and outbox rows. It is not reused by the bridge because its
+  legacy adoption, rank predicate, audit, and quantity behavior violate the
+  route-release bridge boundary.
+- Selected production model is a synchronous private bridge inside the same
+  cursor and transaction that first persists runtime `closed`. A public wrapper
+  with two independent transactions and background polling are rejected.
+- Applicability is checked before sidecar access using exact lifecycle metadata
+  marker `source=work_order_release` plus nonblank `release_id`. Marker absence
+  preserves retained V1/legacy behavior, returns `completion_bridge=None`, and
+  performs no migration `009/010` table query.
+- Marker presence requires explicit sidecar schema readiness. Missing schema is
+  `503 RUNTIME_COMPLETION_BRIDGE_SCHEMA_NOT_READY`; `UndefinedTable` is never
+  converted into a generic legacy no-op. Missing/inconsistent release or
+  binding after readiness is a deterministic conflict.
+- `finish_execution_step` keeps its signature and will add the
+  `completion_bridge` response key on every path. A duplicate event cannot
+  early-return before bridge classification: the first supported close returns
+  `bridged=true`, exact duplicate/concurrent replay returns `bridged=false`,
+  and nonclosed/legacy/not-applicable paths return `None`.
+- The authoritative trigger is persisted `execution_status=closed`; lifecycle
+  completion timestamp is persisted `execution_state.closed_at`, not a new
+  application timestamp or policy-name inference.
+- Normative lock order is work order, release, lifecycle UUID order, binding PK
+  order, execution state, runtime step order, lexical station advisory locks,
+  then station/queue-PK row order. This shares the Phase 5D prefix and avoids a
+  reverse lock against release replay.
+- Current and successor station locks are built from exact persisted station
+  codes as a unique lexical-sorted set. Each station is locked exactly once;
+  equal current/successor stations use one advisory lock.
+- Current lifecycle `queued` or `active` becomes `completed` at runtime
+  `closed_at`; quantities, started_at, payload, and metadata remain unchanged.
+  Its exact UUID-scoped queue row is retained, marked `completed`, and keeps
+  rank/source/payload/metadata.
+- Successor is only the same work order's unique smallest greater lifecycle
+  sequence and uses its immutable UUID/binding. No station/code/latest-route,
+  config, or legacy queue inference is allowed.
+- First successor activation is `planned -> queued`. The exact queue source is
+  `runtime_completion_bridge`; immutable payload carries order/UUID/operation/
+  sequence/station/queued identity and metadata carries source, release ID, and
+  predecessor lifecycle UUID.
+- Successor rank uses only `queued`, `active`, and `pending_approval`; `ready`
+  is excluded. Known queue `23505` rolls the complete finish/bridge transaction
+  back and is not automatically retried.
+- With no successor, all lifecycle operations must be completed before the work
+  order becomes `completed`; work-order `completed_at` equals final runtime
+  `closed_at`. Payload, metadata, release, and bindings remain unchanged.
+- Exact replay performs zero writes and preserves original timestamps/ranks.
+  Later successor or work-order operational progression does not invalidate an
+  earlier exact bridge replay. Partial or conflicting state is never repaired.
+- The bridge emits no extra operation/system event, approval, production
+  completion, work-order event, production-flow event, outbox row, or inventory
+  movement. The triggering finish event and persisted timestamps are the audit
+  evidence.
+- Phase 5G-A owns private cursor primitives and unit tests. Phase 5G-B owns
+  atomic `finish_execution_step` integration, response/replay/error
+  orchestration, and unit tests. Phase 5G-C owns the disposable PostgreSQL
+  release -> OP10 close -> OP20 queue -> OP20 close -> work-order complete
+  smoke.
+- API, Kiosk, IoT adapter, manual/approval close endpoints, FERP, MESQL,
+  inventory, backfill, reconciliation, and retained V1 mutation remain
+  deferred. No Python, test, migration, DB, Docker, API, or bridge
+  implementation action occurred in Phase 5F.
+- Bridge design:
+  `docs/architecture/runtime_lifecycle_completion_bridge_design.md`.
+- Concurrency plan:
+  `docs/architecture/runtime_lifecycle_completion_bridge_concurrency_plan.md`.
+- Future isolated smoke plan:
+  `docs/runbooks/runtime_lifecycle_completion_bridge_isolated_smoke_plan.md`.

@@ -1316,3 +1316,55 @@ mutation was performed.
   implementation change, commit, or push occurred.
 - Evidence:
   `docs/runbooks/work_order_route_release_read_helper_isolated_smoke_evidence_20260715.md`.
+
+## Work-Order Release Transaction Primitive Design
+
+- Last updated: `2026-07-15`.
+- Phase 5C documentation closure commit:
+  `a19df4b34d6e1466816e629cbb91f8a59a89195f`
+  (`a19df4b`, `docs: record work-order route-release read smoke`).
+- Phase 5C read model is fully verified. The Phase 5D writer is not
+  implemented; no Python, test, migration, DB, Docker, API, lifecycle,
+  binding, queue, or status action occurred in this checkpoint.
+- Design status: `READY_FOR_PRIVATE_PRIMITIVE_IMPLEMENTATION`.
+- The future writer keeps the approved public signature and initially enables
+  only `route_generated / local_planning`.
+- One `READ COMMITTED` transaction owns one connection/cursor. Normative order
+  is request validation, work-order lock, ordered release locks, exact
+  route/config reads, existing artifact locks/classification, deterministic
+  derivation, release/operation/binding/queue/status writes, authoritative
+  snapshot, and commit.
+- Selected insert order is release, deterministic lifecycle operations,
+  immutable bindings, initial queue, then work-order status.
+- Queue allocation uses a transaction advisory lock namespaced by station and
+  the exact partial-index predicate
+  `status IN ('queued', 'active', 'pending_approval')`. `ready` is excluded;
+  no schema change is planned.
+- Generated lifecycle IDs and binding IDs reuse the Phase 5C UUIDv5 utilities.
+  Dedicated lifecycle insert SQL will not reuse MESQL snapshot-updating upsert.
+- Positive target quantity and active route-item unit are initial Phase 5D
+  route-generated eligibility policy, not new schema constraints.
+- Phase 5D-A amends and supersedes the Phase 5B strict replay rule: immutable
+  release row, deterministic static operation snapshots, and complete binding
+  set remain exact; work-order/operation statuses, good/scrap quantities,
+  start/completion/update timestamps, and queue status/rank may progress.
+  The same immutable request still returns `released=false` with zero writes.
+- Caller release metadata uses normalized JSONB structural equality and is
+  never merged. First release updates only work-order status/`updated_at`;
+  payload and metadata are preserved. Replay updates nothing.
+- A `23505` path fully rolls back and closes the first transaction context
+  before authoritative classification opens a new connection, transaction,
+  and cursor. Constraint names do not replace persisted-state readback.
+- Failure injection uses fake cursor or test-process private primitive/proxy
+  seams; production receives no public test flag.
+- Phase 5D-B owns private cursor-scoped primitives and unit tests. Phase 5D-C
+  owns public route-generated writer orchestration, replay/concurrency/rollback
+  tests. Phase 5E executes the disposable writer smoke.
+- Runtime completion remains Phase 5F/5G. Explicit mapping, API, FERP, MESQL,
+  backfill, reroute, and cancellation remain deferred.
+- Design:
+  `docs/architecture/work_order_release_transaction_primitive_design.md`.
+- Concurrency/idempotency plan:
+  `docs/architecture/work_order_release_concurrency_idempotency_plan.md`.
+- Future isolated smoke plan:
+  `docs/runbooks/work_order_release_writer_isolated_smoke_plan.md`.

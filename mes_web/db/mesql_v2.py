@@ -40,6 +40,15 @@ WORK_ORDER_RELEASE_BINDING_NAMESPACE_LABEL = (
 WORK_ORDER_RELEASE_BINDING_NAMESPACE = uuid.UUID(
     "2e5192a2-5d5a-5f76-a9f6-dc70df96564a"
 )
+WORK_ORDER_RELEASE_QUEUE_CONSTRAINTS = {
+    "uq_mes_station_queue_station_active_rank",
+    "uq_mes_station_queue_station_order",
+    "uq_mes_station_queue_station_operation",
+}
+
+SET_WORK_ORDER_RELEASE_TRANSACTION_ISOLATION_SQL = (
+    "SET TRANSACTION ISOLATION LEVEL READ COMMITTED"
+)
 
 
 def _json_safe(value: Any) -> Any:
@@ -1178,6 +1187,25 @@ SELECT
 FROM mes.station_queue
 WHERE order_id = %(work_order_id)s
   AND work_order_operation_id = %(work_order_operation_id)s::uuid
+ORDER BY station_queue_pk ASC
+FOR UPDATE
+"""
+
+SELECT_WORK_ORDER_QUEUE_FOR_UPDATE_CURSOR_SQL = """
+SELECT
+    station_queue_pk,
+    station_code,
+    order_id,
+    queue_rank,
+    status,
+    source,
+    payload,
+    metadata,
+    created_at,
+    updated_at,
+    work_order_operation_id
+FROM mes.station_queue
+WHERE order_id = %(work_order_id)s
 ORDER BY station_queue_pk ASC
 FOR UPDATE
 """
@@ -2976,6 +3004,20 @@ def _select_initial_queue_cursor(
     ]
 
 
+def _list_existing_work_order_queue_for_update_cursor(
+    cursor: Any,
+    work_order_id: str,
+) -> list[JsonObject]:
+    cursor.execute(
+        SELECT_WORK_ORDER_QUEUE_FOR_UPDATE_CURSOR_SQL,
+        {"work_order_id": work_order_id},
+    )
+    return [
+        _work_order_release_initial_queue_row(row)
+        for row in cursor.fetchall()
+    ]
+
+
 def _lock_station_queue_scope_cursor(
     cursor: Any,
     station_code: str,
@@ -3072,7 +3114,7 @@ def _update_work_order_released_state_cursor(
     return _release_work_order_full_row(row) if row else None
 
 
-def _build_route_generated_operation_snapshots(
+def _assemble_route_generated_operation_snapshots(
     *,
     release_id: str,
     work_order_id: str,
@@ -3081,13 +3123,6 @@ def _build_route_generated_operation_snapshots(
     route_operations: list[JsonObject],
     target_quantity: Any,
 ) -> list[JsonObject]:
-    _validate_route_generated_config(process_route, route_item, route_operations)
-    if (
-        isinstance(target_quantity, bool)
-        or not isinstance(target_quantity, (int, float, Decimal))
-        or target_quantity <= 0
-    ):
-        raise MesqlV2Error("WORK_ORDER_RELEASE_NOT_RELEASABLE", status_code=409)
     ordered = sorted(
         route_operations,
         key=lambda item: (item.get("sequence_no"), item.get("route_operation_id")),
@@ -3128,6 +3163,32 @@ def _build_route_generated_operation_snapshots(
             },
         })
     return _json_safe(snapshots)
+
+
+def _build_route_generated_operation_snapshots(
+    *,
+    release_id: str,
+    work_order_id: str,
+    process_route: JsonObject,
+    route_item: JsonObject,
+    route_operations: list[JsonObject],
+    target_quantity: Any,
+) -> list[JsonObject]:
+    _validate_route_generated_config(process_route, route_item, route_operations)
+    if (
+        isinstance(target_quantity, bool)
+        or not isinstance(target_quantity, (int, float, Decimal))
+        or target_quantity <= 0
+    ):
+        raise MesqlV2Error("WORK_ORDER_RELEASE_NOT_RELEASABLE", status_code=409)
+    return _assemble_route_generated_operation_snapshots(
+        release_id=release_id,
+        work_order_id=work_order_id,
+        process_route=process_route,
+        route_item=route_item,
+        route_operations=route_operations,
+        target_quantity=target_quantity,
+    )
 
 
 def _build_work_order_release_binding_snapshots(
@@ -3267,6 +3328,44 @@ def _validate_route_generated_config(
             raise MesqlV2Error("WORK_ORDER_RELEASE_NOT_RELEASABLE", status_code=409)
         if sequence_no in seen_sequences or route_operation_id in seen_ids:
             raise MesqlV2Error("WORK_ORDER_RELEASE_NOT_RELEASABLE", status_code=409)
+        seen_sequences.add(sequence_no)
+        seen_ids.add(route_operation_id)
+
+
+def _validate_route_generated_replay_config(
+    process_route: JsonObject,
+    route_item: JsonObject | None,
+    route_operations: list[JsonObject],
+) -> None:
+    if route_item is None:
+        raise MesqlV2Error(
+            "WORK_ORDER_RELEASE_OPERATION_SNAPSHOT_MISMATCH", status_code=409
+        )
+    if not route_operations:
+        raise MesqlV2Error(
+            "WORK_ORDER_RELEASE_OPERATION_COUNT_MISMATCH", status_code=409
+        )
+    route_code = _text(process_route.get("route_code"))
+    route_version = process_route.get("version")
+    seen_sequences: set[int] = set()
+    seen_ids: set[str] = set()
+    for operation in route_operations:
+        sequence_no = operation.get("sequence_no")
+        route_operation_id = _text(operation.get("route_operation_id"))
+        if (
+            isinstance(sequence_no, bool)
+            or not isinstance(sequence_no, int)
+            or sequence_no <= 0
+            or not route_operation_id
+            or sequence_no in seen_sequences
+            or route_operation_id in seen_ids
+            or _text(operation.get("route_code")) != route_code
+            or operation.get("route_version") != route_version
+        ):
+            raise MesqlV2Error(
+                "WORK_ORDER_RELEASE_OPERATION_SNAPSHOT_MISMATCH",
+                status_code=409,
+            )
         seen_sequences.add(sequence_no)
         seen_ids.add(route_operation_id)
 
@@ -3508,6 +3607,463 @@ def _validate_work_order_release_invariants_cursor(
         ):
             raise MesqlV2Error("WORK_ORDER_RELEASE_QUEUE_CONFLICT", status_code=409)
     return persisted
+
+
+def _normalize_work_order_release_request(
+    *,
+    release_id: Any,
+    work_order_id: Any,
+    route_code: Any,
+    route_version: Any,
+    release_source: Any,
+    released_by: Any,
+    mode: Any,
+    operation_bindings: Any,
+    metadata: Any,
+) -> JsonObject:
+    normalized_release_id = _required_case_preserving_text(
+        release_id, field_name="RELEASE_ID"
+    )
+    normalized_work_order_id = _required_case_preserving_text(
+        work_order_id, field_name="WORK_ORDER_ID"
+    )
+    normalized_route_code = _upper(
+        _required_case_preserving_text(route_code, field_name="ROUTE_CODE")
+    )
+    normalized_route_version = _required_positive_int(
+        route_version, field_name="ROUTE_VERSION"
+    )
+    normalized_release_source = _lower(
+        _required_case_preserving_text(
+            release_source, field_name="RELEASE_SOURCE"
+        )
+    )
+    normalized_released_by = _required_case_preserving_text(
+        released_by, field_name="RELEASED_BY"
+    )
+    normalized_mode = _lower(
+        _required_case_preserving_text(mode, field_name="RELEASE_MODE")
+    )
+    if normalized_mode not in WORK_ORDER_RELEASE_MODES:
+        raise MesqlV2Error("RELEASE_MODE_INVALID", status_code=400)
+    if (
+        normalized_mode != "route_generated"
+        or normalized_release_source != "local_planning"
+    ):
+        raise MesqlV2Error(
+            "WORK_ORDER_RELEASE_MODE_NOT_ENABLED", status_code=409
+        )
+    if operation_bindings not in (None, []):
+        raise MesqlV2Error("OPERATION_BINDINGS_NOT_ALLOWED", status_code=400)
+    if metadata is None:
+        normalized_metadata: JsonObject = {}
+    elif isinstance(metadata, dict):
+        try:
+            normalized_metadata = _json_safe(metadata)
+            json.dumps(normalized_metadata, allow_nan=False)
+        except (TypeError, ValueError, RecursionError):
+            raise MesqlV2Error(
+                "RELEASE_METADATA_INVALID", status_code=400
+            ) from None
+    else:
+        raise MesqlV2Error("RELEASE_METADATA_INVALID", status_code=400)
+    return {
+        "release_id": normalized_release_id,
+        "work_order_id": normalized_work_order_id,
+        "route_code": normalized_route_code,
+        "route_version": normalized_route_version,
+        "release_source": normalized_release_source,
+        "released_by": normalized_released_by,
+        "mode": normalized_mode,
+        "metadata": normalized_metadata,
+    }
+
+
+def _postgres_error_sqlstate(error: BaseException) -> str | None:
+    for candidate in (error, error.__cause__, error.__context__):
+        if candidate is None:
+            continue
+        sqlstate = getattr(candidate, "sqlstate", None) or getattr(
+            candidate, "pgcode", None
+        )
+        if sqlstate:
+            return _text(sqlstate)
+        diagnostic = getattr(candidate, "diag", None)
+        sqlstate = getattr(diagnostic, "sqlstate", None)
+        if sqlstate:
+            return _text(sqlstate)
+    return None
+
+
+def _postgres_constraint_name(error: BaseException) -> str | None:
+    for candidate in (error, error.__cause__, error.__context__):
+        if candidate is None:
+            continue
+        diagnostic = getattr(candidate, "diag", None)
+        constraint_name = _nullable_text(
+            getattr(diagnostic, "constraint_name", None)
+        )
+        if constraint_name:
+            return constraint_name
+    return None
+
+
+def _classify_release_identity_conflicts(
+    releases: list[JsonObject],
+    request: JsonObject,
+) -> JsonObject | None:
+    release_by_id = next(
+        (
+            release
+            for release in releases
+            if release.get("release_id") == request["release_id"]
+        ),
+        None,
+    )
+    release_by_order = next(
+        (
+            release
+            for release in releases
+            if release.get("order_id") == request["work_order_id"]
+        ),
+        None,
+    )
+    if (
+        release_by_id is not None
+        and release_by_id.get("order_id") != request["work_order_id"]
+    ):
+        raise MesqlV2Error(
+            "WORK_ORDER_ROUTE_RELEASE_ID_CONFLICT", status_code=409
+        )
+    if (
+        release_by_order is not None
+        and release_by_order.get("release_id") != request["release_id"]
+    ):
+        raise MesqlV2Error("WORK_ORDER_ROUTE_ALREADY_RELEASED", status_code=409)
+    release = release_by_id or release_by_order
+    if release is None:
+        return None
+    if (
+        release.get("route_code") != request["route_code"]
+        or release.get("route_version") != request["route_version"]
+    ):
+        raise MesqlV2Error("WORK_ORDER_ROUTE_VERSION_CONFLICT", status_code=409)
+    if release.get("release_mode") != request["mode"]:
+        raise MesqlV2Error("WORK_ORDER_RELEASE_MODE_CONFLICT", status_code=409)
+    if (
+        release.get("release_source") != request["release_source"]
+        or release.get("released_by") != request["released_by"]
+        or _json_safe(release.get("metadata") or {}) != request["metadata"]
+    ):
+        raise MesqlV2Error(
+            "WORK_ORDER_ROUTE_RELEASE_ID_CONFLICT", status_code=409
+        )
+    return release
+
+
+def _prepare_work_order_release_context_cursor(
+    cursor: Any,
+    request: JsonObject,
+) -> JsonObject:
+    work_order = _select_work_order_for_release_cursor(
+        cursor, request["work_order_id"]
+    )
+    releases = _select_releases_for_update_cursor(
+        cursor,
+        request["work_order_id"],
+        request["release_id"],
+    )
+    existing_release = _classify_release_identity_conflicts(releases, request)
+    if work_order is None:
+        raise MesqlV2Error("WORK_ORDER_NOT_FOUND", status_code=404)
+
+    process_route = _select_exact_process_route_cursor(
+        cursor,
+        request["route_code"],
+        request["route_version"],
+    )
+    if process_route is None:
+        raise MesqlV2Error("PROCESS_ROUTE_NOT_FOUND", status_code=404)
+    if (
+        existing_release is not None
+        and existing_release.get("process_route_id") != process_route.get("route_id")
+    ):
+        raise MesqlV2Error("WORK_ORDER_ROUTE_VERSION_CONFLICT", status_code=409)
+    route_item = _select_route_item_cursor(cursor, process_route.get("item_code"))
+    route_operations = _list_process_route_operations_cursor(
+        cursor,
+        _text(process_route.get("route_id")),
+    )
+    if existing_release is None:
+        _validate_route_generated_config(process_route, route_item, route_operations)
+    else:
+        _validate_route_generated_replay_config(
+            process_route, route_item, route_operations
+        )
+
+    existing_operations = (
+        _list_existing_work_order_operations_for_update_cursor(
+            cursor, request["work_order_id"]
+        )
+    )
+    existing_bindings = _list_existing_release_bindings_for_update_cursor(
+        cursor, request["work_order_id"]
+    )
+    evidence = _list_work_order_release_evidence_cursor(
+        cursor, request["work_order_id"]
+    )
+    existing_queue = _list_existing_work_order_queue_for_update_cursor(
+        cursor, request["work_order_id"]
+    )
+
+    operation_snapshots = _assemble_route_generated_operation_snapshots(
+        release_id=request["release_id"],
+        work_order_id=request["work_order_id"],
+        process_route=process_route,
+        route_item=route_item,
+        route_operations=route_operations,
+        target_quantity=work_order.get("target_quantity"),
+    )
+    binding_snapshots = _build_work_order_release_binding_snapshots(
+        release_id=request["release_id"],
+        released_by=request["released_by"],
+        route_operations=route_operations,
+        operation_snapshots=operation_snapshots,
+    )
+    binding_by_operation_id = {
+        binding["work_order_operation_id"]: binding
+        for binding in binding_snapshots
+    }
+    digest_pairs = [
+        {
+            "sequence_no": operation["sequence_no"],
+            "route_operation_id": binding_by_operation_id[
+                operation["work_order_operation_id"]
+            ]["route_operation_id"],
+            "work_order_operation_id": operation["work_order_operation_id"],
+        }
+        for operation in operation_snapshots
+    ]
+    operation_set_digest = _compute_work_order_release_operation_set_digest(
+        process_route_id=process_route["route_id"],
+        route_code=process_route["route_code"],
+        route_version=process_route["version"],
+        release_mode=request["mode"],
+        pairs=digest_pairs,
+    )
+    release_snapshot = {
+        "release_id": request["release_id"],
+        "order_id": request["work_order_id"],
+        "process_route_id": process_route["route_id"],
+        "route_code": process_route["route_code"],
+        "route_version": process_route["version"],
+        "release_mode": request["mode"],
+        "release_source": request["release_source"],
+        "released_by": request["released_by"],
+        "route_operation_count": len(operation_snapshots),
+        "operation_set_digest": operation_set_digest,
+        "metadata": request["metadata"],
+    }
+    initial_queue_snapshot = _build_initial_queue_snapshot(
+        release_id=request["release_id"],
+        operation_snapshot=operation_snapshots[0],
+        queue_rank=(
+            _safe_int(existing_queue[0].get("queue_rank"), 0)
+            if len(existing_queue) == 1
+            else 0
+        ),
+    )
+    return {
+        "work_order": work_order,
+        "existing_release": existing_release,
+        "process_route": process_route,
+        "route_item": route_item,
+        "route_operations": route_operations,
+        "existing_operations": existing_operations,
+        "existing_bindings": existing_bindings,
+        "evidence": evidence,
+        "existing_queue": existing_queue,
+        "release_snapshot": release_snapshot,
+        "operation_snapshots": operation_snapshots,
+        "binding_snapshots": binding_snapshots,
+        "initial_queue_snapshot": initial_queue_snapshot,
+    }
+
+
+def _validate_existing_work_order_release_replay(
+    context: JsonObject,
+) -> None:
+    release = context["existing_release"]
+    expected_release = context["release_snapshot"]
+    if release.get("process_route_id") != expected_release["process_route_id"]:
+        raise MesqlV2Error("WORK_ORDER_ROUTE_VERSION_CONFLICT", status_code=409)
+    expected_operations = context["operation_snapshots"]
+    existing_operations = context["existing_operations"]
+    if (
+        release.get("route_operation_count") != len(expected_operations)
+        or len(existing_operations) != len(expected_operations)
+    ):
+        raise MesqlV2Error(
+            "WORK_ORDER_RELEASE_OPERATION_COUNT_MISMATCH", status_code=409
+        )
+    if not _compare_static_operation_snapshots(
+        existing_operations, expected_operations
+    ):
+        raise MesqlV2Error(
+            "WORK_ORDER_RELEASE_OPERATION_SNAPSHOT_MISMATCH", status_code=409
+        )
+    expected_bindings = context["binding_snapshots"]
+    existing_bindings = context["existing_bindings"]
+    expected_operation_ids = {
+        binding["work_order_operation_id"] for binding in expected_bindings
+    }
+    existing_operation_ids = {
+        _text(binding.get("work_order_operation_id"))
+        for binding in existing_bindings
+    }
+    if (
+        len(existing_bindings) != len(expected_bindings)
+        or existing_operation_ids != expected_operation_ids
+    ):
+        raise MesqlV2Error(
+            "WORK_ORDER_RELEASE_PARTIAL_BINDING_CONFLICT", status_code=409
+        )
+    if not _compare_complete_binding_set(existing_bindings, expected_bindings):
+        raise MesqlV2Error("WORK_ORDER_RELEASE_MAPPING_CONFLICT", status_code=409)
+    if release.get("operation_set_digest") != expected_release[
+        "operation_set_digest"
+    ]:
+        raise MesqlV2Error("WORK_ORDER_RELEASE_MAPPING_CONFLICT", status_code=409)
+    existing_queue = context["existing_queue"]
+    if len(existing_queue) != 1 or not _compare_initial_queue_identity(
+        existing_queue[0], context["initial_queue_snapshot"]
+    ):
+        raise MesqlV2Error("WORK_ORDER_RELEASE_QUEUE_CONFLICT", status_code=409)
+
+
+def _work_order_release_response_cursor(
+    cursor: Any,
+    work_order_id: str,
+    *,
+    released: bool,
+) -> JsonObject:
+    snapshot = _read_work_order_release_snapshot_cursor(cursor, work_order_id)
+    if snapshot.get("release") is None:
+        raise MesqlV2Error("WORK_ORDER_RELEASE_MAPPING_CONFLICT", status_code=409)
+    return _json_safe({"released": released, **snapshot})
+
+
+def _release_work_order_to_route_cursor(
+    cursor: Any,
+    request: JsonObject,
+) -> JsonObject:
+    context = _prepare_work_order_release_context_cursor(cursor, request)
+    if context["existing_release"] is not None:
+        _validate_existing_work_order_release_replay(context)
+        expected_snapshot = {
+            "work_order_id": request["work_order_id"],
+            "release": context["release_snapshot"],
+            "operations": context["operation_snapshots"],
+            "bindings": context["binding_snapshots"],
+            "initial_queue": context["initial_queue_snapshot"],
+            "released": False,
+        }
+        _validate_work_order_release_invariants_cursor(cursor, expected_snapshot)
+        return _work_order_release_response_cursor(
+            cursor, request["work_order_id"], released=False
+        )
+
+    _validate_route_generated_release_eligibility(
+        work_order=context["work_order"],
+        process_route=context["process_route"],
+        route_item=context["route_item"],
+        route_operations=context["route_operations"],
+        existing_operations=context["existing_operations"],
+        existing_bindings=context["existing_bindings"],
+        existing_queue=context["existing_queue"],
+        evidence=context["evidence"],
+    )
+    initial_operation = context["operation_snapshots"][0]
+    queue_scope = _lock_station_queue_scope_cursor(
+        cursor, initial_operation["station_code"]
+    )
+    initial_queue_snapshot = _build_initial_queue_snapshot(
+        release_id=request["release_id"],
+        operation_snapshot=initial_operation,
+        queue_rank=queue_scope["next_queue_rank"],
+    )
+    _insert_work_order_route_release_cursor(cursor, context["release_snapshot"])
+    for operation_snapshot in context["operation_snapshots"]:
+        _insert_route_generated_work_order_operation_cursor(
+            cursor, operation_snapshot
+        )
+    for binding_snapshot in context["binding_snapshots"]:
+        _insert_work_order_operation_route_binding_cursor(
+            cursor, binding_snapshot
+        )
+    _insert_initial_station_queue_cursor(cursor, initial_queue_snapshot)
+    _update_work_order_released_state_cursor(cursor, request["work_order_id"])
+    expected_snapshot = {
+        "work_order_id": request["work_order_id"],
+        "release": context["release_snapshot"],
+        "operations": context["operation_snapshots"],
+        "bindings": context["binding_snapshots"],
+        "initial_queue": initial_queue_snapshot,
+        "released": True,
+    }
+    _validate_work_order_release_invariants_cursor(cursor, expected_snapshot)
+    return _work_order_release_response_cursor(
+        cursor, request["work_order_id"], released=True
+    )
+
+
+def _run_work_order_release_transaction(
+    config: AppConfig,
+    request: JsonObject,
+) -> JsonObject:
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with _transaction(connection):
+            with connection.cursor() as cursor:
+                cursor.execute(SET_WORK_ORDER_RELEASE_TRANSACTION_ISOLATION_SQL)
+                return _release_work_order_to_route_cursor(cursor, request)
+
+
+def _recover_work_order_release_unique_violation(
+    config: AppConfig,
+    request: JsonObject,
+    original_error: BaseException,
+) -> JsonObject:
+    constraint_name = _postgres_constraint_name(original_error)
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with _transaction(connection):
+            with connection.cursor() as cursor:
+                cursor.execute(SET_WORK_ORDER_RELEASE_TRANSACTION_ISOLATION_SQL)
+                context = _prepare_work_order_release_context_cursor(cursor, request)
+                if context["existing_release"] is not None:
+                    _validate_existing_work_order_release_replay(context)
+                    expected_snapshot = {
+                        "work_order_id": request["work_order_id"],
+                        "release": context["release_snapshot"],
+                        "operations": context["operation_snapshots"],
+                        "bindings": context["binding_snapshots"],
+                        "initial_queue": context["initial_queue_snapshot"],
+                        "released": False,
+                    }
+                    _validate_work_order_release_invariants_cursor(
+                        cursor, expected_snapshot
+                    )
+                    return _work_order_release_response_cursor(
+                        cursor, request["work_order_id"], released=False
+                    )
+                if constraint_name in WORK_ORDER_RELEASE_QUEUE_CONSTRAINTS:
+                    raise MesqlV2Error(
+                        "WORK_ORDER_RELEASE_QUEUE_CONFLICT", status_code=409
+                    )
+    raise original_error
 
 
 def _binding_matches_request(binding: JsonObject, request: JsonObject) -> bool:
@@ -3924,6 +4480,42 @@ def get_work_order_release_snapshot(
                 cursor,
                 normalized_work_order_id,
             )
+
+
+def release_work_order_to_route(
+    config: AppConfig,
+    *,
+    release_id: str,
+    work_order_id: str,
+    route_code: str,
+    route_version: int,
+    release_source: str,
+    released_by: str,
+    mode: str,
+    operation_bindings: list[JsonObject] | None = None,
+    metadata: JsonObject | None = None,
+) -> JsonObject:
+    request = _normalize_work_order_release_request(
+        release_id=release_id,
+        work_order_id=work_order_id,
+        route_code=route_code,
+        route_version=route_version,
+        release_source=release_source,
+        released_by=released_by,
+        mode=mode,
+        operation_bindings=operation_bindings,
+        metadata=metadata,
+    )
+    try:
+        return _run_work_order_release_transaction(config, request)
+    except Exception as error:
+        if _postgres_error_sqlstate(error) != "23505":
+            raise
+        return _recover_work_order_release_unique_violation(
+            config,
+            request,
+            error,
+        )
 
 
 def list_route_operations(

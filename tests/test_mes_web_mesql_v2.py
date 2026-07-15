@@ -4,7 +4,7 @@ import json
 import inspect
 import unittest
 from copy import deepcopy
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -6155,8 +6155,8 @@ class _ReleasePrimitiveCursor:
         self.executed: list[tuple[str, dict]] = []
         self.current: tuple[str, object] | None = None
 
-    def execute(self, sql: str, params: dict) -> None:
-        self.executed.append((sql, params))
+    def execute(self, sql: str, params: dict | None = None) -> None:
+        self.executed.append((sql, params or {}))
         self.current = self.responses.pop(0) if self.responses else ("one", None)
 
     def fetchone(self):
@@ -6662,8 +6662,8 @@ class WorkOrderReleasePrimitiveTests(unittest.TestCase):
             )
         connection_factory.assert_not_called()
 
-    def test_public_writer_is_not_introduced(self) -> None:
-        self.assertFalse(hasattr(mesql_v2, "release_work_order_to_route"))
+    def test_public_writer_is_phase_5d_c_entrypoint(self) -> None:
+        self.assertTrue(callable(mesql_v2.release_work_order_to_route))
 
     def test_public_read_signatures_remain_exact(self) -> None:
         expected = {
@@ -6887,6 +6887,1181 @@ class WorkOrderReleasePrimitiveTests(unittest.TestCase):
         sql = mesql_v2.INSERT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL.lower()
         self.assertIn("on conflict do nothing", sql)
         self.assertNotIn("do update", sql)
+
+
+class _WriterCursor:
+    def __init__(self) -> None:
+        self.executed: list[tuple[str, dict]] = []
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.closed = True
+        return False
+
+    def execute(self, sql: str, params: dict | None = None) -> None:
+        if self.closed:
+            raise AssertionError("closed cursor reused")
+        self.executed.append((sql, params or {}))
+
+
+class _WriterTransaction:
+    def __init__(self, connection) -> None:
+        self.connection = connection
+        self.backup = None
+
+    def __enter__(self):
+        self.connection.transaction_enters += 1
+        self.backup = deepcopy(self.connection.state)
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        if exc is not None or self.connection.fail_on_exit:
+            self.connection.state.clear()
+            self.connection.state.update(self.backup)
+            self.connection.rollbacks += 1
+            if exc is None and self.connection.fail_on_exit:
+                raise RuntimeError("before transaction exit")
+            return False
+        self.connection.commits += 1
+        return False
+
+
+class _WriterConnection:
+    def __init__(self, state=None, *, fail_on_exit=False) -> None:
+        self.state = state if state is not None else {}
+        self.fail_on_exit = fail_on_exit
+        self.cursor_instance = _WriterCursor()
+        self.cursor_calls = 0
+        self.transaction_calls = 0
+        self.transaction_enters = 0
+        self.commits = 0
+        self.rollbacks = 0
+        self.closed = False
+
+    def transaction(self):
+        self.transaction_calls += 1
+        return _WriterTransaction(self)
+
+    def cursor(self):
+        self.cursor_calls += 1
+        return self.cursor_instance
+
+
+class _WriterDatabaseFactory:
+    def __init__(self, connections) -> None:
+        self.connections = list(connections)
+        self.calls = 0
+        self.events: list[str] = []
+
+    def __call__(self, config):
+        index = self.calls
+        self.calls += 1
+        connection = self.connections[index]
+
+        @contextmanager
+        def context():
+            self.events.append(f"enter:{index}")
+            try:
+                yield connection
+            finally:
+                connection.closed = True
+                self.events.append(f"close:{index}")
+
+        return context()
+
+
+class _FakePgError(RuntimeError):
+    def __init__(self, sqlstate, constraint_name=None) -> None:
+        super().__init__(sqlstate)
+        self.sqlstate = sqlstate
+
+        class Diagnostic:
+            pass
+
+        self.diag = Diagnostic()
+        self.diag.sqlstate = sqlstate
+        self.diag.constraint_name = constraint_name
+
+
+class WorkOrderReleaseWriterTests(unittest.TestCase):
+    def _base_kwargs(self):
+        return {
+            "release_id": "RELEASE-200",
+            "work_order_id": "WO-200",
+            "route_code": "ROUTE-2",
+            "route_version": 2,
+            "release_source": "local_planning",
+            "released_by": "planner",
+            "mode": "route_generated",
+            "operation_bindings": None,
+            "metadata": {"request": "phase-5d-c"},
+        }
+
+    def _request(self):
+        return mesql_v2._normalize_work_order_release_request(
+            **self._base_kwargs()
+        )
+
+    def _route_operations(self):
+        return [
+            {
+                "route_operation_id": "ROP-10", "route_code": "ROUTE-2",
+                "route_version": 2, "sequence_no": 10,
+                "operation_code": "OP-10", "operation_name": "First",
+                "station_code": "ST-1", "active": True,
+            },
+            {
+                "route_operation_id": "ROP-20", "route_code": "ROUTE-2",
+                "route_version": 2, "sequence_no": 20,
+                "operation_code": "OP-20", "operation_name": "Second",
+                "station_code": "ST-2", "active": True,
+            },
+        ]
+
+    def _context(self, *, existing=False):
+        request = self._request()
+        process_route = {
+            "route_id": "ROUTE-ID-2", "route_code": "ROUTE-2", "version": 2,
+            "route_name": "Route", "item_code": "ITEM-1", "active": True,
+            "metadata": {},
+        }
+        route_item = {
+            "item_code": "ITEM-1", "item_name": "Item", "item_type": "product",
+            "unit": "EA", "active": True, "metadata": {},
+        }
+        route_operations = self._route_operations()
+        operations = mesql_v2._build_route_generated_operation_snapshots(
+            release_id=request["release_id"], work_order_id=request["work_order_id"],
+            process_route=process_route, route_item=route_item,
+            route_operations=route_operations, target_quantity=5,
+        )
+        bindings = mesql_v2._build_work_order_release_binding_snapshots(
+            release_id=request["release_id"], released_by=request["released_by"],
+            route_operations=route_operations, operation_snapshots=operations,
+        )
+        binding_by_operation = {
+            binding["work_order_operation_id"]: binding for binding in bindings
+        }
+        digest = mesql_v2._compute_work_order_release_operation_set_digest(
+            process_route_id=process_route["route_id"],
+            route_code=process_route["route_code"], route_version=2,
+            release_mode=request["mode"],
+            pairs=[
+                {
+                    "sequence_no": operation["sequence_no"],
+                    "route_operation_id": binding_by_operation[
+                        operation["work_order_operation_id"]
+                    ]["route_operation_id"],
+                    "work_order_operation_id": operation[
+                        "work_order_operation_id"
+                    ],
+                }
+                for operation in operations
+            ],
+        )
+        release = {
+            "release_id": request["release_id"], "order_id": request["work_order_id"],
+            "process_route_id": process_route["route_id"],
+            "route_code": process_route["route_code"], "route_version": 2,
+            "release_mode": request["mode"],
+            "release_source": request["release_source"],
+            "released_by": request["released_by"],
+            "route_operation_count": 2, "operation_set_digest": digest,
+            "metadata": request["metadata"],
+        }
+        queue = mesql_v2._build_initial_queue_snapshot(
+            release_id=request["release_id"], operation_snapshot=operations[0],
+            queue_rank=3,
+        )
+        return {
+            "work_order": {
+                "order_id": request["work_order_id"], "status": "planned",
+                "product_code": "ITEM-1", "target_quantity": 5,
+                "started_at": None, "completed_at": None,
+            },
+            "existing_release": deepcopy(release) if existing else None,
+            "process_route": process_route, "route_item": route_item,
+            "route_operations": route_operations,
+            "existing_operations": deepcopy(operations) if existing else [],
+            "existing_bindings": deepcopy(bindings) if existing else [],
+            "evidence": {}, "existing_queue": [deepcopy(queue)] if existing else [],
+            "release_snapshot": release, "operation_snapshots": operations,
+            "binding_snapshots": bindings, "initial_queue_snapshot": queue,
+        }
+
+    def _response(self, context, released):
+        return {
+            "released": released,
+            "release": deepcopy(context["release_snapshot"]),
+            "work_order": deepcopy(context["work_order"]),
+            "operations": deepcopy(context["operation_snapshots"]),
+            "bindings": deepcopy(context["binding_snapshots"]),
+            "initial_queue": deepcopy(context["initial_queue_snapshot"]),
+        }
+
+    def test_public_writer_signature_is_exact(self) -> None:
+        self.assertEqual(
+            list(inspect.signature(mesql_v2.release_work_order_to_route).parameters),
+            [
+                "config", "release_id", "work_order_id", "route_code",
+                "route_version", "release_source", "released_by", "mode",
+                "operation_bindings", "metadata",
+            ],
+        )
+
+    def test_metadata_is_json_safe_and_not_merged(self) -> None:
+        captured = {}
+
+        def run(config, request):
+            captured.update(request)
+            return {"released": True}
+
+        kwargs = self._base_kwargs()
+        kwargs["metadata"] = {
+            "quantity": Decimal("2.5"),
+            "at": datetime(2026, 7, 15),
+        }
+        with patch.object(mesql_v2, "_run_work_order_release_transaction", run):
+            mesql_v2.release_work_order_to_route(object(), **kwargs)
+        self.assertEqual(
+            captured["metadata"],
+            {"quantity": 2.5, "at": "2026-07-15T00:00:00"},
+        )
+        self.assertEqual(set(captured["metadata"]), {"quantity", "at"})
+
+    def test_omitted_metadata_normalizes_to_empty_object(self) -> None:
+        kwargs = self._base_kwargs()
+        kwargs["metadata"] = None
+        with patch.object(
+            mesql_v2, "_run_work_order_release_transaction",
+            side_effect=lambda config, request: request,
+        ):
+            request = mesql_v2.release_work_order_to_route(object(), **kwargs)
+        self.assertEqual(request["metadata"], {})
+
+    def test_empty_generated_operation_mapping_is_allowed(self) -> None:
+        kwargs = self._base_kwargs()
+        kwargs["operation_bindings"] = []
+        with patch.object(
+            mesql_v2, "_run_work_order_release_transaction",
+            side_effect=lambda config, request: request,
+        ):
+            request = mesql_v2.release_work_order_to_route(object(), **kwargs)
+        self.assertEqual(request["mode"], "route_generated")
+
+    def test_recursive_metadata_is_rejected_before_database(self) -> None:
+        recursive = {}
+        recursive["self"] = recursive
+        kwargs = self._base_kwargs()
+        kwargs["metadata"] = recursive
+        with patch.object(
+            mesql_v2, "database_connection",
+            side_effect=AssertionError("database must not open"),
+        ) as connection_factory:
+            with self.assertRaisesRegex(
+                mesql_v2.MesqlV2Error, "RELEASE_METADATA_INVALID"
+            ):
+                mesql_v2.release_work_order_to_route(object(), **kwargs)
+        connection_factory.assert_not_called()
+
+    def test_phase_5d_b_primitive_signatures_remain_stable(self) -> None:
+        expected = {
+            "_select_work_order_for_release_cursor": ["cursor", "work_order_id"],
+            "_select_releases_for_update_cursor": [
+                "cursor", "work_order_id", "release_id"
+            ],
+            "_select_exact_process_route_cursor": [
+                "cursor", "route_code", "route_version"
+            ],
+            "_select_route_item_cursor": ["cursor", "item_code"],
+            "_list_process_route_operations_cursor": [
+                "cursor", "process_route_id"
+            ],
+            "_list_existing_work_order_operations_for_update_cursor": [
+                "cursor", "work_order_id"
+            ],
+            "_list_existing_release_bindings_for_update_cursor": [
+                "cursor", "work_order_id"
+            ],
+            "_list_work_order_release_evidence_cursor": [
+                "cursor", "work_order_id"
+            ],
+            "_select_initial_queue_cursor": [
+                "cursor", "work_order_id", "work_order_operation_id"
+            ],
+            "_lock_station_queue_scope_cursor": ["cursor", "station_code"],
+            "_insert_work_order_route_release_cursor": [
+                "cursor", "release_snapshot"
+            ],
+            "_insert_route_generated_work_order_operation_cursor": [
+                "cursor", "operation_snapshot"
+            ],
+            "_insert_work_order_operation_route_binding_cursor": [
+                "cursor", "binding_snapshot"
+            ],
+            "_insert_initial_station_queue_cursor": [
+                "cursor", "queue_snapshot"
+            ],
+            "_update_work_order_released_state_cursor": [
+                "cursor", "work_order_id"
+            ],
+        }
+        for name, parameters in expected.items():
+            self.assertEqual(
+                list(inspect.signature(getattr(mesql_v2, name)).parameters),
+                parameters,
+            )
+
+    def test_first_release_owns_one_connection_transaction_and_cursor(self) -> None:
+        connection = _WriterConnection({})
+        factory = _WriterDatabaseFactory([connection])
+        response = {"released": True}
+        with (
+            patch.object(mesql_v2, "database_connection", factory),
+            patch.object(
+                mesql_v2, "_release_work_order_to_route_cursor",
+                return_value=response,
+            ),
+        ):
+            result = mesql_v2.release_work_order_to_route(
+                object(), **self._base_kwargs()
+            )
+        self.assertIs(result, response)
+        self.assertEqual(factory.calls, 1)
+        self.assertEqual(connection.transaction_calls, 1)
+        self.assertEqual(connection.cursor_calls, 1)
+        self.assertEqual(connection.commits, 1)
+        self.assertEqual(connection.rollbacks, 0)
+        self.assertTrue(connection.closed)
+        self.assertEqual(
+            connection.cursor_instance.executed[0][0],
+            mesql_v2.SET_WORK_ORDER_RELEASE_TRANSACTION_ISOLATION_SQL,
+        )
+
+    def test_first_release_insert_and_validation_order(self) -> None:
+        context = self._context(existing=False)
+        events = []
+        response = self._response(context, True)
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(
+                mesql_v2, "_prepare_work_order_release_context_cursor",
+                side_effect=lambda cursor, request: events.append("prepare") or context,
+            ))
+            stack.enter_context(patch.object(
+                mesql_v2, "_lock_station_queue_scope_cursor",
+                side_effect=lambda cursor, station: events.append("queue_lock") or {
+                    "station_code": station, "next_queue_rank": 3, "rows": []
+                },
+            ))
+            for name, label in (
+                ("_insert_work_order_route_release_cursor", "release"),
+                ("_insert_route_generated_work_order_operation_cursor", "operation"),
+                ("_insert_work_order_operation_route_binding_cursor", "binding"),
+                ("_insert_initial_station_queue_cursor", "queue"),
+                ("_update_work_order_released_state_cursor", "work_order"),
+            ):
+                stack.enter_context(patch.object(
+                    mesql_v2, name,
+                    side_effect=lambda *args, _label=label, **kwargs: events.append(_label) or {},
+                ))
+            stack.enter_context(patch.object(
+                mesql_v2, "_validate_work_order_release_invariants_cursor",
+                side_effect=lambda *args: events.append("invariant") or {},
+            ))
+            stack.enter_context(patch.object(
+                mesql_v2, "_work_order_release_response_cursor",
+                side_effect=lambda *args, **kwargs: events.append("snapshot") or response,
+            ))
+            result = mesql_v2._release_work_order_to_route_cursor(
+                object(), self._request()
+            )
+        self.assertIs(result, response)
+        self.assertEqual(events, [
+            "prepare", "queue_lock", "release", "operation", "operation",
+            "binding", "binding", "queue", "work_order", "invariant", "snapshot",
+        ])
+
+    def test_prepare_context_uses_normative_read_and_lock_order(self) -> None:
+        source = self._context(existing=False)
+        events = []
+
+        def value(label, result):
+            return lambda *args, **kwargs: events.append(label) or result
+
+        with (
+            patch.object(mesql_v2, "_select_work_order_for_release_cursor", side_effect=value("work_order", source["work_order"])),
+            patch.object(mesql_v2, "_select_releases_for_update_cursor", side_effect=value("releases", [])),
+            patch.object(mesql_v2, "_select_exact_process_route_cursor", side_effect=value("route", source["process_route"])),
+            patch.object(mesql_v2, "_select_route_item_cursor", side_effect=value("item", source["route_item"])),
+            patch.object(mesql_v2, "_list_process_route_operations_cursor", side_effect=value("route_operations", source["route_operations"])),
+            patch.object(mesql_v2, "_validate_route_generated_config", side_effect=value("config", None)),
+            patch.object(mesql_v2, "_list_existing_work_order_operations_for_update_cursor", side_effect=value("operations", [])),
+            patch.object(mesql_v2, "_list_existing_release_bindings_for_update_cursor", side_effect=value("bindings", [])),
+            patch.object(mesql_v2, "_list_work_order_release_evidence_cursor", side_effect=value("evidence", {})),
+            patch.object(mesql_v2, "_list_existing_work_order_queue_for_update_cursor", side_effect=value("queue", [])),
+        ):
+            result = mesql_v2._prepare_work_order_release_context_cursor(
+                object(), self._request()
+            )
+        self.assertIsNone(result["existing_release"])
+        self.assertEqual(events, [
+            "work_order", "releases", "route", "item", "route_operations",
+            "config", "operations", "bindings", "evidence", "queue",
+        ])
+
+    def test_replay_performs_zero_writes_and_zero_advisory_locks(self) -> None:
+        context = self._context(existing=True)
+        response = self._response(context, False)
+        forbidden = (
+            "_lock_station_queue_scope_cursor",
+            "_insert_work_order_route_release_cursor",
+            "_insert_route_generated_work_order_operation_cursor",
+            "_insert_work_order_operation_route_binding_cursor",
+            "_insert_initial_station_queue_cursor",
+            "_update_work_order_released_state_cursor",
+        )
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(
+                mesql_v2, "_prepare_work_order_release_context_cursor",
+                return_value=context,
+            ))
+            for name in forbidden:
+                stack.enter_context(patch.object(
+                    mesql_v2, name, side_effect=AssertionError(name)
+                ))
+            stack.enter_context(patch.object(
+                mesql_v2, "_validate_work_order_release_invariants_cursor",
+                return_value={},
+            ))
+            stack.enter_context(patch.object(
+                mesql_v2, "_work_order_release_response_cursor",
+                return_value=response,
+            ))
+            result = mesql_v2._release_work_order_to_route_cursor(
+                object(), self._request()
+            )
+        self.assertFalse(result["released"])
+
+    def test_replay_returns_authoritative_reader_response(self) -> None:
+        context = self._context(existing=True)
+        authoritative = self._response(context, False)
+        authoritative["work_order"]["status"] = "completed"
+        authoritative["operations"][0]["good_quantity"] = 5
+        with (
+            patch.object(
+                mesql_v2, "_prepare_work_order_release_context_cursor",
+                return_value=context,
+            ),
+            patch.object(
+                mesql_v2, "_validate_work_order_release_invariants_cursor",
+                return_value={},
+            ),
+            patch.object(
+                mesql_v2, "_work_order_release_response_cursor",
+                return_value=authoritative,
+            ) as reader,
+        ):
+            result = mesql_v2._release_work_order_to_route_cursor(
+                object(), self._request()
+            )
+        self.assertIs(result, authoritative)
+        reader.assert_called_once()
+
+    def test_replay_config_does_not_reapply_active_eligibility(self) -> None:
+        context = self._context(existing=True)
+        context["process_route"]["active"] = False
+        context["route_item"]["active"] = False
+        for operation in context["route_operations"]:
+            operation["active"] = False
+        mesql_v2._validate_route_generated_replay_config(
+            context["process_route"],
+            context["route_item"],
+            context["route_operations"],
+        )
+        snapshots = mesql_v2._assemble_route_generated_operation_snapshots(
+            release_id=self._request()["release_id"],
+            work_order_id=self._request()["work_order_id"],
+            process_route=context["process_route"],
+            route_item=context["route_item"],
+            route_operations=context["route_operations"],
+            target_quantity=5,
+        )
+        self.assertTrue(
+            mesql_v2._compare_static_operation_snapshots(
+                snapshots, context["existing_operations"]
+            )
+        )
+
+    def test_order_scoped_queue_lock_sql_is_explicit(self) -> None:
+        sql = mesql_v2.SELECT_WORK_ORDER_QUEUE_FOR_UPDATE_CURSOR_SQL.lower()
+        self.assertIn("where order_id = %(work_order_id)s", sql)
+        self.assertIn("order by station_queue_pk asc", sql)
+        self.assertIn("for update", sql)
+        self.assertNotIn("select *", sql)
+
+    def test_prepare_missing_work_order_is_404(self) -> None:
+        with (
+            patch.object(
+                mesql_v2, "_select_work_order_for_release_cursor",
+                return_value=None,
+            ),
+            patch.object(
+                mesql_v2, "_select_releases_for_update_cursor",
+                return_value=[],
+            ),
+        ):
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                mesql_v2._prepare_work_order_release_context_cursor(
+                    object(), self._request()
+                )
+        self.assertEqual(error.exception.detail, "WORK_ORDER_NOT_FOUND")
+        self.assertEqual(error.exception.status_code, 404)
+
+    def test_prepare_missing_exact_route_is_404(self) -> None:
+        context = self._context(existing=False)
+        with (
+            patch.object(
+                mesql_v2, "_select_work_order_for_release_cursor",
+                return_value=context["work_order"],
+            ),
+            patch.object(
+                mesql_v2, "_select_releases_for_update_cursor",
+                return_value=[],
+            ),
+            patch.object(
+                mesql_v2, "_select_exact_process_route_cursor",
+                return_value=None,
+            ),
+        ):
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                mesql_v2._prepare_work_order_release_context_cursor(
+                    object(), self._request()
+                )
+        self.assertEqual(error.exception.detail, "PROCESS_ROUTE_NOT_FOUND")
+        self.assertEqual(error.exception.status_code, 404)
+
+    def test_prepare_missing_route_operations_is_404(self) -> None:
+        context = self._context(existing=False)
+        with (
+            patch.object(
+                mesql_v2, "_select_work_order_for_release_cursor",
+                return_value=context["work_order"],
+            ),
+            patch.object(
+                mesql_v2, "_select_releases_for_update_cursor",
+                return_value=[],
+            ),
+            patch.object(
+                mesql_v2, "_select_exact_process_route_cursor",
+                return_value=context["process_route"],
+            ),
+            patch.object(
+                mesql_v2, "_select_route_item_cursor",
+                return_value=context["route_item"],
+            ),
+            patch.object(
+                mesql_v2, "_list_process_route_operations_cursor",
+                return_value=[],
+            ),
+        ):
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                mesql_v2._prepare_work_order_release_context_cursor(
+                    object(), self._request()
+                )
+        self.assertEqual(error.exception.detail, "ROUTE_OPERATION_NOT_FOUND")
+        self.assertEqual(error.exception.status_code, 404)
+
+    def test_database_disabled_is_503(self) -> None:
+        with patch.object(mesql_v2, "database_connection", return_value=nullcontext(None)):
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                mesql_v2.release_work_order_to_route(
+                    object(), **self._base_kwargs()
+                )
+        self.assertEqual(error.exception.detail, "DATABASE_DISABLED")
+        self.assertEqual(error.exception.status_code, 503)
+
+    def _assert_unique_recovery_replay(self):
+        context = self._context(existing=True)
+        connections = [_WriterConnection({}), _WriterConnection({})]
+        factory = _WriterDatabaseFactory(connections)
+        unique_error = _FakePgError(
+            "23505", "uq_mes_work_order_route_releases_order_id"
+        )
+        response = self._response(context, False)
+        with (
+            patch.object(mesql_v2, "database_connection", factory),
+            patch.object(
+                mesql_v2, "_release_work_order_to_route_cursor",
+                side_effect=unique_error,
+            ),
+            patch.object(
+                mesql_v2, "_prepare_work_order_release_context_cursor",
+                return_value=context,
+            ),
+            patch.object(
+                mesql_v2, "_validate_work_order_release_invariants_cursor",
+                return_value={},
+            ),
+            patch.object(
+                mesql_v2, "_work_order_release_response_cursor",
+                return_value=response,
+            ),
+        ):
+            result = mesql_v2.release_work_order_to_route(
+                object(), **self._base_kwargs()
+            )
+        return result, factory, connections
+
+    def test_23505_exact_readback_returns_replay(self) -> None:
+        result, factory, connections = self._assert_unique_recovery_replay()
+        self.assertFalse(result["released"])
+        self.assertEqual(factory.calls, 2)
+        self.assertEqual(connections[0].rollbacks, 1)
+        self.assertEqual(connections[1].commits, 1)
+
+    def test_23505_first_context_closes_before_second_opens(self) -> None:
+        result, factory, connections = self._assert_unique_recovery_replay()
+        self.assertEqual(factory.events, ["enter:0", "close:0", "enter:1", "close:1"])
+        self.assertTrue(connections[0].cursor_instance.closed)
+        self.assertIsNot(
+            connections[0].cursor_instance, connections[1].cursor_instance
+        )
+
+    def test_same_request_concurrency_yields_true_then_false(self) -> None:
+        context = self._context(existing=True)
+        connections = [
+            _WriterConnection({}), _WriterConnection({}), _WriterConnection({})
+        ]
+        factory = _WriterDatabaseFactory(connections)
+        first_response = self._response(context, True)
+        replay_response = self._response(context, False)
+        unique_error = _FakePgError(
+            "23505", "uq_mes_work_order_route_releases_order_id"
+        )
+        with (
+            patch.object(mesql_v2, "database_connection", factory),
+            patch.object(
+                mesql_v2, "_release_work_order_to_route_cursor",
+                side_effect=[first_response, unique_error],
+            ),
+            patch.object(
+                mesql_v2, "_prepare_work_order_release_context_cursor",
+                return_value=context,
+            ),
+            patch.object(
+                mesql_v2, "_validate_work_order_release_invariants_cursor",
+                return_value={},
+            ),
+            patch.object(
+                mesql_v2, "_work_order_release_response_cursor",
+                return_value=replay_response,
+            ),
+        ):
+            first = mesql_v2.release_work_order_to_route(
+                object(), **self._base_kwargs()
+            )
+            second = mesql_v2.release_work_order_to_route(
+                object(), **self._base_kwargs()
+            )
+        self.assertEqual([first["released"], second["released"]], [True, False])
+        self.assertEqual(connections[0].commits, 1)
+        self.assertEqual(connections[1].rollbacks, 1)
+        self.assertEqual(connections[2].commits, 1)
+
+    def test_cross_order_release_id_concurrency_yields_true_then_conflict(self) -> None:
+        connections = [
+            _WriterConnection({}), _WriterConnection({}), _WriterConnection({})
+        ]
+        factory = _WriterDatabaseFactory(connections)
+        first_response = {"released": True}
+        unique_error = _FakePgError(
+            "23505", "uq_mes_work_order_route_releases_release_id"
+        )
+        conflict = mesql_v2.MesqlV2Error(
+            "WORK_ORDER_ROUTE_RELEASE_ID_CONFLICT", status_code=409
+        )
+        second_kwargs = self._base_kwargs()
+        second_kwargs["work_order_id"] = "WO-OTHER"
+        with (
+            patch.object(mesql_v2, "database_connection", factory),
+            patch.object(
+                mesql_v2, "_release_work_order_to_route_cursor",
+                side_effect=[first_response, unique_error],
+            ),
+            patch.object(
+                mesql_v2, "_prepare_work_order_release_context_cursor",
+                side_effect=conflict,
+            ),
+        ):
+            first = mesql_v2.release_work_order_to_route(
+                object(), **self._base_kwargs()
+            )
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                mesql_v2.release_work_order_to_route(object(), **second_kwargs)
+        self.assertTrue(first["released"])
+        self.assertIs(error.exception, conflict)
+        self.assertEqual(connections[0].commits, 1)
+        self.assertEqual(connections[1].rollbacks, 1)
+
+    def test_23505_cross_order_conflict_uses_second_context(self) -> None:
+        connections = [_WriterConnection({}), _WriterConnection({})]
+        factory = _WriterDatabaseFactory(connections)
+        unique_error = _FakePgError("23505")
+        conflict = mesql_v2.MesqlV2Error(
+            "WORK_ORDER_ROUTE_RELEASE_ID_CONFLICT", status_code=409
+        )
+        with (
+            patch.object(mesql_v2, "database_connection", factory),
+            patch.object(
+                mesql_v2, "_release_work_order_to_route_cursor",
+                side_effect=unique_error,
+            ),
+            patch.object(
+                mesql_v2, "_prepare_work_order_release_context_cursor",
+                side_effect=conflict,
+            ),
+        ):
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                mesql_v2.release_work_order_to_route(
+                    object(), **self._base_kwargs()
+                )
+        self.assertIs(error.exception, conflict)
+        self.assertEqual(factory.calls, 2)
+        self.assertEqual(factory.events[:3], ["enter:0", "close:0", "enter:1"])
+
+    def test_unknown_23505_propagates_original_error(self) -> None:
+        connections = [_WriterConnection({}), _WriterConnection({})]
+        factory = _WriterDatabaseFactory(connections)
+        unique_error = _FakePgError("23505", "unrelated_unique")
+        context = self._context(existing=False)
+        with (
+            patch.object(mesql_v2, "database_connection", factory),
+            patch.object(
+                mesql_v2, "_release_work_order_to_route_cursor",
+                side_effect=unique_error,
+            ),
+            patch.object(
+                mesql_v2, "_prepare_work_order_release_context_cursor",
+                return_value=context,
+            ),
+        ):
+            with self.assertRaises(_FakePgError) as error:
+                mesql_v2.release_work_order_to_route(
+                    object(), **self._base_kwargs()
+                )
+        self.assertIs(error.exception, unique_error)
+        self.assertEqual(factory.calls, 2)
+
+    def test_queue_rank_23505_maps_to_queue_conflict_without_retry(self) -> None:
+        connections = [_WriterConnection({}), _WriterConnection({})]
+        factory = _WriterDatabaseFactory(connections)
+        unique_error = _FakePgError(
+            "23505", "uq_mes_station_queue_station_active_rank"
+        )
+        context = self._context(existing=False)
+        with (
+            patch.object(mesql_v2, "database_connection", factory),
+            patch.object(
+                mesql_v2, "_release_work_order_to_route_cursor",
+                side_effect=unique_error,
+            ),
+            patch.object(
+                mesql_v2, "_prepare_work_order_release_context_cursor",
+                return_value=context,
+            ),
+        ):
+            with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "QUEUE_CONFLICT"):
+                mesql_v2.release_work_order_to_route(
+                    object(), **self._base_kwargs()
+                )
+        self.assertEqual(factory.calls, 2)
+        self.assertEqual(connections[0].rollbacks, 1)
+        self.assertEqual(connections[1].rollbacks, 1)
+
+    def _run_conflict_case(self, scenario, expected_detail):
+        request = self._request()
+        context = self._context(existing=True)
+        if scenario == "release_id_other_order":
+            release = deepcopy(context["existing_release"])
+            release["order_id"] = "WO-OTHER"
+            callable_ = lambda: mesql_v2._classify_release_identity_conflicts(
+                [release], request
+            )
+        elif scenario == "already_released":
+            release = deepcopy(context["existing_release"])
+            release["release_id"] = "RELEASE-OTHER"
+            callable_ = lambda: mesql_v2._classify_release_identity_conflicts(
+                [release], request
+            )
+        elif scenario in {"route_code", "route_version", "mode", "source", "actor", "metadata"}:
+            release = deepcopy(context["existing_release"])
+            field, value = {
+                "route_code": ("route_code", "ROUTE-OTHER"),
+                "route_version": ("route_version", 3),
+                "mode": ("release_mode", "explicit_existing_operation_mapping"),
+                "source": ("release_source", "mesql"),
+                "actor": ("released_by", "other"),
+                "metadata": ("metadata", {"different": True}),
+            }[scenario]
+            release[field] = value
+            callable_ = lambda: mesql_v2._classify_release_identity_conflicts(
+                [release], request
+            )
+        else:
+            if scenario == "operation_count":
+                context["existing_release"]["route_operation_count"] = 1
+            elif scenario == "missing_operation":
+                context["existing_operations"] = context["existing_operations"][:1]
+            elif scenario == "static_operation":
+                context["existing_operations"][0]["station_code"] = "OTHER"
+            elif scenario == "partial_binding":
+                context["existing_bindings"] = context["existing_bindings"][:1]
+            elif scenario == "mapping":
+                context["existing_bindings"][0]["route_operation_id"] = "OTHER"
+            elif scenario == "digest":
+                context["existing_release"]["operation_set_digest"] = "0" * 64
+            elif scenario == "queue_missing":
+                context["existing_queue"] = []
+            elif scenario == "queue_extra":
+                context["existing_queue"].append(
+                    deepcopy(context["existing_queue"][0])
+                )
+            elif scenario == "queue_identity":
+                context["existing_queue"][0]["source"] = "other"
+            callable_ = lambda: mesql_v2._validate_existing_work_order_release_replay(
+                context
+            )
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            callable_()
+        self.assertEqual(error.exception.detail, expected_detail)
+        self.assertEqual(error.exception.status_code, 409)
+
+    def _run_mutable_replay_case(self, scenario):
+        context = self._context(existing=True)
+        if scenario == "work_order_status":
+            context["work_order"]["status"] = "completed"
+        elif scenario == "operation_status":
+            context["existing_operations"][0]["status"] = "completed"
+        elif scenario == "actual_quantities":
+            context["existing_operations"][0].update({
+                "good_quantity": 4, "scrap_quantity": 1
+            })
+        elif scenario == "operation_timestamps":
+            context["existing_operations"][0].update({
+                "started_at": "start", "completed_at": "end", "updated_at": "later"
+            })
+        elif scenario == "queue_status":
+            context["existing_queue"][0]["status"] = "active"
+        elif scenario == "queue_rank":
+            context["existing_queue"][0]["queue_rank"] = 99
+        elif scenario == "queue_timestamp":
+            context["existing_queue"][0]["updated_at"] = "later"
+        mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def _run_nonunique_error_case(self, sqlstate):
+        connection = _WriterConnection({})
+        factory = _WriterDatabaseFactory([connection])
+        database_error = _FakePgError(sqlstate)
+        with (
+            patch.object(mesql_v2, "database_connection", factory),
+            patch.object(
+                mesql_v2, "_release_work_order_to_route_cursor",
+                side_effect=database_error,
+            ),
+        ):
+            with self.assertRaises(_FakePgError) as error:
+                mesql_v2.release_work_order_to_route(
+                    object(), **self._base_kwargs()
+                )
+        self.assertIs(error.exception, database_error)
+        self.assertEqual(factory.calls, 1)
+        self.assertEqual(connection.rollbacks, 1)
+
+    def _run_failure_case(self, failure_point):
+        context = self._context(existing=False)
+        state = {
+            "release": 0, "operations": 0, "bindings": 0,
+            "queue": 0, "status": "planned",
+        }
+        failing_connection = _WriterConnection(
+            state, fail_on_exit=failure_point == "before_transaction_exit"
+        )
+        retry_connection = _WriterConnection(state)
+        factory = _WriterDatabaseFactory([failing_connection, retry_connection])
+        attempt = {"value": 1}
+        counters = {"operation": 0, "binding": 0}
+        failure = RuntimeError(failure_point)
+
+        def maybe_fail(point):
+            if attempt["value"] == 1 and failure_point == point:
+                raise failure
+
+        def insert_release(cursor, snapshot):
+            state["release"] += 1
+            maybe_fail("after_release_insert")
+            return {}
+
+        def insert_operation(cursor, snapshot):
+            state["operations"] += 1
+            counters["operation"] += 1
+            if counters["operation"] == 1:
+                maybe_fail("after_first_lifecycle_insert")
+            if counters["operation"] == 2:
+                maybe_fail("after_all_lifecycle_inserts")
+            return {}
+
+        def insert_binding(cursor, snapshot):
+            state["bindings"] += 1
+            counters["binding"] += 1
+            if counters["binding"] == 1:
+                maybe_fail("after_first_binding")
+            if counters["binding"] == 2:
+                maybe_fail("after_all_bindings")
+            return {}
+
+        def insert_queue(cursor, snapshot):
+            state["queue"] += 1
+            maybe_fail("after_queue_insert")
+            return {}
+
+        def update_work_order(cursor, work_order_id):
+            state["status"] = "queued"
+            maybe_fail("after_work_order_update")
+            return {}
+
+        def invariant(cursor, expected):
+            maybe_fail("before_invariant_validation")
+            return {}
+
+        def response(cursor, work_order_id, released):
+            maybe_fail("before_snapshot_read")
+            return self._response(context, released)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(mesql_v2, "database_connection", factory))
+            if failure_point in {"after_work_order_lock", "after_route_validation"}:
+                stack.enter_context(patch.object(
+                    mesql_v2, "_select_work_order_for_release_cursor",
+                    return_value=context["work_order"],
+                ))
+
+                def releases_after_work_order_lock(*args):
+                    maybe_fail("after_work_order_lock")
+                    return []
+
+                stack.enter_context(patch.object(
+                    mesql_v2, "_select_releases_for_update_cursor",
+                    side_effect=releases_after_work_order_lock,
+                ))
+                stack.enter_context(patch.object(
+                    mesql_v2, "_select_exact_process_route_cursor",
+                    return_value=context["process_route"],
+                ))
+                stack.enter_context(patch.object(
+                    mesql_v2, "_select_route_item_cursor",
+                    return_value=context["route_item"],
+                ))
+                stack.enter_context(patch.object(
+                    mesql_v2, "_list_process_route_operations_cursor",
+                    return_value=context["route_operations"],
+                ))
+
+                def operations_after_route_validation(*args):
+                    maybe_fail("after_route_validation")
+                    return []
+
+                stack.enter_context(patch.object(
+                    mesql_v2,
+                    "_list_existing_work_order_operations_for_update_cursor",
+                    side_effect=operations_after_route_validation,
+                ))
+                stack.enter_context(patch.object(
+                    mesql_v2,
+                    "_list_existing_release_bindings_for_update_cursor",
+                    return_value=[],
+                ))
+                stack.enter_context(patch.object(
+                    mesql_v2, "_list_work_order_release_evidence_cursor",
+                    return_value={},
+                ))
+                stack.enter_context(patch.object(
+                    mesql_v2,
+                    "_list_existing_work_order_queue_for_update_cursor",
+                    return_value=[],
+                ))
+            else:
+                stack.enter_context(patch.object(
+                    mesql_v2, "_prepare_work_order_release_context_cursor",
+                    return_value=deepcopy(context),
+                ))
+            stack.enter_context(patch.object(
+                mesql_v2, "_lock_station_queue_scope_cursor",
+                return_value={"station_code": "ST-1", "next_queue_rank": 3, "rows": []},
+            ))
+            stack.enter_context(patch.object(
+                mesql_v2, "_insert_work_order_route_release_cursor",
+                side_effect=insert_release,
+            ))
+            stack.enter_context(patch.object(
+                mesql_v2, "_insert_route_generated_work_order_operation_cursor",
+                side_effect=insert_operation,
+            ))
+            stack.enter_context(patch.object(
+                mesql_v2, "_insert_work_order_operation_route_binding_cursor",
+                side_effect=insert_binding,
+            ))
+            stack.enter_context(patch.object(
+                mesql_v2, "_insert_initial_station_queue_cursor",
+                side_effect=insert_queue,
+            ))
+            stack.enter_context(patch.object(
+                mesql_v2, "_update_work_order_released_state_cursor",
+                side_effect=update_work_order,
+            ))
+            stack.enter_context(patch.object(
+                mesql_v2, "_validate_work_order_release_invariants_cursor",
+                side_effect=invariant,
+            ))
+            stack.enter_context(patch.object(
+                mesql_v2, "_work_order_release_response_cursor",
+                side_effect=response,
+            ))
+            with self.assertRaises(RuntimeError):
+                mesql_v2._run_work_order_release_transaction(
+                    object(), self._request()
+                )
+            self.assertEqual(failing_connection.rollbacks, 1)
+            self.assertEqual(failing_connection.commits, 0)
+            self.assertEqual(state, {
+                "release": 0, "operations": 0, "bindings": 0,
+                "queue": 0, "status": "planned",
+            })
+            attempt["value"] = 2
+            counters.update({"operation": 0, "binding": 0})
+            result = mesql_v2._run_work_order_release_transaction(
+                object(), self._request()
+            )
+        self.assertTrue(result["released"])
+        self.assertEqual(retry_connection.commits, 1)
+        self.assertEqual(retry_connection.rollbacks, 0)
+        self.assertEqual(state, {
+            "release": 1, "operations": 2, "bindings": 2,
+            "queue": 1, "status": "queued",
+        })
+
+
+def _make_writer_validation_test(changes, expected_detail):
+    def test(self):
+        kwargs = self._base_kwargs()
+        kwargs.update(changes)
+        with patch.object(
+            mesql_v2, "database_connection",
+            side_effect=AssertionError("database opened before validation"),
+        ) as connection_factory:
+            with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                mesql_v2.release_work_order_to_route(object(), **kwargs)
+        self.assertEqual(error.exception.detail, expected_detail)
+        connection_factory.assert_not_called()
+    return test
+
+
+_WRITER_VALIDATION_CASES = {
+    "release_id_blank": ({"release_id": " "}, "RELEASE_ID_REQUIRED"),
+    "release_id_none": ({"release_id": None}, "RELEASE_ID_INVALID"),
+    "work_order_blank": ({"work_order_id": ""}, "WORK_ORDER_ID_REQUIRED"),
+    "work_order_none": ({"work_order_id": None}, "WORK_ORDER_ID_INVALID"),
+    "route_code_blank": ({"route_code": " "}, "ROUTE_CODE_REQUIRED"),
+    "route_code_none": ({"route_code": None}, "ROUTE_CODE_INVALID"),
+    "version_zero": ({"route_version": 0}, "ROUTE_VERSION_INVALID"),
+    "version_negative": ({"route_version": -1}, "ROUTE_VERSION_INVALID"),
+    "version_bool": ({"route_version": True}, "ROUTE_VERSION_INVALID"),
+    "version_string": ({"route_version": "2"}, "ROUTE_VERSION_INVALID"),
+    "source_blank": ({"release_source": ""}, "RELEASE_SOURCE_REQUIRED"),
+    "source_ferp": ({"release_source": "ferp"}, "WORK_ORDER_RELEASE_MODE_NOT_ENABLED"),
+    "source_mesql": ({"release_source": "mesql"}, "WORK_ORDER_RELEASE_MODE_NOT_ENABLED"),
+    "actor_blank": ({"released_by": " "}, "RELEASED_BY_REQUIRED"),
+    "actor_none": ({"released_by": None}, "RELEASED_BY_INVALID"),
+    "explicit_mode": ({"mode": "explicit_existing_operation_mapping"}, "WORK_ORDER_RELEASE_MODE_NOT_ENABLED"),
+    "unknown_mode": ({"mode": "legacy"}, "RELEASE_MODE_INVALID"),
+    "mapping_nonempty": ({"operation_bindings": [{"x": 1}]}, "OPERATION_BINDINGS_NOT_ALLOWED"),
+    "mapping_tuple": ({"operation_bindings": ()}, "OPERATION_BINDINGS_NOT_ALLOWED"),
+    "metadata_list": ({"metadata": []}, "RELEASE_METADATA_INVALID"),
+    "metadata_set": ({"metadata": {"bad": {1, 2}}}, "RELEASE_METADATA_INVALID"),
+    "metadata_nan": ({"metadata": {"bad": float("nan")}}, "RELEASE_METADATA_INVALID"),
+}
+
+for _name, (_changes, _detail) in _WRITER_VALIDATION_CASES.items():
+    setattr(
+        WorkOrderReleaseWriterTests,
+        f"test_validation_{_name}",
+        _make_writer_validation_test(_changes, _detail),
+    )
+
+
+_WRITER_CONFLICT_CASES = {
+    "release_id_other_order": "WORK_ORDER_ROUTE_RELEASE_ID_CONFLICT",
+    "already_released": "WORK_ORDER_ROUTE_ALREADY_RELEASED",
+    "route_code": "WORK_ORDER_ROUTE_VERSION_CONFLICT",
+    "route_version": "WORK_ORDER_ROUTE_VERSION_CONFLICT",
+    "mode": "WORK_ORDER_RELEASE_MODE_CONFLICT",
+    "source": "WORK_ORDER_ROUTE_RELEASE_ID_CONFLICT",
+    "actor": "WORK_ORDER_ROUTE_RELEASE_ID_CONFLICT",
+    "metadata": "WORK_ORDER_ROUTE_RELEASE_ID_CONFLICT",
+    "operation_count": "WORK_ORDER_RELEASE_OPERATION_COUNT_MISMATCH",
+    "missing_operation": "WORK_ORDER_RELEASE_OPERATION_COUNT_MISMATCH",
+    "static_operation": "WORK_ORDER_RELEASE_OPERATION_SNAPSHOT_MISMATCH",
+    "partial_binding": "WORK_ORDER_RELEASE_PARTIAL_BINDING_CONFLICT",
+    "mapping": "WORK_ORDER_RELEASE_MAPPING_CONFLICT",
+    "digest": "WORK_ORDER_RELEASE_MAPPING_CONFLICT",
+    "queue_missing": "WORK_ORDER_RELEASE_QUEUE_CONFLICT",
+    "queue_extra": "WORK_ORDER_RELEASE_QUEUE_CONFLICT",
+    "queue_identity": "WORK_ORDER_RELEASE_QUEUE_CONFLICT",
+}
+
+for _scenario, _detail in _WRITER_CONFLICT_CASES.items():
+    setattr(
+        WorkOrderReleaseWriterTests,
+        f"test_conflict_{_scenario}",
+        lambda self, scenario=_scenario, detail=_detail: self._run_conflict_case(
+            scenario, detail
+        ),
+    )
+
+
+for _scenario in (
+    "work_order_status", "operation_status", "actual_quantities",
+    "operation_timestamps", "queue_status", "queue_rank", "queue_timestamp",
+):
+    setattr(
+        WorkOrderReleaseWriterTests,
+        f"test_replay_ignores_{_scenario}",
+        lambda self, scenario=_scenario: self._run_mutable_replay_case(scenario),
+    )
+
+
+for _sqlstate in ("23503", "40P01", "40001", "08006", "XX000"):
+    setattr(
+        WorkOrderReleaseWriterTests,
+        f"test_nonunique_{_sqlstate.lower()}_propagates",
+        lambda self, sqlstate=_sqlstate: self._run_nonunique_error_case(sqlstate),
+    )
+
+
+for _failure_point in (
+    "after_work_order_lock", "after_route_validation", "after_release_insert",
+    "after_first_lifecycle_insert", "after_all_lifecycle_inserts",
+    "after_first_binding", "after_all_bindings", "after_queue_insert",
+    "after_work_order_update", "before_invariant_validation",
+    "before_snapshot_read", "before_transaction_exit",
+):
+    setattr(
+        WorkOrderReleaseWriterTests,
+        f"test_rollback_{_failure_point}",
+        lambda self, point=_failure_point: self._run_failure_case(point),
+    )
 
 
 def _make_sql_contract_test(constant_name, required, forbidden=()):

@@ -6149,5 +6149,791 @@ class MesqlV2Tests(unittest.TestCase):
             self.assertNotIn(excluded, parameters)
 
 
+class _ReleasePrimitiveCursor:
+    def __init__(self, responses: list[tuple[str, object]]) -> None:
+        self.responses = list(responses)
+        self.executed: list[tuple[str, dict]] = []
+        self.current: tuple[str, object] | None = None
+
+    def execute(self, sql: str, params: dict) -> None:
+        self.executed.append((sql, params))
+        self.current = self.responses.pop(0) if self.responses else ("one", None)
+
+    def fetchone(self):
+        assert self.current is not None
+        kind, value = self.current
+        assert kind == "one"
+        return value
+
+    def fetchall(self):
+        assert self.current is not None
+        kind, value = self.current
+        assert kind == "all"
+        return value
+
+
+class WorkOrderReleasePrimitiveTests(unittest.TestCase):
+    release_id = "RELEASE-100"
+    operation_id = "13be7645-ea17-5260-8943-52a953399bb7"
+
+    def _route(self, **overrides):
+        value = {
+            "route_id": "ROUTE-ID-2", "route_code": "ROUTE-2", "version": 2,
+            "route_name": "Route 2", "item_code": "ITEM-1", "active": True,
+            "metadata": {},
+        }
+        value.update(overrides)
+        return value
+
+    def _item(self, **overrides):
+        value = {
+            "item_code": "ITEM-1", "item_name": "Item", "item_type": "product",
+            "unit": "EA", "active": True, "metadata": {},
+        }
+        value.update(overrides)
+        return value
+
+    def _route_operations(self):
+        return [
+            {
+                "route_operation_id": "ROP-20", "sequence_no": 20,
+                "route_code": "ROUTE-2", "route_version": 2,
+                "operation_code": "OP-20", "operation_name": "Second",
+                "station_code": "ST-2", "active": True,
+            },
+            {
+                "route_operation_id": "ROP-10", "sequence_no": 10,
+                "route_code": "ROUTE-2", "route_version": 2,
+                "operation_code": "OP-10", "operation_name": "First",
+                "station_code": "ST-1", "active": True,
+            },
+        ]
+
+    def _operation_snapshots(self):
+        return mesql_v2._build_route_generated_operation_snapshots(
+            release_id=self.release_id,
+            work_order_id="WO-1",
+            process_route=self._route(),
+            route_item=self._item(),
+            route_operations=self._route_operations(),
+            target_quantity=Decimal("4.5"),
+        )
+
+    def _work_order(self, **overrides):
+        value = {
+            "order_id": "WO-1", "status": "planned", "product_code": "ITEM-1",
+            "target_quantity": 5, "started_at": None, "completed_at": None,
+        }
+        value.update(overrides)
+        return value
+
+    def test_operation_builder_orders_by_sequence(self) -> None:
+        snapshots = self._operation_snapshots()
+        self.assertEqual([item["sequence_no"] for item in snapshots], [10, 20])
+
+    def test_operation_builder_sets_only_first_queued(self) -> None:
+        self.assertEqual(
+            [item["status"] for item in self._operation_snapshots()],
+            ["queued", "planned"],
+        )
+
+    def test_operation_builder_sets_exact_server_metadata(self) -> None:
+        metadata = self._operation_snapshots()[0]["metadata"]
+        self.assertEqual(set(metadata), {
+            "source", "release_id", "process_route_id", "route_code",
+            "route_version", "route_operation_id",
+        })
+
+    def test_operation_builder_uses_route_item_unit(self) -> None:
+        self.assertEqual(self._operation_snapshots()[0]["uom_code"], "EA")
+
+    def test_operation_builder_has_null_mesql_and_timestamps(self) -> None:
+        operation = self._operation_snapshots()[0]
+        self.assertIsNone(operation["mesql_work_order_operation_id"])
+        self.assertIsNone(operation["started_at"])
+        self.assertIsNone(operation["completed_at"])
+
+    def test_operation_builder_uses_deterministic_uuid(self) -> None:
+        operation = self._operation_snapshots()[0]
+        self.assertEqual(
+            operation["work_order_operation_id"],
+            mesql_v2._derive_work_order_release_operation_id(
+                self.release_id, "ROP-10"
+            ),
+        )
+
+    def test_binding_builder_uses_fixed_derivation_contract(self) -> None:
+        bindings = mesql_v2._build_work_order_release_binding_snapshots(
+            release_id=self.release_id,
+            released_by="planner",
+            route_operations=self._route_operations(),
+            operation_snapshots=self._operation_snapshots(),
+        )
+        self.assertEqual(
+            bindings[0]["binding_id"],
+            mesql_v2._derive_work_order_release_binding_id(
+                self.release_id, "ROP-10"
+            ),
+        )
+
+    def test_binding_builder_has_exact_metadata(self) -> None:
+        bindings = mesql_v2._build_work_order_release_binding_snapshots(
+            release_id=self.release_id, released_by="planner",
+            route_operations=self._route_operations(),
+            operation_snapshots=self._operation_snapshots(),
+        )
+        self.assertEqual(bindings[0]["metadata"], {"release_id": self.release_id})
+
+    def test_binding_builder_rejects_count_mismatch(self) -> None:
+        with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "COUNT_MISMATCH"):
+            mesql_v2._build_work_order_release_binding_snapshots(
+                release_id=self.release_id, released_by="planner",
+                route_operations=self._route_operations()[:1],
+                operation_snapshots=self._operation_snapshots(),
+            )
+
+    def test_binding_builder_rejects_tampered_lifecycle_uuid(self) -> None:
+        operations = self._operation_snapshots()
+        operations[0]["work_order_operation_id"] = self.operation_id
+        with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "MAPPING_CONFLICT"):
+            mesql_v2._build_work_order_release_binding_snapshots(
+                release_id=self.release_id, released_by="planner",
+                route_operations=self._route_operations(),
+                operation_snapshots=operations,
+            )
+
+    def test_queue_builder_has_no_route_config_identity(self) -> None:
+        queue = mesql_v2._build_initial_queue_snapshot(
+            release_id=self.release_id,
+            operation_snapshot=self._operation_snapshots()[0], queue_rank=3,
+        )
+        serialized = json.dumps(queue)
+        self.assertNotIn("route_operation_id", serialized)
+        self.assertNotIn("process_route_id", serialized)
+
+    def test_queue_builder_payload_is_exact(self) -> None:
+        operation = self._operation_snapshots()[0]
+        queue = mesql_v2._build_initial_queue_snapshot(
+            release_id=self.release_id, operation_snapshot=operation, queue_rank=3,
+        )
+        self.assertEqual(set(queue["payload"]), {
+            "order_id", "work_order_operation_id", "operation_no", "sequence_no",
+            "station_code", "status",
+        })
+
+    def test_queue_builder_rejects_negative_rank(self) -> None:
+        with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "QUEUE_CONFLICT"):
+            mesql_v2._build_initial_queue_snapshot(
+                release_id=self.release_id,
+                operation_snapshot=self._operation_snapshots()[0], queue_rank=-1,
+            )
+
+    def test_config_rejects_missing_route(self) -> None:
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            mesql_v2._validate_route_generated_config(None, self._item(), [])
+        self.assertEqual(error.exception.status_code, 404)
+
+    def test_config_rejects_empty_operations(self) -> None:
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            mesql_v2._validate_route_generated_config(self._route(), self._item(), [])
+        self.assertEqual(error.exception.detail, "ROUTE_OPERATION_NOT_FOUND")
+
+    def test_config_rejects_inactive_route(self) -> None:
+        with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "NOT_RELEASABLE"):
+            mesql_v2._validate_route_generated_config(
+                self._route(active=False), self._item(), self._route_operations()
+            )
+
+    def test_config_rejects_inactive_item(self) -> None:
+        with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "NOT_RELEASABLE"):
+            mesql_v2._validate_route_generated_config(
+                self._route(), self._item(active=False), self._route_operations()
+            )
+
+    def test_config_rejects_blank_unit(self) -> None:
+        with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "NOT_RELEASABLE"):
+            mesql_v2._validate_route_generated_config(
+                self._route(), self._item(unit=" "), self._route_operations()
+            )
+
+    def test_config_rejects_duplicate_sequence(self) -> None:
+        operations = self._route_operations()
+        operations[1]["sequence_no"] = 20
+        with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "NOT_RELEASABLE"):
+            mesql_v2._validate_route_generated_config(
+                self._route(), self._item(), operations
+            )
+
+    def test_config_rejects_cross_version_operation(self) -> None:
+        operations = self._route_operations()
+        operations[0]["route_version"] = 3
+        with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "NOT_RELEASABLE"):
+            mesql_v2._validate_route_generated_config(
+                self._route(), self._item(), operations
+            )
+
+    def test_eligibility_accepts_clean_planned_work_order(self) -> None:
+        mesql_v2._validate_route_generated_release_eligibility(
+            work_order=self._work_order(), process_route=self._route(),
+            route_item=self._item(), route_operations=self._route_operations(),
+            existing_operations=[], existing_bindings=[], existing_queue=[], evidence={},
+        )
+
+    def test_eligibility_accepts_structurally_clean_queued_work_order(self) -> None:
+        mesql_v2._validate_route_generated_release_eligibility(
+            work_order=self._work_order(status="queued"), process_route=self._route(),
+            route_item=self._item(), route_operations=self._route_operations(),
+            existing_operations=[], existing_bindings=[], existing_queue=[], evidence={},
+        )
+
+    def test_eligibility_compares_normalized_product_codes(self) -> None:
+        mesql_v2._validate_route_generated_release_eligibility(
+            work_order=self._work_order(product_code="item-1"),
+            process_route=self._route(item_code="ITEM-1"),
+            route_item=self._item(item_code="Item-1"),
+            route_operations=self._route_operations(), existing_operations=[],
+            existing_bindings=[], existing_queue=[], evidence={},
+        )
+
+    def test_eligibility_rejects_nonpositive_target(self) -> None:
+        with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "NOT_RELEASABLE"):
+            mesql_v2._validate_route_generated_release_eligibility(
+                work_order=self._work_order(target_quantity=0),
+                process_route=self._route(), route_item=self._item(),
+                route_operations=self._route_operations(), existing_operations=[],
+                existing_bindings=[], existing_queue=[], evidence={},
+            )
+
+    def test_eligibility_rejects_product_mismatch(self) -> None:
+        with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "NOT_RELEASABLE"):
+            mesql_v2._validate_route_generated_release_eligibility(
+                work_order=self._work_order(product_code="OTHER"),
+                process_route=self._route(), route_item=self._item(),
+                route_operations=self._route_operations(), existing_operations=[],
+                existing_bindings=[], existing_queue=[], evidence={},
+            )
+
+    def test_eligibility_rejects_runtime_evidence(self) -> None:
+        with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "NOT_RELEASABLE"):
+            mesql_v2._validate_route_generated_release_eligibility(
+                work_order=self._work_order(), process_route=self._route(),
+                route_item=self._item(), route_operations=self._route_operations(),
+                existing_operations=[], existing_bindings=[], existing_queue=[],
+                evidence={"operation_event_count": 1},
+            )
+
+    def test_release_comparator_ignores_database_timestamps(self) -> None:
+        expected = {name: name for name in (
+            "release_id", "order_id", "process_route_id", "route_code",
+            "route_version", "release_mode", "release_source", "released_by",
+            "route_operation_count", "operation_set_digest", "metadata",
+        )}
+        persisted = {**expected, "released_at": "later", "created_at": "later"}
+        self.assertTrue(mesql_v2._compare_immutable_release_request(persisted, expected))
+
+    def test_operation_comparator_ignores_mutable_operational_state(self) -> None:
+        expected = self._operation_snapshots()
+        persisted = deepcopy(expected)
+        persisted[0].update({
+            "status": "completed", "good_quantity": 4.5, "scrap_quantity": 1,
+            "started_at": "2026-01-01", "completed_at": "2026-01-02",
+            "updated_at": "2026-01-03",
+        })
+        self.assertTrue(
+            mesql_v2._compare_static_operation_snapshots(persisted, expected)
+        )
+
+    def test_operation_comparator_detects_static_change(self) -> None:
+        expected = self._operation_snapshots()
+        persisted = deepcopy(expected)
+        persisted[0]["station_code"] = "OTHER"
+        self.assertFalse(
+            mesql_v2._compare_static_operation_snapshots(persisted, expected)
+        )
+
+    def test_binding_comparator_detects_missing_binding(self) -> None:
+        self.assertFalse(mesql_v2._compare_complete_binding_set([], [{"binding_id": "B"}]))
+
+    def test_queue_comparator_ignores_status_rank_and_timestamps(self) -> None:
+        expected = mesql_v2._build_initial_queue_snapshot(
+            release_id=self.release_id,
+            operation_snapshot=self._operation_snapshots()[0], queue_rank=0,
+        )
+        persisted = {**expected, "status": "completed", "queue_rank": 99,
+                     "created_at": "a", "updated_at": "b"}
+        self.assertTrue(mesql_v2._compare_initial_queue_identity(persisted, expected))
+
+    def test_queue_comparator_detects_lifecycle_change(self) -> None:
+        expected = mesql_v2._build_initial_queue_snapshot(
+            release_id=self.release_id,
+            operation_snapshot=self._operation_snapshots()[0], queue_rank=0,
+        )
+        persisted = {**expected, "work_order_operation_id": self.operation_id}
+        self.assertFalse(mesql_v2._compare_initial_queue_identity(persisted, expected))
+
+    def test_queue_lock_uses_three_statements_and_returns_rank(self) -> None:
+        cursor = _ReleasePrimitiveCursor([
+            ("one", (None,)), ("all", []), ("one", (7,)),
+        ])
+        result = mesql_v2._lock_station_queue_scope_cursor(cursor, "ST-1")
+        self.assertEqual(result["next_queue_rank"], 7)
+        self.assertEqual(len(cursor.executed), 3)
+
+    def test_queue_rank_sql_excludes_ready(self) -> None:
+        sql = mesql_v2.SELECT_NEXT_STATION_QUEUE_RANK_CURSOR_SQL.lower()
+        self.assertIn("'queued', 'active', 'pending_approval'", sql)
+        self.assertNotIn("ready", sql)
+
+    def test_read_snapshot_missing_release_has_stable_shape(self) -> None:
+        cursor = _ReleasePrimitiveCursor([("one", None)])
+        snapshot = mesql_v2._read_work_order_release_snapshot_cursor(cursor, "WO-X")
+        self.assertEqual(snapshot["operations"], [])
+        self.assertIsNone(snapshot["release"])
+        self.assertEqual(set(snapshot), {
+            "release", "work_order", "operations", "bindings", "initial_queue"
+        })
+
+    def test_snapshot_cursor_reuses_phase_5c_shape_unchanged(self) -> None:
+        expected = {
+            "release": {"release_id": "R"}, "work_order": {"order_id": "WO"},
+            "operations": [{"sequence_no": 10}], "bindings": [],
+            "initial_queue": None,
+        }
+        with patch.object(
+            mesql_v2, "_get_work_order_release_snapshot_with_cursor",
+            return_value=expected,
+        ) as reader:
+            self.assertIs(
+                mesql_v2._read_work_order_release_snapshot_cursor(object(), "WO"),
+                expected,
+            )
+        reader.assert_called_once()
+
+    def _invariant_fixture(self, released=False):
+        release = {
+            "release_id": self.release_id, "order_id": "WO-1",
+            "process_route_id": "ROUTE-ID-2", "route_code": "ROUTE-2",
+            "route_version": 2, "release_mode": "route_generated",
+            "release_source": "local_planning", "released_by": "planner",
+            "route_operation_count": 2, "operation_set_digest": "",
+            "metadata": {},
+        }
+        operations = self._operation_snapshots()
+        bindings = mesql_v2._build_work_order_release_binding_snapshots(
+            release_id=self.release_id, released_by="planner",
+            route_operations=self._route_operations(), operation_snapshots=operations,
+        )
+        binding_by_operation = {
+            binding["work_order_operation_id"]: binding for binding in bindings
+        }
+        release["operation_set_digest"] = (
+            mesql_v2._compute_work_order_release_operation_set_digest(
+                process_route_id=release["process_route_id"],
+                route_code=release["route_code"],
+                route_version=release["route_version"],
+                release_mode=release["release_mode"],
+                pairs=[
+                    {
+                        "sequence_no": operation["sequence_no"],
+                        "route_operation_id": binding_by_operation[
+                            operation["work_order_operation_id"]
+                        ]["route_operation_id"],
+                        "work_order_operation_id": operation[
+                            "work_order_operation_id"
+                        ],
+                    }
+                    for operation in operations
+                ],
+            )
+        )
+        queue = mesql_v2._build_initial_queue_snapshot(
+            release_id=self.release_id, operation_snapshot=operations[0], queue_rank=2,
+        )
+        return {
+            "work_order_id": "WO-1", "release": release, "operations": operations,
+            "bindings": bindings, "initial_queue": queue, "released": released,
+        }
+
+    def test_invariant_replay_ignores_mutable_progression(self) -> None:
+        expected = self._invariant_fixture(released=False)
+        operations = deepcopy(expected["operations"])
+        operations[0].update({
+            "status": "completed", "good_quantity": 5, "scrap_quantity": 1,
+            "started_at": "start", "completed_at": "end",
+        })
+        queue = {**expected["initial_queue"], "status": "active", "queue_rank": 99}
+        with (
+            patch.object(mesql_v2, "_get_work_order_route_release_with_cursor", return_value=expected["release"]),
+            patch.object(mesql_v2, "_select_work_order_for_release_cursor", return_value={"status": "completed"}),
+            patch.object(mesql_v2, "_list_existing_work_order_operations_for_update_cursor", return_value=operations),
+            patch.object(mesql_v2, "_list_existing_release_bindings_for_update_cursor", return_value=expected["bindings"]),
+            patch.object(mesql_v2, "_select_initial_queue_cursor", return_value=[queue]),
+        ):
+            persisted = mesql_v2._validate_work_order_release_invariants_cursor(
+                object(), expected
+            )
+        self.assertEqual(persisted["work_order"]["status"], "completed")
+
+    def test_invariant_first_write_rejects_mutable_progression(self) -> None:
+        expected = self._invariant_fixture(released=True)
+        operations = deepcopy(expected["operations"])
+        operations[0]["status"] = "completed"
+        with (
+            patch.object(mesql_v2, "_get_work_order_route_release_with_cursor", return_value=expected["release"]),
+            patch.object(mesql_v2, "_select_work_order_for_release_cursor", return_value={"status": "queued"}),
+            patch.object(mesql_v2, "_list_existing_work_order_operations_for_update_cursor", return_value=operations),
+            patch.object(mesql_v2, "_list_existing_release_bindings_for_update_cursor", return_value=expected["bindings"]),
+            patch.object(mesql_v2, "_select_initial_queue_cursor", return_value=[expected["initial_queue"]]),
+        ):
+            with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "SNAPSHOT_MISMATCH"):
+                mesql_v2._validate_work_order_release_invariants_cursor(object(), expected)
+
+    def test_invariant_selects_queue_for_minimum_sequence_operation(self) -> None:
+        expected = self._invariant_fixture(released=False)
+        reversed_operations = list(reversed(expected["operations"]))
+        with (
+            patch.object(mesql_v2, "_get_work_order_route_release_with_cursor", return_value=expected["release"]),
+            patch.object(mesql_v2, "_select_work_order_for_release_cursor", return_value={"status": "queued"}),
+            patch.object(mesql_v2, "_list_existing_work_order_operations_for_update_cursor", return_value=reversed_operations),
+            patch.object(mesql_v2, "_list_existing_release_bindings_for_update_cursor", return_value=expected["bindings"]),
+            patch.object(mesql_v2, "_select_initial_queue_cursor", return_value=[expected["initial_queue"]]) as queue_reader,
+        ):
+            mesql_v2._validate_work_order_release_invariants_cursor(object(), expected)
+        self.assertEqual(queue_reader.call_args.args[2], expected["operations"][0]["work_order_operation_id"])
+
+    def test_invariant_recomputes_and_rejects_digest_mismatch(self) -> None:
+        expected = self._invariant_fixture(released=False)
+        expected["release"]["operation_set_digest"] = "0" * 64
+        with (
+            patch.object(mesql_v2, "_get_work_order_route_release_with_cursor", return_value=expected["release"]),
+            patch.object(mesql_v2, "_select_work_order_for_release_cursor", return_value={"status": "queued"}),
+            patch.object(mesql_v2, "_list_existing_work_order_operations_for_update_cursor", return_value=expected["operations"]),
+            patch.object(mesql_v2, "_list_existing_release_bindings_for_update_cursor", return_value=expected["bindings"]),
+            patch.object(mesql_v2, "_select_initial_queue_cursor", return_value=[expected["initial_queue"]]),
+        ):
+            with self.assertRaisesRegex(mesql_v2.MesqlV2Error, "MAPPING_CONFLICT"):
+                mesql_v2._validate_work_order_release_invariants_cursor(object(), expected)
+
+    def test_private_primitives_do_not_reference_connection_control(self) -> None:
+        for name in (
+            "_select_work_order_for_release_cursor",
+            "_select_releases_for_update_cursor",
+            "_select_exact_process_route_cursor",
+            "_select_route_item_cursor",
+            "_list_process_route_operations_cursor",
+            "_list_existing_work_order_operations_for_update_cursor",
+            "_list_existing_release_bindings_for_update_cursor",
+            "_list_work_order_release_evidence_cursor",
+            "_select_initial_queue_cursor",
+            "_lock_station_queue_scope_cursor",
+            "_insert_work_order_route_release_cursor",
+            "_insert_route_generated_work_order_operation_cursor",
+            "_insert_work_order_operation_route_binding_cursor",
+            "_insert_initial_station_queue_cursor",
+            "_update_work_order_released_state_cursor",
+            "_validate_work_order_release_invariants_cursor",
+            "_read_work_order_release_snapshot_cursor",
+        ):
+            source = inspect.getsource(getattr(mesql_v2, name))
+            self.assertNotIn("database_connection", source)
+            self.assertNotIn("commit", source)
+            self.assertNotIn("rollback", source)
+
+    def test_cursor_primitive_propagates_database_error_identity(self) -> None:
+        failure = RuntimeError("database failure")
+
+        class RaisingCursor:
+            def execute(self, sql, params):
+                raise failure
+
+        with self.assertRaises(RuntimeError) as error:
+            mesql_v2._select_work_order_for_release_cursor(RaisingCursor(), "WO-1")
+        self.assertIs(error.exception, failure)
+
+    def test_cursor_primitive_never_opens_database_connection(self) -> None:
+        cursor = _ReleasePrimitiveCursor([("one", None)])
+        with patch.object(
+            mesql_v2,
+            "database_connection",
+            side_effect=AssertionError("connection must remain caller-owned"),
+        ) as connection_factory:
+            self.assertIsNone(
+                mesql_v2._select_work_order_for_release_cursor(cursor, "WO-1")
+            )
+        connection_factory.assert_not_called()
+
+    def test_public_writer_is_not_introduced(self) -> None:
+        self.assertFalse(hasattr(mesql_v2, "release_work_order_to_route"))
+
+    def test_public_read_signatures_remain_exact(self) -> None:
+        expected = {
+            "get_work_order_route_release": ["config", "work_order_id"],
+            "get_work_order_route_release_by_id": ["config", "release_id"],
+            "get_exact_process_route": ["config", "route_code", "route_version"],
+            "list_process_route_operations": ["config", "process_route_id"],
+            "get_work_order_release_snapshot": ["config", "work_order_id"],
+        }
+        for name, parameters in expected.items():
+            self.assertEqual(list(inspect.signature(getattr(mesql_v2, name)).parameters), parameters)
+
+    def test_full_work_order_mapper_supports_tuple_and_dict_rows(self) -> None:
+        values = (
+            1, "WO-1", "PP", "planned", "ITEM-1", Decimal("2.5"), None,
+            None, "mes_web", None, None, {"a": 1}, {"b": 2},
+            datetime(2026, 1, 1), datetime(2026, 1, 2),
+        )
+        names = (
+            "work_order_pk", "order_id", "erp_type", "status", "product_code",
+            "target_quantity", "started_at", "completed_at", "source_system",
+            "source_file", "external_ref", "payload", "metadata", "created_at",
+            "updated_at",
+        )
+        tuple_row = mesql_v2._release_work_order_full_row(values)
+        dict_row = mesql_v2._release_work_order_full_row(dict(zip(names, values)))
+        self.assertEqual(tuple_row, dict_row)
+        self.assertEqual(tuple_row["target_quantity"], 2.5)
+        self.assertEqual(tuple_row["created_at"], "2026-01-01T00:00:00")
+
+    def test_full_operation_mapper_supports_tuple_and_dict_rows(self) -> None:
+        values = (
+            UUID(self.operation_id), "WO-1", None, 10, "OP-10", "First", 10,
+            "ST-1", "queued", Decimal("2"), Decimal("0"), Decimal("0"), "EA",
+            None, None, {}, {}, datetime(2026, 1, 1), datetime(2026, 1, 2),
+        )
+        names = (
+            "work_order_operation_id", "order_id", "mesql_work_order_operation_id",
+            "operation_no", "operation_code", "operation_name", "sequence_no",
+            "station_code", "status", "planned_quantity", "good_quantity",
+            "scrap_quantity", "uom_code", "started_at", "completed_at", "payload",
+            "metadata", "created_at", "updated_at",
+        )
+        tuple_row = mesql_v2._release_work_order_operation_full_row(values)
+        dict_row = mesql_v2._release_work_order_operation_full_row(dict(zip(names, values)))
+        self.assertEqual(tuple_row, dict_row)
+        self.assertEqual(tuple_row["work_order_operation_id"], self.operation_id)
+
+    def test_combined_release_selector_uses_both_identity_parameters(self) -> None:
+        release = (
+            1, "R-1", "WO-1", "PR-1", "ROUTE-1", 1, "route_generated",
+            "local_planning", "planner", datetime(2026, 1, 1), 1, "a" * 64,
+            {}, datetime(2026, 1, 1),
+        )
+        cursor = _ReleasePrimitiveCursor([("all", [release])])
+        rows = mesql_v2._select_releases_for_update_cursor(cursor, "WO-1", "R-1")
+        self.assertEqual(rows[0]["release_id"], "R-1")
+        self.assertEqual(cursor.executed[0][1], {"work_order_id": "WO-1", "release_id": "R-1"})
+
+    def test_evidence_mapper_returns_all_five_counts(self) -> None:
+        cursor = _ReleasePrimitiveCursor([("one", (1, 2, 3, 4, 5))])
+        result = mesql_v2._list_work_order_release_evidence_cursor(cursor, "WO-1")
+        self.assertEqual(list(result.values()), [1, 2, 3, 4, 5])
+
+    def test_evidence_missing_row_returns_zero_shape(self) -> None:
+        cursor = _ReleasePrimitiveCursor([("one", None)])
+        result = mesql_v2._list_work_order_release_evidence_cursor(cursor, "WO-1")
+        self.assertEqual(sum(result.values()), 0)
+        self.assertEqual(len(result), 5)
+
+    def test_initial_queue_selector_returns_empty_list(self) -> None:
+        cursor = _ReleasePrimitiveCursor([("all", [])])
+        self.assertEqual(
+            mesql_v2._select_initial_queue_cursor(cursor, "WO-1", self.operation_id),
+            [],
+        )
+
+    def test_queue_lock_clamps_mocked_negative_rank_to_zero(self) -> None:
+        cursor = _ReleasePrimitiveCursor([
+            ("one", (None,)), ("all", []), ("one", (-5,)),
+        ])
+        result = mesql_v2._lock_station_queue_scope_cursor(cursor, "ST-1")
+        self.assertEqual(result["next_queue_rank"], 0)
+
+    def test_queue_lock_reuses_exact_station_parameter(self) -> None:
+        cursor = _ReleasePrimitiveCursor([
+            ("one", (None,)), ("all", []), ("one", (0,)),
+        ])
+        mesql_v2._lock_station_queue_scope_cursor(cursor, "ST-9")
+        self.assertTrue(all(params == {"station_code": "ST-9"} for _, params in cursor.executed))
+
+    def test_release_insert_maps_returned_row(self) -> None:
+        row = (
+            1, "R-1", "WO-1", "PR-1", "ROUTE-1", 1, "route_generated",
+            "local_planning", "planner", datetime(2026, 1, 1), 1, "a" * 64,
+            {}, datetime(2026, 1, 1),
+        )
+        cursor = _ReleasePrimitiveCursor([("one", row)])
+        request = {
+            "release_id": "R-1", "order_id": "WO-1", "process_route_id": "PR-1",
+            "route_code": "ROUTE-1", "route_version": 1,
+            "release_mode": "route_generated", "release_source": "local_planning",
+            "released_by": "planner", "route_operation_count": 1,
+            "operation_set_digest": "a" * 64, "metadata": {},
+        }
+        result = mesql_v2._insert_work_order_route_release_cursor(cursor, request)
+        self.assertEqual(result["release_pk"], 1)
+        self.assertEqual(set(cursor.executed[0][1]), set(request))
+
+    def test_lifecycle_insert_supplies_deterministic_uuid_parameter(self) -> None:
+        operation = self._operation_snapshots()[0]
+        returned = tuple(operation.get(name) for name in (
+            "work_order_operation_id", "order_id", "mesql_work_order_operation_id",
+            "operation_no", "operation_code", "operation_name", "sequence_no",
+            "station_code", "status", "planned_quantity", "good_quantity",
+            "scrap_quantity", "uom_code", "started_at", "completed_at", "payload",
+            "metadata",
+        )) + (datetime(2026, 1, 1), datetime(2026, 1, 1))
+        cursor = _ReleasePrimitiveCursor([("one", returned)])
+        mesql_v2._insert_route_generated_work_order_operation_cursor(cursor, operation)
+        self.assertEqual(
+            cursor.executed[0][1]["work_order_operation_id"],
+            operation["work_order_operation_id"],
+        )
+
+    def test_binding_insert_uses_exact_snapshot_parameters(self) -> None:
+        binding = mesql_v2._build_work_order_release_binding_snapshots(
+            release_id=self.release_id, released_by="planner",
+            route_operations=self._route_operations(),
+            operation_snapshots=self._operation_snapshots(),
+        )[0]
+        returned = (
+            1, binding["binding_id"], binding["work_order_operation_id"],
+            binding["route_operation_id"], binding["binding_source"],
+            binding["bound_by"], datetime(2026, 1, 1), binding["metadata"],
+            datetime(2026, 1, 1),
+        )
+        cursor = _ReleasePrimitiveCursor([("one", returned)])
+        result = mesql_v2._insert_work_order_operation_route_binding_cursor(
+            cursor, binding
+        )
+        self.assertEqual(result["binding_id"], binding["binding_id"])
+        self.assertEqual(
+            set(cursor.executed[0][1]),
+            {"binding_id", "work_order_operation_id", "route_operation_id",
+             "binding_source", "bound_by", "metadata"},
+        )
+
+    def test_queue_insert_uses_exact_snapshot_parameters(self) -> None:
+        queue = mesql_v2._build_initial_queue_snapshot(
+            release_id=self.release_id,
+            operation_snapshot=self._operation_snapshots()[0], queue_rank=4,
+        )
+        returned = (
+            1, queue["station_code"], queue["order_id"], queue["queue_rank"],
+            queue["status"], queue["source"], queue["payload"], queue["metadata"],
+            datetime(2026, 1, 1), datetime(2026, 1, 1),
+            queue["work_order_operation_id"],
+        )
+        cursor = _ReleasePrimitiveCursor([("one", returned)])
+        result = mesql_v2._insert_initial_station_queue_cursor(cursor, queue)
+        self.assertEqual(result["queue_rank"], 4)
+        self.assertEqual(set(cursor.executed[0][1]), set(queue))
+
+    def test_work_order_update_uses_only_identity_parameter(self) -> None:
+        returned = (
+            1, "WO-1", "PP", "queued", "ITEM-1", 5, None, None,
+            "mes_web", None, None, {}, {}, datetime(2026, 1, 1),
+            datetime(2026, 1, 2),
+        )
+        cursor = _ReleasePrimitiveCursor([("one", returned)])
+        result = mesql_v2._update_work_order_released_state_cursor(cursor, "WO-1")
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(cursor.executed[0][1], {"work_order_id": "WO-1"})
+
+    def test_release_comparator_rejects_metadata_mismatch(self) -> None:
+        expected = {name: name for name in (
+            "release_id", "order_id", "process_route_id", "route_code",
+            "route_version", "release_mode", "release_source", "released_by",
+            "route_operation_count", "operation_set_digest", "metadata",
+        )}
+        persisted = {**expected, "metadata": {"different": True}}
+        self.assertFalse(mesql_v2._compare_immutable_release_request(persisted, expected))
+
+    def test_static_operation_comparison_rejects_extra_operation(self) -> None:
+        expected = self._operation_snapshots()
+        self.assertFalse(
+            mesql_v2._compare_static_operation_snapshots(expected + [expected[0]], expected)
+        )
+
+    def test_complete_binding_comparison_accepts_input_order_difference(self) -> None:
+        expected = [
+            {"binding_id": "B1", "work_order_operation_id": "O1", "route_operation_id": "R1", "binding_source": "work_order_release", "bound_by": "p", "metadata": {}},
+            {"binding_id": "B2", "work_order_operation_id": "O2", "route_operation_id": "R2", "binding_source": "work_order_release", "bound_by": "p", "metadata": {}},
+        ]
+        self.assertTrue(mesql_v2._compare_complete_binding_set(list(reversed(expected)), expected))
+
+    def test_operation_builder_does_not_mutate_route_operations(self) -> None:
+        operations = self._route_operations()
+        original = deepcopy(operations)
+        mesql_v2._build_route_generated_operation_snapshots(
+            release_id=self.release_id, work_order_id="WO-1",
+            process_route=self._route(), route_item=self._item(),
+            route_operations=operations, target_quantity=1,
+        )
+        self.assertEqual(operations, original)
+
+    def test_binding_builder_does_not_mutate_inputs(self) -> None:
+        routes = self._route_operations()
+        operations = self._operation_snapshots()
+        expected_routes = deepcopy(routes)
+        expected_operations = deepcopy(operations)
+        mesql_v2._build_work_order_release_binding_snapshots(
+            release_id=self.release_id, released_by="planner",
+            route_operations=routes, operation_snapshots=operations,
+        )
+        self.assertEqual(routes, expected_routes)
+        self.assertEqual(operations, expected_operations)
+
+    def test_existing_public_binding_insert_contract_remains_upsert_free_update(self) -> None:
+        sql = mesql_v2.INSERT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL.lower()
+        self.assertIn("on conflict do nothing", sql)
+        self.assertNotIn("do update", sql)
+
+
+def _make_sql_contract_test(constant_name, required, forbidden=()):
+    def test(self):
+        sql = getattr(mesql_v2, constant_name).lower()
+        for fragment in required:
+            self.assertIn(fragment.lower(), sql)
+        for fragment in forbidden:
+            self.assertNotIn(fragment.lower(), sql)
+    return test
+
+
+_RELEASE_SQL_CONTRACTS = {
+    "work_order_lock": ("SELECT_WORK_ORDER_FOR_RELEASE_CURSOR_SQL", ("select", "for update", "%(work_order_id)s"), ("select *",)),
+    "release_dual_lock": ("SELECT_RELEASES_FOR_UPDATE_CURSOR_SQL", ("order by release_pk", "for update", " or release_id"), ("select *",)),
+    "operation_uuid_lock_order": ("SELECT_EXISTING_WORK_ORDER_OPERATIONS_FOR_UPDATE_CURSOR_SQL", ("order by work_order_operation_id", "for update"), ("select *",)),
+    "binding_lifecycle_join": ("SELECT_EXISTING_RELEASE_BINDINGS_FOR_UPDATE_CURSOR_SQL", ("join mes.work_order_operations", "operation.order_id", "for update of binding"), ("select *",)),
+    "evidence_order_scope": ("SELECT_WORK_ORDER_RELEASE_EVIDENCE_CURSOR_SQL", ("work_order_id = %(work_order_id)s",), ("select *",)),
+    "initial_queue_identity": ("SELECT_INITIAL_QUEUE_FOR_UPDATE_CURSOR_SQL", ("order_id = %(work_order_id)s", "work_order_operation_id = %(work_order_operation_id)s::uuid"), ("station_code =",)),
+    "queue_advisory_lock": ("LOCK_STATION_QUEUE_ADVISORY_CURSOR_SQL", ("pg_advisory_xact_lock", "hashtextextended", "%(station_code)s"), ("ready",)),
+    "station_rows_pk_order": ("SELECT_STATION_QUEUE_FOR_UPDATE_CURSOR_SQL", ("order by station_queue_pk", "for update"), ("select *",)),
+    "rank_active_predicate": ("SELECT_NEXT_STATION_QUEUE_RANK_CURSOR_SQL", ("max(queue_rank) + 1", "pending_approval"), ("ready",)),
+    "release_plain_insert": ("INSERT_WORK_ORDER_ROUTE_RELEASE_CURSOR_SQL", ("insert into", "returning"), ("on conflict", "update mes")),
+    "operation_plain_insert": ("INSERT_ROUTE_GENERATED_WORK_ORDER_OPERATION_CURSOR_SQL", ("insert into", "null", "returning"), ("on conflict", "do update")),
+    "binding_plain_insert": ("INSERT_WORK_ORDER_OPERATION_ROUTE_BINDING_CURSOR_SQL", ("insert into", "returning"), ("on conflict",)),
+    "queue_plain_insert": ("INSERT_INITIAL_STATION_QUEUE_CURSOR_SQL", ("insert into", "work_order_operation_id", "returning"), ("on conflict",)),
+    "work_order_narrow_update": ("UPDATE_WORK_ORDER_RELEASED_STATE_CURSOR_SQL", ("set status = 'queued'", "updated_at = now()"), ("payload =", "metadata =")),
+    "exact_route_no_lock": ("SELECT_EXACT_PROCESS_ROUTE_SQL", ("route_code = %(route_code)s", "version = %(route_version)s"), ("for update", "active = true", "max(")),
+    "route_item_no_lock": ("SELECT_ITEM_BY_CODE_SQL", ("item_code = %(item_code)s",), ("for update", "select *")),
+    "route_operations_exact_join": ("SELECT_PROCESS_ROUTE_OPERATIONS_SQL", ("route.route_id = %(process_route_id)s", "operation.sequence_no"), ("active = true", "limit 1")),
+    "release_insert_explicit_columns": ("INSERT_WORK_ORDER_ROUTE_RELEASE_CURSOR_SQL", ("release_id, order_id, process_route_id", "operation_set_digest"), ("select *",)),
+    "operation_insert_explicit_columns": ("INSERT_ROUTE_GENERATED_WORK_ORDER_OPERATION_CURSOR_SQL", ("mesql_work_order_operation_id", "planned_quantity", "metadata"), ("select *",)),
+    "binding_insert_exact_actor": ("INSERT_WORK_ORDER_OPERATION_ROUTE_BINDING_CURSOR_SQL", ("binding_source", "bound_by", "metadata"), ("select *",)),
+    "queue_insert_explicit_identity": ("INSERT_INITIAL_STATION_QUEUE_CURSOR_SQL", ("station_code, order_id, queue_rank", "work_order_operation_id"), ("select *",)),
+    "release_lock_read_only": ("SELECT_RELEASES_FOR_UPDATE_CURSOR_SQL", ("select",), ("insert", "update mes.", "delete")),
+    "operation_lock_read_only": ("SELECT_EXISTING_WORK_ORDER_OPERATIONS_FOR_UPDATE_CURSOR_SQL", ("select",), ("insert", "delete")),
+    "binding_lock_read_only": ("SELECT_EXISTING_RELEASE_BINDINGS_FOR_UPDATE_CURSOR_SQL", ("select",), ("insert", "delete")),
+    "queue_lock_read_only": ("SELECT_STATION_QUEUE_FOR_UPDATE_CURSOR_SQL", ("select",), ("insert", "delete")),
+}
+
+for _name, (_constant, _required, _forbidden) in _RELEASE_SQL_CONTRACTS.items():
+    setattr(
+        WorkOrderReleasePrimitiveTests,
+        f"test_sql_contract_{_name}",
+        _make_sql_contract_test(_constant, _required, _forbidden),
+    )
+
+
 if __name__ == "__main__":
     unittest.main()

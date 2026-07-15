@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -22,6 +24,22 @@ READY_OPERATION_STATUSES = {"queued", "ready"}
 ACTIVE_OPERATION_STATUSES = {"active", "in_progress"}
 COMPLETED_OPERATION_STATUSES = {"completed", "done"}
 BINDING_SOURCES = {"manual_setup", "work_order_release"}
+WORK_ORDER_RELEASE_MODES = {
+    "route_generated",
+    "explicit_existing_operation_mapping",
+}
+WORK_ORDER_RELEASE_OPERATION_NAMESPACE_LABEL = (
+    "urn:mes:work-order-route-release:operation:v1"
+)
+WORK_ORDER_RELEASE_OPERATION_NAMESPACE = uuid.UUID(
+    "51e8ce07-9395-54f4-9677-a32d03162cdc"
+)
+WORK_ORDER_RELEASE_BINDING_NAMESPACE_LABEL = (
+    "urn:mes:work-order-route-release:binding:v1"
+)
+WORK_ORDER_RELEASE_BINDING_NAMESPACE = uuid.UUID(
+    "2e5192a2-5d5a-5f76-a9f6-dc70df96564a"
+)
 
 
 def _json_safe(value: Any) -> Any:
@@ -121,6 +139,165 @@ def _required_case_preserving_text(value: Any, *, field_name: str) -> str:
     if not normalized:
         raise MesqlV2Error(f"{field_name}_REQUIRED", status_code=400)
     return normalized
+
+
+def _required_positive_int(value: Any, *, field_name: str) -> int:
+    if value is None or value == "":
+        raise MesqlV2Error(f"{field_name}_REQUIRED", status_code=400)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise MesqlV2Error(f"{field_name}_INVALID", status_code=400)
+    return value
+
+
+def _required_canonical_uuid_text(value: Any, *, field_name: str) -> str:
+    normalized = _required_case_preserving_text(value, field_name=field_name)
+    try:
+        canonical = str(uuid.UUID(normalized))
+    except (ValueError, AttributeError):
+        raise MesqlV2Error(f"{field_name}_INVALID", status_code=400) from None
+    if normalized != canonical:
+        raise MesqlV2Error(f"{field_name}_INVALID", status_code=400)
+    return canonical
+
+
+def _work_order_release_canonical_name(
+    release_id: Any,
+    route_operation_id: Any,
+) -> str:
+    normalized_release_id = _required_case_preserving_text(
+        release_id,
+        field_name="RELEASE_ID",
+    )
+    normalized_route_operation_id = _required_case_preserving_text(
+        route_operation_id,
+        field_name="ROUTE_OPERATION_ID",
+    )
+    return f"{normalized_release_id}\n{normalized_route_operation_id}"
+
+
+def _derive_work_order_release_operation_id(
+    release_id: Any,
+    route_operation_id: Any,
+) -> str:
+    canonical_name = _work_order_release_canonical_name(
+        release_id,
+        route_operation_id,
+    )
+    return str(
+        uuid.uuid5(
+            WORK_ORDER_RELEASE_OPERATION_NAMESPACE,
+            canonical_name,
+        )
+    )
+
+
+def _derive_work_order_release_binding_id(
+    release_id: Any,
+    route_operation_id: Any,
+) -> str:
+    canonical_name = _work_order_release_canonical_name(
+        release_id,
+        route_operation_id,
+    )
+    binding_uuid = uuid.uuid5(
+        WORK_ORDER_RELEASE_BINDING_NAMESPACE,
+        canonical_name,
+    )
+    return f"BINDING-WORK-ORDER-RELEASE-{str(binding_uuid).upper()}"
+
+
+def _compute_work_order_release_operation_set_digest(
+    *,
+    process_route_id: Any,
+    route_code: Any,
+    route_version: Any,
+    release_mode: Any,
+    pairs: Any,
+) -> str:
+    normalized_process_route_id = _required_case_preserving_text(
+        process_route_id,
+        field_name="PROCESS_ROUTE_ID",
+    )
+    normalized_route_code = _required_case_preserving_text(
+        route_code,
+        field_name="ROUTE_CODE",
+    )
+    normalized_route_version = _required_positive_int(
+        route_version,
+        field_name="ROUTE_VERSION",
+    )
+    normalized_release_mode = _required_case_preserving_text(
+        release_mode,
+        field_name="RELEASE_MODE",
+    )
+    if normalized_release_mode not in WORK_ORDER_RELEASE_MODES:
+        raise MesqlV2Error("RELEASE_MODE_INVALID", status_code=400)
+    if pairs is None or pairs == []:
+        raise MesqlV2Error("OPERATION_SET_REQUIRED", status_code=400)
+    if not isinstance(pairs, list):
+        raise MesqlV2Error("OPERATION_SET_INVALID", status_code=400)
+
+    expected_pair_fields = {
+        "sequence_no",
+        "route_operation_id",
+        "work_order_operation_id",
+    }
+    canonical_pairs: list[JsonObject] = []
+    seen_sequences: set[int] = set()
+    seen_route_operation_ids: set[str] = set()
+    seen_work_order_operation_ids: set[str] = set()
+    for pair in pairs:
+        if not isinstance(pair, dict) or set(pair) != expected_pair_fields:
+            raise MesqlV2Error("OPERATION_SET_INVALID", status_code=400)
+        sequence_no = _required_positive_int(
+            pair.get("sequence_no"),
+            field_name="SEQUENCE_NO",
+        )
+        route_operation_id = _required_case_preserving_text(
+            pair.get("route_operation_id"),
+            field_name="ROUTE_OPERATION_ID",
+        )
+        work_order_operation_id = _required_canonical_uuid_text(
+            pair.get("work_order_operation_id"),
+            field_name="WORK_ORDER_OPERATION_ID",
+        )
+        if sequence_no in seen_sequences:
+            raise MesqlV2Error("SEQUENCE_NO_INVALID", status_code=400)
+        if route_operation_id in seen_route_operation_ids:
+            raise MesqlV2Error("ROUTE_OPERATION_ID_INVALID", status_code=400)
+        if work_order_operation_id in seen_work_order_operation_ids:
+            raise MesqlV2Error("WORK_ORDER_OPERATION_ID_INVALID", status_code=400)
+        seen_sequences.add(sequence_no)
+        seen_route_operation_ids.add(route_operation_id)
+        seen_work_order_operation_ids.add(work_order_operation_id)
+        canonical_pairs.append(
+            {
+                "sequence_no": sequence_no,
+                "route_operation_id": route_operation_id,
+                "work_order_operation_id": work_order_operation_id,
+            }
+        )
+
+    canonical_pairs.sort(
+        key=lambda pair: (
+            pair["sequence_no"],
+            pair["route_operation_id"].encode("utf-8"),
+        )
+    )
+    payload = {
+        "process_route_id": normalized_process_route_id,
+        "release_mode": normalized_release_mode,
+        "route_code": normalized_route_code,
+        "route_version": normalized_route_version,
+        "pairs": canonical_pairs,
+    }
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -715,6 +892,168 @@ SELECT
 FROM mes.process_routes
 WHERE route_code = %(route_code)s
   AND version = %(version)s
+LIMIT 1
+"""
+
+SELECT_WORK_ORDER_ROUTE_RELEASE_SQL = """
+SELECT
+    release_pk,
+    release_id,
+    order_id,
+    process_route_id,
+    route_code,
+    route_version,
+    release_mode,
+    release_source,
+    released_by,
+    released_at,
+    route_operation_count,
+    operation_set_digest,
+    metadata,
+    created_at
+FROM mes.work_order_route_releases
+WHERE order_id = %(work_order_id)s
+LIMIT 1
+"""
+
+SELECT_WORK_ORDER_ROUTE_RELEASE_BY_ID_SQL = """
+SELECT
+    release_pk,
+    release_id,
+    order_id,
+    process_route_id,
+    route_code,
+    route_version,
+    release_mode,
+    release_source,
+    released_by,
+    released_at,
+    route_operation_count,
+    operation_set_digest,
+    metadata,
+    created_at
+FROM mes.work_order_route_releases
+WHERE release_id = %(release_id)s
+LIMIT 1
+"""
+
+SELECT_EXACT_PROCESS_ROUTE_SQL = """
+SELECT
+    route_code,
+    version,
+    route_name,
+    item_code,
+    active,
+    metadata,
+    route_id
+FROM mes.process_routes
+WHERE route_code = %(route_code)s
+  AND version = %(route_version)s
+LIMIT 1
+"""
+
+SELECT_PROCESS_ROUTE_OPERATIONS_SQL = """
+SELECT
+    operation.route_operation_id,
+    operation.route_code,
+    operation.route_version,
+    operation.sequence_no,
+    operation.operation_code,
+    operation.operation_name,
+    operation.station_code,
+    operation.input_item_code,
+    operation.output_item_code,
+    operation.input_qty_per_cycle,
+    operation.output_qty_per_cycle,
+    operation.input_location_role,
+    operation.output_location_role,
+    operation.scrap_location_role,
+    operation.operation_completion_policy,
+    operation.planned_cycle_time_sec,
+    operation.active,
+    operation.metadata
+FROM mes.route_operations operation
+JOIN mes.process_routes route
+  ON route.route_code = operation.route_code
+ AND route.version = operation.route_version
+WHERE route.route_id = %(process_route_id)s
+ORDER BY operation.sequence_no ASC, operation.route_operation_id ASC
+"""
+
+SELECT_WORK_ORDER_RELEASE_WORK_ORDER_SQL = """
+SELECT
+    order_id,
+    status,
+    product_code,
+    target_quantity,
+    started_at,
+    completed_at,
+    payload,
+    metadata
+FROM mes.work_orders
+WHERE order_id = %(work_order_id)s
+LIMIT 1
+"""
+
+SELECT_WORK_ORDER_RELEASE_OPERATIONS_SQL = """
+SELECT
+    work_order_operation_id,
+    order_id,
+    operation_no,
+    operation_code,
+    operation_name,
+    station_code,
+    status,
+    planned_quantity,
+    good_quantity,
+    scrap_quantity,
+    uom_code,
+    started_at,
+    completed_at,
+    sequence_no
+FROM mes.work_order_operations
+WHERE order_id = %(work_order_id)s
+ORDER BY sequence_no ASC, work_order_operation_id ASC
+"""
+
+SELECT_WORK_ORDER_RELEASE_BINDINGS_SQL = """
+SELECT
+    binding.binding_pk,
+    binding.binding_id,
+    binding.work_order_operation_id,
+    binding.route_operation_id,
+    binding.binding_source,
+    binding.bound_by,
+    binding.bound_at,
+    binding.metadata,
+    binding.created_at
+FROM mes.work_order_operation_route_bindings binding
+JOIN mes.work_order_operations operation
+  ON operation.work_order_operation_id = binding.work_order_operation_id
+WHERE operation.order_id = %(work_order_id)s
+ORDER BY
+    operation.sequence_no ASC,
+    binding.work_order_operation_id ASC,
+    binding.binding_id ASC
+"""
+
+SELECT_WORK_ORDER_RELEASE_INITIAL_QUEUE_SQL = """
+SELECT
+    station_queue_pk,
+    station_code,
+    order_id,
+    queue_rank,
+    status,
+    source,
+    payload,
+    metadata,
+    created_at,
+    updated_at,
+    work_order_operation_id
+FROM mes.station_queue
+WHERE work_order_operation_id = %(work_order_operation_id)s::uuid
+  AND order_id = %(work_order_id)s
+  AND station_code = %(station_code)s
 LIMIT 1
 """
 
@@ -1976,6 +2315,15 @@ def _process_route_row(row: Any) -> JsonObject:
     })
 
 
+def _exact_process_route_row(row: Any) -> JsonObject:
+    route = _process_route_row(row)
+    route["item_code"] = _text(_field(row, 3, "item_code"))
+    return {
+        "route_id": _text(_field(row, 6, "route_id")),
+        **route,
+    }
+
+
 def _route_operation_row(row: Any) -> JsonObject:
     return _json_safe({
         "route_operation_id": _upper(_field(row, 0, "route_operation_id")),
@@ -1996,6 +2344,100 @@ def _route_operation_row(row: Any) -> JsonObject:
         "planned_cycle_time_sec": _field(row, 15, "planned_cycle_time_sec"),
         "active": _field(row, 16, "active"),
         "metadata": _field(row, 17, "metadata") or {},
+    })
+
+
+def _process_route_operation_row(row: Any) -> JsonObject:
+    operation = _route_operation_row(row)
+    for field_name, index in (
+        ("route_operation_id", 0),
+        ("operation_code", 4),
+        ("station_code", 6),
+        ("input_item_code", 7),
+        ("output_item_code", 8),
+        ("input_location_role", 11),
+        ("output_location_role", 12),
+        ("operation_completion_policy", 14),
+    ):
+        operation[field_name] = _text(_field(row, index, field_name))
+    operation["scrap_location_role"] = _nullable_text(
+        _field(row, 13, "scrap_location_role")
+    )
+    return operation
+
+
+def _work_order_route_release_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "release_pk": _field(row, 0, "release_pk"),
+        "release_id": _field(row, 1, "release_id"),
+        "order_id": _field(row, 2, "order_id"),
+        "process_route_id": _field(row, 3, "process_route_id"),
+        "route_code": _field(row, 4, "route_code"),
+        "route_version": _field(row, 5, "route_version"),
+        "release_mode": _field(row, 6, "release_mode"),
+        "release_source": _field(row, 7, "release_source"),
+        "released_by": _field(row, 8, "released_by"),
+        "released_at": _field(row, 9, "released_at"),
+        "route_operation_count": _field(row, 10, "route_operation_count"),
+        "operation_set_digest": _field(row, 11, "operation_set_digest"),
+        "metadata": _field(row, 12, "metadata") or {},
+        "created_at": _field(row, 13, "created_at"),
+    })
+
+
+def _work_order_release_work_order_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "order_id": _field(row, 0, "order_id"),
+        "status": _field(row, 1, "status"),
+        "product_code": _field(row, 2, "product_code"),
+        "target_quantity": _field(row, 3, "target_quantity"),
+        "started_at": _field(row, 4, "started_at"),
+        "completed_at": _field(row, 5, "completed_at"),
+        "payload": _field(row, 6, "payload") or {},
+        "metadata": _field(row, 7, "metadata") or {},
+    })
+
+
+def _work_order_release_operation_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "work_order_operation_id": _field(
+            row,
+            0,
+            "work_order_operation_id",
+        ),
+        "order_id": _field(row, 1, "order_id"),
+        "operation_no": _field(row, 2, "operation_no"),
+        "operation_code": _field(row, 3, "operation_code"),
+        "operation_name": _field(row, 4, "operation_name"),
+        "station_code": _field(row, 5, "station_code"),
+        "status": _field(row, 6, "status"),
+        "planned_quantity": _field(row, 7, "planned_quantity"),
+        "good_quantity": _field(row, 8, "good_quantity"),
+        "scrap_quantity": _field(row, 9, "scrap_quantity"),
+        "uom_code": _field(row, 10, "uom_code"),
+        "started_at": _field(row, 11, "started_at"),
+        "completed_at": _field(row, 12, "completed_at"),
+        "sequence_no": _field(row, 13, "sequence_no"),
+    })
+
+
+def _work_order_release_initial_queue_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "station_queue_pk": _field(row, 0, "station_queue_pk"),
+        "station_code": _field(row, 1, "station_code"),
+        "order_id": _field(row, 2, "order_id"),
+        "queue_rank": _field(row, 3, "queue_rank"),
+        "status": _field(row, 4, "status"),
+        "source": _field(row, 5, "source"),
+        "payload": _field(row, 6, "payload") or {},
+        "metadata": _field(row, 7, "metadata") or {},
+        "created_at": _field(row, 8, "created_at"),
+        "updated_at": _field(row, 9, "updated_at"),
+        "work_order_operation_id": _field(
+            row,
+            10,
+            "work_order_operation_id",
+        ),
     })
 
 
@@ -2035,6 +2477,124 @@ def _get_work_order_operation_route_binding_by_id_with_cursor(
     )
     row = cursor.fetchone()
     return _work_order_operation_route_binding_row(row) if row else None
+
+
+def _get_work_order_route_release_with_cursor(
+    cursor: Any,
+    work_order_id: str,
+) -> JsonObject | None:
+    cursor.execute(
+        SELECT_WORK_ORDER_ROUTE_RELEASE_SQL,
+        {"work_order_id": work_order_id},
+    )
+    row = cursor.fetchone()
+    return _work_order_route_release_row(row) if row else None
+
+
+def _get_work_order_route_release_by_id_with_cursor(
+    cursor: Any,
+    release_id: str,
+) -> JsonObject | None:
+    cursor.execute(
+        SELECT_WORK_ORDER_ROUTE_RELEASE_BY_ID_SQL,
+        {"release_id": release_id},
+    )
+    row = cursor.fetchone()
+    return _work_order_route_release_row(row) if row else None
+
+
+def _get_exact_process_route_with_cursor(
+    cursor: Any,
+    route_code: str,
+    route_version: int,
+) -> JsonObject | None:
+    cursor.execute(
+        SELECT_EXACT_PROCESS_ROUTE_SQL,
+        {
+            "route_code": route_code,
+            "route_version": route_version,
+        },
+    )
+    row = cursor.fetchone()
+    return _exact_process_route_row(row) if row else None
+
+
+def _list_process_route_operations_with_cursor(
+    cursor: Any,
+    process_route_id: str,
+) -> list[JsonObject]:
+    cursor.execute(
+        SELECT_PROCESS_ROUTE_OPERATIONS_SQL,
+        {"process_route_id": process_route_id},
+    )
+    return [
+        _process_route_operation_row(row)
+        for row in cursor.fetchall()
+    ]
+
+
+def _get_work_order_release_snapshot_with_cursor(
+    cursor: Any,
+    work_order_id: str,
+) -> JsonObject | None:
+    release = _get_work_order_route_release_with_cursor(cursor, work_order_id)
+    if release is None:
+        return None
+
+    authoritative_order_id = _text(release["order_id"])
+    cursor.execute(
+        SELECT_WORK_ORDER_RELEASE_WORK_ORDER_SQL,
+        {"work_order_id": authoritative_order_id},
+    )
+    work_order_row = cursor.fetchone()
+    work_order = (
+        _work_order_release_work_order_row(work_order_row)
+        if work_order_row
+        else None
+    )
+
+    cursor.execute(
+        SELECT_WORK_ORDER_RELEASE_OPERATIONS_SQL,
+        {"work_order_id": authoritative_order_id},
+    )
+    operations = [
+        _work_order_release_operation_row(row)
+        for row in cursor.fetchall()
+    ]
+
+    cursor.execute(
+        SELECT_WORK_ORDER_RELEASE_BINDINGS_SQL,
+        {"work_order_id": authoritative_order_id},
+    )
+    bindings = [
+        _work_order_operation_route_binding_row(row)
+        for row in cursor.fetchall()
+    ]
+
+    initial_queue = None
+    if operations:
+        first_operation = operations[0]
+        cursor.execute(
+            SELECT_WORK_ORDER_RELEASE_INITIAL_QUEUE_SQL,
+            {
+                "work_order_operation_id": first_operation[
+                    "work_order_operation_id"
+                ],
+                "work_order_id": authoritative_order_id,
+                "station_code": first_operation["station_code"],
+            },
+        )
+        queue_row = cursor.fetchone()
+        if queue_row:
+            initial_queue = _work_order_release_initial_queue_row(queue_row)
+
+    return {
+        "release": release,
+        "work_order": work_order,
+        "operations": operations,
+        "bindings": bindings,
+        "initial_queue": initial_queue,
+    }
 
 
 def _binding_matches_request(binding: JsonObject, request: JsonObject) -> bool:
@@ -2355,6 +2915,102 @@ def get_process_route(config: AppConfig, route_code: str, version: int = 1) -> J
             cursor.execute(SELECT_PROCESS_ROUTE_SQL, params)
             row = cursor.fetchone()
     return _process_route_row(row) if row else None
+
+
+def get_work_order_route_release(
+    config: AppConfig,
+    work_order_id: str,
+) -> JsonObject | None:
+    normalized_work_order_id = _required_case_preserving_text(
+        work_order_id,
+        field_name="WORK_ORDER_ID",
+    )
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            return _get_work_order_route_release_with_cursor(
+                cursor,
+                normalized_work_order_id,
+            )
+
+
+def get_work_order_route_release_by_id(
+    config: AppConfig,
+    release_id: str,
+) -> JsonObject | None:
+    normalized_release_id = _required_case_preserving_text(
+        release_id,
+        field_name="RELEASE_ID",
+    )
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            return _get_work_order_route_release_by_id_with_cursor(
+                cursor,
+                normalized_release_id,
+            )
+
+
+def get_exact_process_route(
+    config: AppConfig,
+    route_code: str,
+    route_version: int,
+) -> JsonObject | None:
+    normalized_route_code = _required_case_preserving_text(
+        route_code,
+        field_name="ROUTE_CODE",
+    ).upper()
+    normalized_route_version = _required_positive_int(
+        route_version,
+        field_name="ROUTE_VERSION",
+    )
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            return _get_exact_process_route_with_cursor(
+                cursor,
+                normalized_route_code,
+                normalized_route_version,
+            )
+
+
+def list_process_route_operations(
+    config: AppConfig,
+    process_route_id: str,
+) -> list[JsonObject]:
+    normalized_process_route_id = _required_case_preserving_text(
+        process_route_id,
+        field_name="PROCESS_ROUTE_ID",
+    )
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            return _list_process_route_operations_with_cursor(
+                cursor,
+                normalized_process_route_id,
+            )
+
+
+def get_work_order_release_snapshot(
+    config: AppConfig,
+    work_order_id: str,
+) -> JsonObject | None:
+    normalized_work_order_id = _required_case_preserving_text(
+        work_order_id,
+        field_name="WORK_ORDER_ID",
+    )
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with connection.cursor() as cursor:
+            return _get_work_order_release_snapshot_with_cursor(
+                cursor,
+                normalized_work_order_id,
+            )
 
 
 def list_route_operations(

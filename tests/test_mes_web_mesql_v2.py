@@ -27,6 +27,7 @@ from mes_web.db.mesql_v2 import (
     get_operation_event_by_external_event,
     get_operation_event_by_idempotency_key,
     get_operation_step,
+    get_exact_process_route,
     get_process_route,
     get_route_operation,
     get_route_operation_config,
@@ -34,11 +35,15 @@ from mes_web.db.mesql_v2 import (
     get_station_execution_config,
     get_work_order_operation_route_binding,
     get_work_order_operation_route_binding_by_id,
+    get_work_order_release_snapshot,
+    get_work_order_route_release,
+    get_work_order_route_release_by_id,
     initialize_execution_state,
     list_locations,
     list_execution_steps,
     list_items,
     list_operation_steps,
+    list_process_route_operations,
     list_process_routes,
     list_route_operations,
     list_station_event_sources,
@@ -77,8 +82,14 @@ class _Cursor:
         self.item_row: dict | None = None
         self.process_route_rows: list[dict] = []
         self.process_route_row: dict | None = None
+        self.process_route_operation_rows: list[dict] = []
         self.route_operation_rows: list[dict] = []
         self.route_operation_row: dict | None = None
+        self.work_order_route_release_rows: list[dict] = []
+        self.release_work_order_row: dict | None = None
+        self.release_operation_rows: list[dict] = []
+        self.release_binding_rows: list[dict] = []
+        self.release_initial_queue_row: dict | None = None
         self.station_event_source_rows: list[dict] = []
         self.station_event_source_row: dict | None = None
         self.operation_step_rows: list[dict] = []
@@ -258,6 +269,68 @@ class _Cursor:
 
     def fetchone(self):
         lowered = self.last_sql.lower()
+        if "from mes.work_order_route_releases" in lowered:
+            if "where order_id = %(work_order_id)s" in lowered:
+                work_order_id = self.last_params.get("work_order_id")
+                return next(
+                    (
+                        row
+                        for row in self.work_order_route_release_rows
+                        if row.get("order_id") == work_order_id
+                    ),
+                    None,
+                )
+            if "where release_id = %(release_id)s" in lowered:
+                release_id = self.last_params.get("release_id")
+                return next(
+                    (
+                        row
+                        for row in self.work_order_route_release_rows
+                        if row.get("release_id") == release_id
+                    ),
+                    None,
+                )
+        if (
+            "from mes.process_routes" in lowered
+            and "version = %(route_version)s" in lowered
+        ):
+            route_code = self.last_params.get("route_code")
+            route_version = self.last_params.get("route_version")
+            for row in self.process_route_rows:
+                if (
+                    row.get("route_code") == route_code
+                    and row.get("version") == route_version
+                ):
+                    return row
+            return None
+        if (
+            "from mes.work_orders" in lowered
+            and "where order_id = %(work_order_id)s" in lowered
+        ):
+            if (
+                self.release_work_order_row is not None
+                and self.release_work_order_row.get("order_id")
+                == self.last_params.get("work_order_id")
+            ):
+                return self.release_work_order_row
+            return None
+        if (
+            "from mes.station_queue" in lowered
+            and "work_order_operation_id = %(work_order_operation_id)s::uuid"
+            in lowered
+            and "for update" not in lowered
+        ):
+            row = self.release_initial_queue_row
+            if row is None:
+                return None
+            if (
+                str(row.get("work_order_operation_id"))
+                == str(self.last_params.get("work_order_operation_id"))
+                and row.get("order_id") == self.last_params.get("work_order_id")
+                and row.get("station_code") == self.last_params.get("station_code")
+            ):
+                return row
+            return None
         if (
             "insert into mes.work_order_operation_route_bindings" in lowered
             and "returning" in lowered
@@ -411,6 +484,75 @@ class _Cursor:
 
     def fetchall(self):
         lowered = self.last_sql.lower()
+        if (
+            "from mes.route_operations operation" in lowered
+            and "join mes.process_routes route" in lowered
+        ):
+            process_route_id = self.last_params.get("process_route_id")
+            route = next(
+                (
+                    row
+                    for row in self.process_route_rows
+                    if row.get("route_id") == process_route_id
+                ),
+                None,
+            )
+            if route is None:
+                return []
+            return sorted(
+                [
+                    row
+                    for row in self.process_route_operation_rows
+                    if row.get("route_code") == route.get("route_code")
+                    and row.get("route_version") == route.get("version")
+                ],
+                key=lambda row: (
+                    row.get("sequence_no", 0),
+                    row.get("route_operation_id", ""),
+                ),
+            )
+        if (
+            "from mes.work_order_operations" in lowered
+            and "where order_id = %(work_order_id)s" in lowered
+            and "for update" not in lowered
+        ):
+            work_order_id = self.last_params.get("work_order_id")
+            return sorted(
+                [
+                    row
+                    for row in self.release_operation_rows
+                    if row.get("order_id") == work_order_id
+                ],
+                key=lambda row: (
+                    row.get("sequence_no", 0),
+                    str(row.get("work_order_operation_id", "")),
+                ),
+            )
+        if (
+            "from mes.work_order_operation_route_bindings binding" in lowered
+            and "join mes.work_order_operations operation" in lowered
+        ):
+            operation_sequence = {
+                str(row.get("work_order_operation_id")): row.get(
+                    "sequence_no",
+                    0,
+                )
+                for row in self.release_operation_rows
+                if row.get("order_id") == self.last_params.get("work_order_id")
+            }
+            return sorted(
+                [
+                    row
+                    for row in self.release_binding_rows
+                    if str(row.get("work_order_operation_id"))
+                    in operation_sequence
+                ],
+                key=lambda row: (
+                    operation_sequence[str(row.get("work_order_operation_id"))],
+                    str(row.get("work_order_operation_id")),
+                    row.get("binding_id", ""),
+                ),
+            )
         if "from mes.locations" in lowered:
             return self.location_rows
         if "from mes.station_location_bindings b" in lowered:
@@ -836,12 +978,14 @@ def _fake_item(
 def _fake_process_route(
     route_code: str = "ROUTE_BOX_PACKAGING_V1",
     *,
+    route_id: str | None = None,
     version: int = 1,
     item_code: str = "PACKAGED_PRODUCT",
     active: bool = True,
     metadata: dict | None = None,
 ) -> dict:
     return {
+        "route_id": route_id or route_code,
         "route_code": route_code,
         "version": version,
         "route_name": "Box Packaging Demo Route V1",
@@ -888,6 +1032,115 @@ def _fake_route_operation(
         "planned_cycle_time_sec": None,
         "active": active,
         "metadata": metadata,
+    }
+
+
+def _fake_work_order_route_release(
+    *,
+    release_id: str = "RELEASE-V2-EXAMPLE-001",
+    order_id: str = "WO-RELEASE-001",
+    process_route_id: str = "ROUTE_BOX_PACKAGING_V2",
+    route_code: str = "ROUTE_BOX_PACKAGING_V2",
+    route_version: int = 2,
+    metadata: dict | None = None,
+) -> dict:
+    timestamp = datetime(2026, 7, 15, 12, 0, 0)
+    return {
+        "release_pk": 1,
+        "release_id": release_id,
+        "order_id": order_id,
+        "process_route_id": process_route_id,
+        "route_code": route_code,
+        "route_version": route_version,
+        "release_mode": "route_generated",
+        "release_source": "local_planning",
+        "released_by": "SCHEMA_SMOKE",
+        "released_at": timestamp,
+        "route_operation_count": 2,
+        "operation_set_digest": (
+            "4063a5c72fd4d38f11757a4bf1115f83"
+            "e1c05e8b97624deb808193c5d0fcb2e2"
+        ),
+        "metadata": metadata if metadata is not None else {"purpose": "unit_test"},
+        "created_at": timestamp,
+    }
+
+
+def _fake_release_work_order(
+    order_id: str = "WO-RELEASE-001",
+    *,
+    metadata: dict | None = None,
+) -> dict:
+    timestamp = datetime(2026, 7, 15, 11, 0, 0)
+    return {
+        "work_order_pk": 42,
+        "order_id": order_id,
+        "erp_type": "LOCAL",
+        "status": "queued",
+        "product_code": "PACKAGED_PRODUCT",
+        "target_quantity": 5,
+        "started_at": None,
+        "completed_at": None,
+        "source_system": "mes_web",
+        "source_file": None,
+        "external_ref": "schema-smoke",
+        "payload": {"source": "unit_test"},
+        "metadata": metadata if metadata is not None else {"released": True},
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+
+
+def _fake_release_operation(
+    work_order_operation_id: str,
+    *,
+    order_id: str = "WO-RELEASE-001",
+    sequence_no: int = 10,
+    station_code: str = "ASSEMBLY_01",
+) -> dict:
+    timestamp = datetime(2026, 7, 15, 12, 0, 0)
+    return {
+        "work_order_operation_id": UUID(work_order_operation_id),
+        "order_id": order_id,
+        "operation_no": sequence_no,
+        "operation_code": f"OP{sequence_no}",
+        "operation_name": f"Operation {sequence_no}",
+        "station_code": station_code,
+        "status": "queued" if sequence_no == 10 else "planned",
+        "planned_quantity": Decimal("5.000000"),
+        "good_quantity": Decimal("0.000000"),
+        "scrap_quantity": Decimal("0.000000"),
+        "uom_code": "piece",
+        "started_at": None,
+        "completed_at": None,
+        "sequence_no": sequence_no,
+        "mesql_work_order_operation_id": None,
+        "payload": {"source": "work_order_release"},
+        "metadata": {"sequence": sequence_no},
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+
+
+def _fake_release_initial_queue(
+    work_order_operation_id: str,
+    *,
+    order_id: str = "WO-RELEASE-001",
+    station_code: str = "ASSEMBLY_01",
+) -> dict:
+    timestamp = datetime(2026, 7, 15, 12, 0, 0)
+    return {
+        "station_queue_pk": 77,
+        "station_code": station_code,
+        "order_id": order_id,
+        "queue_rank": 0,
+        "status": "queued",
+        "source": "work_order_release",
+        "payload": {},
+        "metadata": {"purpose": "release"},
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "work_order_operation_id": UUID(work_order_operation_id),
     }
 
 
@@ -1298,6 +1551,83 @@ class MesqlV2Tests(unittest.TestCase):
                 AppConfig(db_enabled=True),
                 **values,
             )
+
+    @staticmethod
+    def _release_pairs() -> list[dict]:
+        return [
+            {
+                "sequence_no": 10,
+                "route_operation_id": "ROUTE_BOX_PACKAGING_V2_OP10",
+                "work_order_operation_id": (
+                    "5258d822-55bd-56b1-81ba-7f89193ba4eb"
+                ),
+            },
+            {
+                "sequence_no": 20,
+                "route_operation_id": "ROUTE_BOX_PACKAGING_V2_OP20",
+                "work_order_operation_id": (
+                    "26c50f67-2519-5e29-a958-e39eca44934e"
+                ),
+            },
+        ]
+
+    def _seed_release_snapshot(self, connection: _Connection) -> None:
+        cursor = connection.cursor_instance
+        pairs = self._release_pairs()
+        cursor.work_order_route_release_rows = [
+            _fake_work_order_route_release()
+        ]
+        cursor.release_work_order_row = _fake_release_work_order()
+        cursor.release_operation_rows = [
+            _fake_release_operation(
+                pairs[1]["work_order_operation_id"],
+                sequence_no=20,
+                station_code="PACKAGING_01",
+            ),
+            _fake_release_operation(
+                pairs[0]["work_order_operation_id"],
+                sequence_no=10,
+                station_code="ASSEMBLY_01",
+            ),
+        ]
+        cursor.release_binding_rows = [
+            _fake_work_order_operation_route_binding(
+                binding_pk=202,
+                binding_id=mesql_v2._derive_work_order_release_binding_id(
+                    "RELEASE-V2-EXAMPLE-001",
+                    pairs[1]["route_operation_id"],
+                ),
+                work_order_operation_id=UUID(
+                    pairs[1]["work_order_operation_id"]
+                ),
+                route_operation_id=pairs[1]["route_operation_id"],
+                binding_source="work_order_release",
+            ),
+            _fake_work_order_operation_route_binding(
+                binding_pk=201,
+                binding_id=mesql_v2._derive_work_order_release_binding_id(
+                    "RELEASE-V2-EXAMPLE-001",
+                    pairs[0]["route_operation_id"],
+                ),
+                work_order_operation_id=UUID(
+                    pairs[0]["work_order_operation_id"]
+                ),
+                route_operation_id=pairs[0]["route_operation_id"],
+                binding_source="work_order_release",
+            ),
+        ]
+        cursor.release_initial_queue_row = _fake_release_initial_queue(
+            pairs[0]["work_order_operation_id"]
+        )
+
+    @staticmethod
+    def _call_read(connection: _Connection, helper, *args):
+        with patch.object(
+            mesql_v2,
+            "database_connection",
+            side_effect=lambda _config: _yield_connection(connection),
+        ):
+            return helper(AppConfig(db_enabled=True), *args)
 
     def test_migration_is_additive_and_defines_v2_tables(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "db" / "migrations" / "008_mesql_integration_v2.sql").read_text(encoding="utf-8").lower()
@@ -4894,6 +5224,929 @@ class MesqlV2Tests(unittest.TestCase):
         self.assertEqual(result["dry_run_payloads"][1]["payload"]["good_quantity"], 1)
         self.assertEqual(result["dry_run_payloads"][1]["payload"]["scrap_quantity"], 0)
         _assert_json_serializable_without_decimal(self, result)
+
+    def test_work_order_release_public_helper_signatures_are_exact(self) -> None:
+        expected = {
+            get_work_order_route_release: ["config", "work_order_id"],
+            get_work_order_route_release_by_id: ["config", "release_id"],
+            get_exact_process_route: ["config", "route_code", "route_version"],
+            list_process_route_operations: ["config", "process_route_id"],
+            get_work_order_release_snapshot: ["config", "work_order_id"],
+        }
+        for helper, parameter_names in expected.items():
+            with self.subTest(helper=helper.__name__):
+                self.assertEqual(
+                    list(inspect.signature(helper).parameters),
+                    parameter_names,
+                )
+
+    def test_work_order_release_read_sql_is_explicit_parameterized_and_read_only(self) -> None:
+        sql_constants = (
+            mesql_v2.SELECT_WORK_ORDER_ROUTE_RELEASE_SQL,
+            mesql_v2.SELECT_WORK_ORDER_ROUTE_RELEASE_BY_ID_SQL,
+            mesql_v2.SELECT_EXACT_PROCESS_ROUTE_SQL,
+            mesql_v2.SELECT_PROCESS_ROUTE_OPERATIONS_SQL,
+            mesql_v2.SELECT_WORK_ORDER_RELEASE_WORK_ORDER_SQL,
+            mesql_v2.SELECT_WORK_ORDER_RELEASE_OPERATIONS_SQL,
+            mesql_v2.SELECT_WORK_ORDER_RELEASE_BINDINGS_SQL,
+            mesql_v2.SELECT_WORK_ORDER_RELEASE_INITIAL_QUEUE_SQL,
+        )
+        for sql in sql_constants:
+            lowered = sql.strip().lower()
+            with self.subTest(sql=lowered.splitlines()[0]):
+                self.assertTrue(lowered.startswith("select"))
+                self.assertNotIn("select *", lowered)
+                self.assertNotIn("insert into", lowered)
+                self.assertNotIn("\nupdate ", lowered)
+                self.assertNotIn("delete from", lowered)
+                self.assertNotIn("merge into", lowered)
+                self.assertNotIn("for update", lowered)
+                self.assertIn("%(", lowered)
+
+    def test_release_select_and_mapper_expose_exact_fourteen_fields(self) -> None:
+        expected_fields = {
+            "release_pk",
+            "release_id",
+            "order_id",
+            "process_route_id",
+            "route_code",
+            "route_version",
+            "release_mode",
+            "release_source",
+            "released_by",
+            "released_at",
+            "route_operation_count",
+            "operation_set_digest",
+            "metadata",
+            "created_at",
+        }
+        for sql in (
+            mesql_v2.SELECT_WORK_ORDER_ROUTE_RELEASE_SQL,
+            mesql_v2.SELECT_WORK_ORDER_ROUTE_RELEASE_BY_ID_SQL,
+        ):
+            selected = sql.lower().split("from mes.work_order_route_releases")[0]
+            for field in expected_fields:
+                self.assertIn(field, selected)
+        self.assertEqual(
+            set(mesql_v2._work_order_route_release_row(
+                _fake_work_order_route_release()
+            )),
+            expected_fields,
+        )
+
+    def test_get_work_order_route_release_reads_exact_order_id(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.work_order_route_release_rows = [
+            _fake_work_order_route_release(order_id="Order-Case-001")
+        ]
+
+        release = self._call_read(
+            connection,
+            get_work_order_route_release,
+            " Order-Case-001 ",
+        )
+
+        self.assertEqual(release["order_id"], "Order-Case-001")
+        self.assertEqual(
+            connection.cursor_instance.last_params,
+            {"work_order_id": "Order-Case-001"},
+        )
+
+    def test_get_work_order_route_release_by_id_preserves_case(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.work_order_route_release_rows = [
+            _fake_work_order_route_release(release_id="Release-Case-001")
+        ]
+
+        release = self._call_read(
+            connection,
+            get_work_order_route_release_by_id,
+            " Release-Case-001 ",
+        )
+
+        self.assertEqual(release["release_id"], "Release-Case-001")
+        self.assertEqual(
+            connection.cursor_instance.last_params,
+            {"release_id": "Release-Case-001"},
+        )
+
+    def test_release_mapping_is_json_safe_without_extra_fields(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.work_order_route_release_rows = [
+            _fake_work_order_route_release(metadata={"uuid": UUID(int=1)})
+        ]
+
+        release = self._call_read(
+            connection,
+            get_work_order_route_release,
+            "WO-RELEASE-001",
+        )
+
+        self.assertEqual(len(release), 14)
+        self.assertEqual(release["metadata"]["uuid"], str(UUID(int=1)))
+        self.assertEqual(release["released_at"], "2026-07-15T12:00:00")
+        json.dumps(release)
+
+    def test_release_reads_return_none_for_missing_or_case_mismatched_identity(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.work_order_route_release_rows = [
+            _fake_work_order_route_release(release_id="Release-Case-001")
+        ]
+
+        missing = self._call_read(
+            connection,
+            get_work_order_route_release,
+            "WO-MISSING",
+        )
+        wrong_case = self._call_read(
+            connection,
+            get_work_order_route_release_by_id,
+            "release-case-001",
+        )
+
+        self.assertIsNone(missing)
+        self.assertIsNone(wrong_case)
+
+    def test_release_read_validation_finishes_before_database_connection(self) -> None:
+        cases = (
+            (get_work_order_route_release, None, "WORK_ORDER_ID_INVALID"),
+            (get_work_order_route_release, " ", "WORK_ORDER_ID_REQUIRED"),
+            (get_work_order_route_release_by_id, 7, "RELEASE_ID_INVALID"),
+            (get_work_order_route_release_by_id, "", "RELEASE_ID_REQUIRED"),
+        )
+        for helper, value, expected in cases:
+            with self.subTest(helper=helper.__name__, value=value):
+                with patch.object(mesql_v2, "database_connection") as factory:
+                    with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                        helper(AppConfig(db_enabled=True), value)
+                self.assertEqual(error.exception.detail, expected)
+                factory.assert_not_called()
+
+    def test_all_release_read_helpers_match_database_disabled_contract(self) -> None:
+        calls = (
+            (get_work_order_route_release, ("WO-RELEASE-001",)),
+            (get_work_order_route_release_by_id, ("RELEASE-001",)),
+            (get_exact_process_route, ("ROUTE_BOX_PACKAGING_V2", 2)),
+            (list_process_route_operations, ("ROUTE_BOX_PACKAGING_V2",)),
+            (get_work_order_release_snapshot, ("WO-RELEASE-001",)),
+        )
+        for helper, args in calls:
+            with self.subTest(helper=helper.__name__):
+                with patch.object(
+                    mesql_v2,
+                    "database_connection",
+                    return_value=_yield_connection(None),
+                ):
+                    with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                        helper(AppConfig(db_enabled=False), *args)
+                self.assertEqual(error.exception.detail, "DATABASE_DISABLED")
+                self.assertEqual(error.exception.status_code, 503)
+
+    def test_release_read_propagates_database_error_and_cleans_up_cursor(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.raise_on_sql_fragment = (
+            "from mes.work_order_route_releases"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "forced cursor failure"):
+            self._call_read(
+                connection,
+                get_work_order_route_release,
+                "WO-RELEASE-001",
+            )
+
+        self.assertTrue(connection.cursor_instance.exited)
+
+    def test_release_read_propagates_missing_table_error(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.exception_on_sql_fragment = (
+            "from mes.work_order_route_releases",
+            UndefinedTable("missing release table"),
+        )
+
+        with self.assertRaises(UndefinedTable):
+            self._call_read(
+                connection,
+                get_work_order_route_release,
+                "WO-RELEASE-001",
+            )
+
+    def test_get_exact_process_route_returns_inactive_exact_version_and_route_id(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.process_route_rows = [
+            _fake_process_route(
+                "ROUTE_BOX_PACKAGING_V2",
+                route_id="Route-Identity-V2",
+                version=2,
+                active=False,
+            )
+        ]
+
+        route = self._call_read(
+            connection,
+            get_exact_process_route,
+            " route_box_packaging_v2 ",
+            2,
+        )
+
+        self.assertEqual(route["route_id"], "Route-Identity-V2")
+        self.assertEqual(route["route_code"], "ROUTE_BOX_PACKAGING_V2")
+        self.assertFalse(route["active"])
+        self.assertNotIn("active = true", connection.cursor_instance.last_sql.lower())
+
+    def test_get_exact_process_route_never_substitutes_wrong_version(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.process_route_rows = [
+            _fake_process_route("ROUTE_BOX_PACKAGING_V2", version=1)
+        ]
+
+        route = self._call_read(
+            connection,
+            get_exact_process_route,
+            "ROUTE_BOX_PACKAGING_V2",
+            2,
+        )
+
+        self.assertIsNone(route)
+        self.assertEqual(connection.cursor_instance.last_params["route_version"], 2)
+        self.assertNotIn("max(", connection.cursor_instance.last_sql.lower())
+        self.assertNotIn("latest", connection.cursor_instance.last_sql.lower())
+
+    def test_get_exact_process_route_rejects_invalid_version_before_database(self) -> None:
+        for value, expected in (
+            (None, "ROUTE_VERSION_REQUIRED"),
+            (0, "ROUTE_VERSION_INVALID"),
+            (-1, "ROUTE_VERSION_INVALID"),
+            (True, "ROUTE_VERSION_INVALID"),
+            (2.0, "ROUTE_VERSION_INVALID"),
+            ("2", "ROUTE_VERSION_INVALID"),
+        ):
+            with self.subTest(value=value):
+                with patch.object(mesql_v2, "database_connection") as factory:
+                    with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                        get_exact_process_route(
+                            AppConfig(db_enabled=True),
+                            "ROUTE_BOX_PACKAGING_V2",
+                            value,
+                        )
+                self.assertEqual(error.exception.detail, expected)
+                factory.assert_not_called()
+
+    def test_list_process_route_operations_is_deterministically_ordered(self) -> None:
+        connection = _Connection()
+        cursor = connection.cursor_instance
+        cursor.process_route_rows = [
+            _fake_process_route(
+                "ROUTE_BOX_PACKAGING_V2",
+                route_id="Route-Identity-V2",
+                version=2,
+            )
+        ]
+        cursor.process_route_operation_rows = [
+            _fake_route_operation(
+                "Route-Op-B",
+                route_code="ROUTE_BOX_PACKAGING_V2",
+                route_version=2,
+                sequence_no=20,
+            ),
+            _fake_route_operation(
+                "Route-Op-A",
+                route_code="ROUTE_BOX_PACKAGING_V2",
+                route_version=2,
+                sequence_no=10,
+                operation_code="Operation-Code-Mixed",
+                station_code="Station-Mixed",
+            ),
+        ]
+
+        operations = self._call_read(
+            connection,
+            list_process_route_operations,
+            " Route-Identity-V2 ",
+        )
+
+        self.assertEqual(
+            [operation["route_operation_id"] for operation in operations],
+            ["Route-Op-A", "Route-Op-B"],
+        )
+        self.assertEqual(operations[0]["operation_code"], "Operation-Code-Mixed")
+        self.assertEqual(operations[0]["station_code"], "Station-Mixed")
+        self.assertEqual(cursor.last_params, {"process_route_id": "Route-Identity-V2"})
+
+    def test_list_process_route_operations_returns_empty_list(self) -> None:
+        connection = _Connection()
+
+        operations = self._call_read(
+            connection,
+            list_process_route_operations,
+            "MISSING-ROUTE",
+        )
+
+        self.assertEqual(operations, [])
+
+    def test_list_process_route_operations_validates_identity_before_database(self) -> None:
+        for value, expected in (
+            (None, "PROCESS_ROUTE_ID_INVALID"),
+            (" ", "PROCESS_ROUTE_ID_REQUIRED"),
+        ):
+            with self.subTest(value=value):
+                with patch.object(mesql_v2, "database_connection") as factory:
+                    with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                        list_process_route_operations(
+                            AppConfig(db_enabled=True),
+                            value,
+                        )
+                self.assertEqual(error.exception.detail, expected)
+                factory.assert_not_called()
+
+    def test_process_route_operation_sql_uses_exact_identity_join_and_order(self) -> None:
+        lowered = mesql_v2.SELECT_PROCESS_ROUTE_OPERATIONS_SQL.lower()
+        self.assertIn("join mes.process_routes route", lowered)
+        self.assertIn("route.route_code = operation.route_code", lowered)
+        self.assertIn("route.version = operation.route_version", lowered)
+        self.assertIn("where route.route_id = %(process_route_id)s", lowered)
+        self.assertIn(
+            "order by operation.sequence_no asc, operation.route_operation_id asc",
+            " ".join(lowered.split()),
+        )
+        self.assertNotIn("active = true", lowered)
+
+    def test_work_order_release_snapshot_returns_exact_full_shape(self) -> None:
+        connection = _Connection()
+        self._seed_release_snapshot(connection)
+
+        snapshot = self._call_read(
+            connection,
+            get_work_order_release_snapshot,
+            "WO-RELEASE-001",
+        )
+
+        self.assertEqual(
+            set(snapshot),
+            {"release", "work_order", "operations", "bindings", "initial_queue"},
+        )
+        self.assertEqual(snapshot["work_order"]["order_id"], "WO-RELEASE-001")
+        self.assertEqual(
+            [operation["sequence_no"] for operation in snapshot["operations"]],
+            [10, 20],
+        )
+        self.assertEqual(len(snapshot["bindings"]), 2)
+        self.assertEqual(snapshot["initial_queue"]["station_queue_pk"], 77)
+
+    def test_snapshot_work_order_read_model_has_exact_fixed_fields(self) -> None:
+        expected_fields = {
+            "order_id",
+            "status",
+            "product_code",
+            "target_quantity",
+            "started_at",
+            "completed_at",
+            "payload",
+            "metadata",
+        }
+        mapped = mesql_v2._work_order_release_work_order_row((
+            "WO-RELEASE-001",
+            "queued",
+            "PACKAGED_PRODUCT",
+            Decimal("5.000000"),
+            None,
+            None,
+            {"source": "unit_test"},
+            {"released": True},
+        ))
+        self.assertEqual(set(mapped), expected_fields)
+        self.assertEqual(mapped["target_quantity"], 5)
+        selected = mesql_v2.SELECT_WORK_ORDER_RELEASE_WORK_ORDER_SQL.lower().split(
+            "from mes.work_orders"
+        )[0]
+        for field in expected_fields:
+            self.assertIn(field, selected)
+        for excluded in (
+            "work_order_pk",
+            "erp_type",
+            "source_system",
+            "source_file",
+            "external_ref",
+            "created_at",
+            "updated_at",
+        ):
+            self.assertNotIn(excluded, selected)
+            self.assertNotIn(excluded, mapped)
+
+    def test_snapshot_lifecycle_operation_read_model_has_exact_fixed_fields(self) -> None:
+        expected_fields = {
+            "work_order_operation_id",
+            "order_id",
+            "operation_no",
+            "operation_code",
+            "operation_name",
+            "station_code",
+            "status",
+            "planned_quantity",
+            "good_quantity",
+            "scrap_quantity",
+            "uom_code",
+            "started_at",
+            "completed_at",
+            "sequence_no",
+        }
+        mapped = mesql_v2._work_order_release_operation_row((
+            UUID("5258d822-55bd-56b1-81ba-7f89193ba4eb"),
+            "WO-RELEASE-001",
+            10,
+            "Operation-Code-Mixed",
+            "Operation Name",
+            "Station-Mixed",
+            "queued",
+            Decimal("5.000000"),
+            Decimal("0.000000"),
+            Decimal("0.000000"),
+            "piece",
+            None,
+            None,
+            10,
+        ))
+        self.assertEqual(set(mapped), expected_fields)
+        self.assertEqual(
+            mapped["work_order_operation_id"],
+            "5258d822-55bd-56b1-81ba-7f89193ba4eb",
+        )
+        self.assertEqual(mapped["operation_code"], "Operation-Code-Mixed")
+        self.assertEqual(mapped["station_code"], "Station-Mixed")
+        selected = mesql_v2.SELECT_WORK_ORDER_RELEASE_OPERATIONS_SQL.lower().split(
+            "from mes.work_order_operations"
+        )[0]
+        for field in expected_fields:
+            self.assertIn(field, selected)
+        for excluded in (
+            "mesql_work_order_operation_id",
+            "payload",
+            "metadata",
+            "created_at",
+            "updated_at",
+        ):
+            self.assertNotIn(excluded, selected)
+            self.assertNotIn(excluded, mapped)
+
+    def test_snapshot_bindings_follow_lifecycle_operation_order(self) -> None:
+        connection = _Connection()
+        self._seed_release_snapshot(connection)
+
+        snapshot = self._call_read(
+            connection,
+            get_work_order_release_snapshot,
+            "WO-RELEASE-001",
+        )
+
+        self.assertEqual(
+            [binding["route_operation_id"] for binding in snapshot["bindings"]],
+            ["ROUTE_BOX_PACKAGING_V2_OP10", "ROUTE_BOX_PACKAGING_V2_OP20"],
+        )
+        normalized_sql = " ".join(
+            mesql_v2.SELECT_WORK_ORDER_RELEASE_BINDINGS_SQL.lower().split()
+        )
+        self.assertIn(
+            "order by operation.sequence_no asc, binding.work_order_operation_id asc, binding.binding_id asc",
+            normalized_sql,
+        )
+
+    def test_work_order_release_snapshot_uses_one_connection_and_cursor_scope(self) -> None:
+        connection = _Connection()
+        self._seed_release_snapshot(connection)
+
+        with patch.object(
+            mesql_v2,
+            "database_connection",
+            return_value=_yield_connection(connection),
+        ) as factory:
+            snapshot = get_work_order_release_snapshot(
+                AppConfig(db_enabled=True),
+                "WO-RELEASE-001",
+            )
+
+        self.assertIsNotNone(snapshot)
+        factory.assert_called_once()
+        self.assertTrue(connection.cursor_instance.exited)
+        self.assertEqual(len(connection.cursor_instance.executed), 5)
+
+    def test_work_order_release_snapshot_missing_release_stops_after_first_read(self) -> None:
+        connection = _Connection()
+
+        snapshot = self._call_read(
+            connection,
+            get_work_order_release_snapshot,
+            "WO-MISSING",
+        )
+
+        self.assertIsNone(snapshot)
+        self.assertEqual(len(connection.cursor_instance.executed), 1)
+
+    def test_work_order_release_snapshot_retains_missing_components(self) -> None:
+        connection = _Connection()
+        connection.cursor_instance.work_order_route_release_rows = [
+            _fake_work_order_route_release()
+        ]
+
+        snapshot = self._call_read(
+            connection,
+            get_work_order_release_snapshot,
+            "WO-RELEASE-001",
+        )
+
+        self.assertIsNone(snapshot["work_order"])
+        self.assertEqual(snapshot["operations"], [])
+        self.assertEqual(snapshot["bindings"], [])
+        self.assertIsNone(snapshot["initial_queue"])
+
+    def test_snapshot_bindings_are_limited_to_work_order_operation_uuids(self) -> None:
+        connection = _Connection()
+        self._seed_release_snapshot(connection)
+        connection.cursor_instance.release_binding_rows.append(
+            _fake_work_order_operation_route_binding(
+                binding_pk=999,
+                binding_id="BINDING-OTHER-WORK-ORDER",
+                work_order_operation_id=UUID(
+                    "99999999-9999-4999-8999-999999999999"
+                ),
+            )
+        )
+
+        snapshot = self._call_read(
+            connection,
+            get_work_order_release_snapshot,
+            "WO-RELEASE-001",
+        )
+
+        self.assertEqual(len(snapshot["bindings"]), 2)
+        self.assertNotIn(
+            "BINDING-OTHER-WORK-ORDER",
+            [binding["binding_id"] for binding in snapshot["bindings"]],
+        )
+        binding_sql = next(
+            sql
+            for sql, _params in connection.cursor_instance.executed
+            if "from mes.work_order_operation_route_bindings binding" in sql.lower()
+        )
+        self.assertIn(
+            "operation.work_order_operation_id = binding.work_order_operation_id",
+            binding_sql.lower(),
+        )
+
+    def test_snapshot_initial_queue_is_tied_to_first_ordered_operation_uuid(self) -> None:
+        connection = _Connection()
+        self._seed_release_snapshot(connection)
+
+        snapshot = self._call_read(
+            connection,
+            get_work_order_release_snapshot,
+            "WO-RELEASE-001",
+        )
+
+        queue_params = connection.cursor_instance.executed[-1][1]
+        self.assertEqual(
+            queue_params["work_order_operation_id"],
+            "5258d822-55bd-56b1-81ba-7f89193ba4eb",
+        )
+        self.assertEqual(queue_params["station_code"], "ASSEMBLY_01")
+        self.assertEqual(
+            snapshot["initial_queue"]["work_order_operation_id"],
+            "5258d822-55bd-56b1-81ba-7f89193ba4eb",
+        )
+
+    def test_work_order_release_snapshot_does_not_commit_or_write(self) -> None:
+        connection = _Connection()
+        self._seed_release_snapshot(connection)
+
+        self._call_read(
+            connection,
+            get_work_order_release_snapshot,
+            "WO-RELEASE-001",
+        )
+
+        self.assertFalse(connection.committed)
+        for sql, _params in connection.cursor_instance.executed:
+            lowered = sql.lower()
+            self.assertTrue(lowered.strip().startswith("select"))
+            self.assertNotIn("for update", lowered)
+
+    def test_work_order_release_namespace_literals_recompute_from_labels(self) -> None:
+        self.assertEqual(
+            mesql_v2.WORK_ORDER_RELEASE_OPERATION_NAMESPACE,
+            mesql_v2.uuid.uuid5(
+                mesql_v2.uuid.NAMESPACE_URL,
+                mesql_v2.WORK_ORDER_RELEASE_OPERATION_NAMESPACE_LABEL,
+            ),
+        )
+        self.assertEqual(
+            mesql_v2.WORK_ORDER_RELEASE_BINDING_NAMESPACE,
+            mesql_v2.uuid.uuid5(
+                mesql_v2.uuid.NAMESPACE_URL,
+                mesql_v2.WORK_ORDER_RELEASE_BINDING_NAMESPACE_LABEL,
+            ),
+        )
+
+    def test_operation_uuid_fixed_examples(self) -> None:
+        self.assertEqual(
+            mesql_v2._derive_work_order_release_operation_id(
+                "RELEASE-V2-EXAMPLE-001",
+                "ROUTE_BOX_PACKAGING_V2_OP10",
+            ),
+            "5258d822-55bd-56b1-81ba-7f89193ba4eb",
+        )
+        self.assertEqual(
+            mesql_v2._derive_work_order_release_operation_id(
+                "RELEASE-V2-EXAMPLE-001",
+                "ROUTE_BOX_PACKAGING_V2_OP20",
+            ),
+            "26c50f67-2519-5e29-a958-e39eca44934e",
+        )
+
+    def test_binding_id_fixed_examples(self) -> None:
+        self.assertEqual(
+            mesql_v2._derive_work_order_release_binding_id(
+                "RELEASE-V2-EXAMPLE-001",
+                "ROUTE_BOX_PACKAGING_V2_OP10",
+            ),
+            "BINDING-WORK-ORDER-RELEASE-AD8E94BA-E408-59B5-BE90-B7F348C17050",
+        )
+        self.assertEqual(
+            mesql_v2._derive_work_order_release_binding_id(
+                "RELEASE-V2-EXAMPLE-001",
+                "ROUTE_BOX_PACKAGING_V2_OP20",
+            ),
+            "BINDING-WORK-ORDER-RELEASE-B342D41D-6777-5999-A07E-CE10E04533CA",
+        )
+
+    def test_canonical_name_contains_exactly_one_lf_separator(self) -> None:
+        canonical = mesql_v2._work_order_release_canonical_name(
+            "RELEASE-V2-EXAMPLE-001",
+            "ROUTE_BOX_PACKAGING_V2_OP10",
+        )
+
+        self.assertEqual(
+            canonical,
+            "RELEASE-V2-EXAMPLE-001\nROUTE_BOX_PACKAGING_V2_OP10",
+        )
+        self.assertEqual(canonical.encode("utf-8").count(b"\x0a"), 1)
+        self.assertFalse(canonical.endswith("\n"))
+
+    def test_platform_and_backslash_newlines_produce_different_identity(self) -> None:
+        expected = mesql_v2._derive_work_order_release_operation_id(
+            "RELEASE-V2-EXAMPLE-001",
+            "ROUTE_BOX_PACKAGING_V2_OP10",
+        )
+        platform_name = (
+            "RELEASE-V2-EXAMPLE-001\r\nROUTE_BOX_PACKAGING_V2_OP10"
+        )
+        escaped_name = (
+            "RELEASE-V2-EXAMPLE-001\\nROUTE_BOX_PACKAGING_V2_OP10"
+        )
+
+        self.assertNotEqual(
+            expected,
+            str(mesql_v2.uuid.uuid5(
+                mesql_v2.WORK_ORDER_RELEASE_OPERATION_NAMESPACE,
+                platform_name,
+            )),
+        )
+        self.assertNotEqual(
+            expected,
+            str(mesql_v2.uuid.uuid5(
+                mesql_v2.WORK_ORDER_RELEASE_OPERATION_NAMESPACE,
+                escaped_name,
+            )),
+        )
+
+    def test_identity_inputs_are_trimmed_without_case_normalization(self) -> None:
+        canonical = mesql_v2._work_order_release_canonical_name(
+            " Release-Mixed ",
+            " Route-Operation-Mixed ",
+        )
+        self.assertEqual(canonical, "Release-Mixed\nRoute-Operation-Mixed")
+        self.assertNotEqual(
+            mesql_v2._derive_work_order_release_operation_id(
+                "Release-Mixed",
+                "Route-Operation-Mixed",
+            ),
+            mesql_v2._derive_work_order_release_operation_id(
+                "release-mixed",
+                "route-operation-mixed",
+            ),
+        )
+
+    def test_operation_set_digest_matches_fixed_example(self) -> None:
+        digest = mesql_v2._compute_work_order_release_operation_set_digest(
+            process_route_id="ROUTE_BOX_PACKAGING_V2",
+            route_code="ROUTE_BOX_PACKAGING_V2",
+            route_version=2,
+            release_mode="route_generated",
+            pairs=self._release_pairs(),
+        )
+        self.assertEqual(
+            digest,
+            "4063a5c72fd4d38f11757a4bf1115f83e1c05e8b97624deb808193c5d0fcb2e2",
+        )
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
+    def test_operation_set_digest_is_independent_of_pair_input_order(self) -> None:
+        pairs = self._release_pairs()
+        kwargs = {
+            "process_route_id": "ROUTE_BOX_PACKAGING_V2",
+            "route_code": "ROUTE_BOX_PACKAGING_V2",
+            "route_version": 2,
+            "release_mode": "route_generated",
+        }
+        forward = mesql_v2._compute_work_order_release_operation_set_digest(
+            pairs=pairs,
+            **kwargs,
+        )
+        reverse = mesql_v2._compute_work_order_release_operation_set_digest(
+            pairs=list(reversed(pairs)),
+            **kwargs,
+        )
+        self.assertEqual(forward, reverse)
+
+    def test_operation_set_digest_serializes_exact_canonical_payload(self) -> None:
+        real_dumps = json.dumps
+        with patch.object(
+            mesql_v2.json,
+            "dumps",
+            wraps=real_dumps,
+        ) as dumps:
+            mesql_v2._compute_work_order_release_operation_set_digest(
+                process_route_id="ROUTE_BOX_PACKAGING_V2",
+                route_code="ROUTE_BOX_PACKAGING_V2",
+                route_version=2,
+                release_mode="route_generated",
+                pairs=list(reversed(self._release_pairs())),
+            )
+
+        payload = dumps.call_args.args[0]
+        kwargs = dumps.call_args.kwargs
+        serialized = real_dumps(payload, **kwargs)
+        self.assertEqual(kwargs, {
+            "ensure_ascii": False,
+            "sort_keys": True,
+            "separators": (",", ":"),
+        })
+        self.assertEqual(
+            serialized,
+            '{"pairs":[{"route_operation_id":"ROUTE_BOX_PACKAGING_V2_OP10",'
+            '"sequence_no":10,"work_order_operation_id":'
+            '"5258d822-55bd-56b1-81ba-7f89193ba4eb"},{"route_operation_id":'
+            '"ROUTE_BOX_PACKAGING_V2_OP20","sequence_no":20,'
+            '"work_order_operation_id":"26c50f67-2519-5e29-a958-e39eca44934e"}],'
+            '"process_route_id":"ROUTE_BOX_PACKAGING_V2",'
+            '"release_mode":"route_generated","route_code":'
+            '"ROUTE_BOX_PACKAGING_V2","route_version":2}',
+        )
+
+    def test_operation_set_digest_rejects_duplicate_sequence(self) -> None:
+        pairs = self._release_pairs()
+        pairs[1]["sequence_no"] = 10
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            mesql_v2._compute_work_order_release_operation_set_digest(
+                process_route_id="ROUTE_BOX_PACKAGING_V2",
+                route_code="ROUTE_BOX_PACKAGING_V2",
+                route_version=2,
+                release_mode="route_generated",
+                pairs=pairs,
+            )
+        self.assertEqual(error.exception.detail, "SEQUENCE_NO_INVALID")
+
+    def test_operation_set_digest_rejects_duplicate_route_operation(self) -> None:
+        pairs = self._release_pairs()
+        pairs[1]["route_operation_id"] = pairs[0]["route_operation_id"]
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            mesql_v2._compute_work_order_release_operation_set_digest(
+                process_route_id="ROUTE_BOX_PACKAGING_V2",
+                route_code="ROUTE_BOX_PACKAGING_V2",
+                route_version=2,
+                release_mode="route_generated",
+                pairs=pairs,
+            )
+        self.assertEqual(error.exception.detail, "ROUTE_OPERATION_ID_INVALID")
+
+    def test_operation_set_digest_rejects_duplicate_lifecycle_uuid(self) -> None:
+        pairs = self._release_pairs()
+        pairs[1]["work_order_operation_id"] = pairs[0]["work_order_operation_id"]
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            mesql_v2._compute_work_order_release_operation_set_digest(
+                process_route_id="ROUTE_BOX_PACKAGING_V2",
+                route_code="ROUTE_BOX_PACKAGING_V2",
+                route_version=2,
+                release_mode="route_generated",
+                pairs=pairs,
+            )
+        self.assertEqual(error.exception.detail, "WORK_ORDER_OPERATION_ID_INVALID")
+
+    def test_operation_set_digest_rejects_bool_version_and_sequence(self) -> None:
+        for field, value, expected in (
+            ("route_version", True, "ROUTE_VERSION_INVALID"),
+            ("sequence_no", True, "SEQUENCE_NO_INVALID"),
+        ):
+            pairs = self._release_pairs()
+            kwargs = {
+                "process_route_id": "ROUTE_BOX_PACKAGING_V2",
+                "route_code": "ROUTE_BOX_PACKAGING_V2",
+                "route_version": 2,
+                "release_mode": "route_generated",
+                "pairs": pairs,
+            }
+            if field == "sequence_no":
+                pairs[0]["sequence_no"] = value
+            else:
+                kwargs[field] = value
+            with self.subTest(field=field):
+                with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                    mesql_v2._compute_work_order_release_operation_set_digest(**kwargs)
+                self.assertEqual(error.exception.detail, expected)
+
+    def test_operation_set_digest_rejects_empty_or_invalid_pair_shape(self) -> None:
+        base = {
+            "process_route_id": "ROUTE_BOX_PACKAGING_V2",
+            "route_code": "ROUTE_BOX_PACKAGING_V2",
+            "route_version": 2,
+            "release_mode": "route_generated",
+        }
+        for pairs, expected in (
+            (None, "OPERATION_SET_REQUIRED"),
+            ([], "OPERATION_SET_REQUIRED"),
+            ((), "OPERATION_SET_INVALID"),
+            ([{"sequence_no": 10}], "OPERATION_SET_INVALID"),
+            ([{**self._release_pairs()[0], "metadata": {}}], "OPERATION_SET_INVALID"),
+        ):
+            with self.subTest(pairs=pairs):
+                with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                    mesql_v2._compute_work_order_release_operation_set_digest(
+                        pairs=pairs,
+                        **base,
+                    )
+                self.assertEqual(error.exception.detail, expected)
+
+    def test_operation_set_digest_validates_required_scalar_fields(self) -> None:
+        base = {
+            "process_route_id": "ROUTE_BOX_PACKAGING_V2",
+            "route_code": "ROUTE_BOX_PACKAGING_V2",
+            "route_version": 2,
+            "release_mode": "route_generated",
+            "pairs": self._release_pairs(),
+        }
+        for field, value, expected in (
+            ("process_route_id", " ", "PROCESS_ROUTE_ID_REQUIRED"),
+            ("route_code", None, "ROUTE_CODE_INVALID"),
+            ("route_version", 0, "ROUTE_VERSION_INVALID"),
+            ("release_mode", "", "RELEASE_MODE_REQUIRED"),
+        ):
+            kwargs = dict(base)
+            kwargs[field] = value
+            with self.subTest(field=field):
+                with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+                    mesql_v2._compute_work_order_release_operation_set_digest(**kwargs)
+                self.assertEqual(error.exception.detail, expected)
+
+    def test_operation_set_digest_requires_canonical_lowercase_uuid_text(self) -> None:
+        pairs = self._release_pairs()
+        pairs[0]["work_order_operation_id"] = pairs[0][
+            "work_order_operation_id"
+        ].upper()
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            mesql_v2._compute_work_order_release_operation_set_digest(
+                process_route_id="ROUTE_BOX_PACKAGING_V2",
+                route_code="ROUTE_BOX_PACKAGING_V2",
+                route_version=2,
+                release_mode="route_generated",
+                pairs=pairs,
+            )
+        self.assertEqual(error.exception.detail, "WORK_ORDER_OPERATION_ID_INVALID")
+
+    def test_operation_set_digest_rejects_unsupported_release_mode(self) -> None:
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            mesql_v2._compute_work_order_release_operation_set_digest(
+                process_route_id="ROUTE_BOX_PACKAGING_V2",
+                route_code="ROUTE_BOX_PACKAGING_V2",
+                route_version=2,
+                release_mode="legacy_generated",
+                pairs=self._release_pairs(),
+            )
+        self.assertEqual(error.exception.detail, "RELEASE_MODE_INVALID")
+
+    def test_digest_signature_excludes_release_and_audit_fields(self) -> None:
+        parameters = inspect.signature(
+            mesql_v2._compute_work_order_release_operation_set_digest
+        ).parameters
+        self.assertEqual(
+            set(parameters),
+            {"process_route_id", "route_code", "route_version", "release_mode", "pairs"},
+        )
+        for excluded in (
+            "release_id",
+            "metadata",
+            "released_by",
+            "release_source",
+            "released_at",
+        ):
+            self.assertNotIn(excluded, parameters)
 
 
 if __name__ == "__main__":

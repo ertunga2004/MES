@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-14
+Last updated: 2026-07-15
 
 ## Local MES Execution and Portable Runtime Baseline
 
@@ -1013,4 +1013,50 @@ mutation was performed.
 - Evidence:
   `docs/runbooks/work_order_route_operation_binding_write_helper_isolated_smoke_evidence_20260714.md`.
 - No runtime-init or work-order-release integration was added.
+- No API, Kiosk, IoT/MQTT, Observer, OEE/KPI, MESQL, or FERP change was made.
+
+## Verified Canonical V2 Bound Runtime Initialization
+
+- Last updated: `2026-07-15`.
+- Base binding-validation commit: `e39d32f`.
+- Existing-state route-identity guard fix commit: `6d3f827`.
+- Prior FAIL evidence:
+  `docs/runbooks/station_execution_canonical_v2_bound_runtime_init_isolated_smoke_evidence_20260714.md`.
+- Retry PASS evidence:
+  `docs/runbooks/station_execution_canonical_v2_bound_runtime_init_retry_evidence_20260715.md`.
+- Corrected initialization acceptance is `ready`,
+  `current_step_code=NULL`, and three ordered pending steps; initialization
+  does not activate the first step.
+- Unit regression: targeted `181` tests and combined `217` tests, both `OK`.
+- Source `mes` binding table remained absent and Canonical V2 route count
+  remained `0`.
+- Historical V1 existing-state replay without binding-table dependency: PASS.
+- Pre-migration new init propagated PostgreSQL `UndefinedTable` (`42P01`):
+  PASS.
+- Binding migration and Canonical V2 seed were applied only to disposable
+  clone `mes_bound_runtime_init_retry_20260715_094604`.
+- V2 config scope was `1 / 2 / 4`, OP10/OP20 step scope was `3 / 1`, and
+  configured/resolved location roles were `5 / 5`.
+- Missing binding returned
+  `409 WORK_ORDER_OPERATION_ROUTE_BINDING_REQUIRED`.
+- New-state binding mismatch returned
+  `409 WORK_ORDER_OPERATION_ROUTE_BINDING_MISMATCH`.
+- Explicit clone-only V2 OP10 binding first create / replay returned
+  `true / false`.
+- Matching initialization returned `initialized=true`, `ready`,
+  `current_step_code=NULL`, and three pending steps.
+- Exact matching replay returned `initialized=false` with the stored V2 route
+  identity.
+- Existing-state wrong-route call returned
+  `409 EXECUTION_STATE_ROUTE_OPERATION_MISMATCH` without replay or mutation.
+- Correct-route post-error replay passed without transaction leakage.
+- Matching init changed only execution state `+1` and runtime steps `+3`;
+  events / approvals / production flow remained `0 / 0 / 0` for the candidate.
+- Binding, config, lifecycle, and queue snapshots were unchanged during init,
+  replay, wrong-route rejection, and recovery.
+- The clone-only binding verifies runtime behavior and is not an accepted
+  production semantic mapping.
+- Source 15/15 counts and digests remained unchanged, the clone was dropped,
+  and no matching disposable database remained.
+- No step execution or work-order release integration was performed.
 - No API, Kiosk, IoT/MQTT, Observer, OEE/KPI, MESQL, or FERP change was made.

@@ -1166,3 +1166,69 @@ mutation was performed.
 - This checkpoint changes no Python, tests, migration, seed, database, Docker,
   runtime, lifecycle, binding, queue, API, Kiosk, IoT/OEE, approval,
   production-flow, inventory, FERP, or MESQL behavior.
+
+## Work-Order Route-Release Schema and Helper Contract Draft
+
+- Last updated: `2026-07-15`.
+- Phase 5A architecture commit:
+  `8de2da4 docs: define work-order release route binding architecture`.
+- Preferred additive migration draft:
+  `db/migrations/010_work_order_route_release.sql`.
+- Selected immutable sidecar: `mes.work_order_route_releases`, one work order
+  to at most one release and one release ID to exactly one work order.
+- Exact release-table physical scope is `14` columns, `15` named constraints,
+  and `5` indexes. No active/update/delete/effective/supersession/reroute field
+  is present.
+- Parent route same-row identity is database-backed by
+  `uq_mes_process_routes_identity_snapshot` on
+  `(route_id, route_code, version)` and child composite FK
+  `fk_mes_work_order_route_releases_route_identity` on
+  `(process_route_id, route_code, route_version)`.
+- The migration contains no release row, binding, lifecycle operation, queue,
+  status mutation, seed, legacy adoption, or backfill.
+- Initial apply must leave the release table empty, but migration assertions are
+  row-count-independent so reapply remains valid after release data exists.
+- Accepted schema modes remain `route_generated` and
+  `explicit_existing_operation_mapping`; Phase 5D initially enables only
+  `route_generated`.
+- Initial release-source allowlist contains only `local_planning`; FERP, MESQL,
+  and migration/backfill sources require a future additive migration and
+  integration phase.
+- Operation UUIDv5 namespace:
+  - label: `urn:mes:work-order-route-release:operation:v1`
+  - UUID: `51e8ce07-9395-54f4-9677-a32d03162cdc`
+- Binding UUIDv5 namespace:
+  - label: `urn:mes:work-order-route-release:binding:v1`
+  - UUID: `2e5192a2-5d5a-5f76-a9f6-dc70df96564a`
+- Both deterministic identities use exact canonical name
+  `<release_id>\n<route_operation_id>` with one LF byte. Operation UUID text is
+  canonical lowercase; binding ID is
+  `BINDING-WORK-ORDER-RELEASE-<UPPERCASE-UUID>`.
+- Operation-set digest is SHA-256 over exact UTF-8 canonical JSON serialized
+  with `ensure_ascii=False`, `sort_keys=True`, and compact separators; output is
+  64-character lowercase hex. Route identity, release mode, sequence, config
+  operation ID, and lifecycle UUID are included; metadata/actor/source are
+  compared separately.
+- Proposed core helper:
+  `release_work_order_to_route(config, *, release_id, work_order_id,
+  route_code, route_version, release_source, released_by, mode,
+  operation_bindings=None, metadata=None)`.
+- Documentation-only baseline regression passed: targeted MESQL V2 `181` tests
+  and combined station-execution/location/MESQL V2 `217` tests, both `OK`.
+- The helper contract requires one shared transaction cursor for the immutable
+  release, deterministic lifecycle operations, complete bindings, initial
+  queue, and release-equivalent queued work-order state. Exact replay returns
+  `released=false` with unchanged persisted rows/timestamps.
+- Runtime `closed -> lifecycle completed -> successor queued` remains the
+  separate Phase 5F/5G completion-bridge boundary and is not implemented by
+  release.
+- Schema plan:
+  `docs/architecture/work_order_route_release_schema_plan.md`.
+- Helper contract:
+  `docs/architecture/work_order_release_helper_contract.md`.
+- Controlled migration apply runbook:
+  `docs/runbooks/work_order_route_release_migration_apply_runbook.md`.
+- The migration has not been applied. No database/Docker connection, release
+  implementation, API/feature flag, lifecycle/binding/queue write, runtime
+  helper, completion bridge, FERP, MESQL, Kiosk, IoT/OEE, approval,
+  production-flow, or inventory action was performed.

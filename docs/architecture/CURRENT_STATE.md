@@ -1269,3 +1269,50 @@ mutation was performed.
   rebuild/recreate/restart/down/volume operation occurred.
 - Evidence:
   `docs/runbooks/work_order_route_release_migration_isolated_smoke_evidence_20260715.md`.
+
+## Verified Work-Order Route-Release Read Model
+
+- Implementation commit:
+  `a3e611adacf5cd23d2c120eb620a63769b3a6542` (`a3e611a`, Phase 5C).
+- Focused review found no actionable P1, P2, or P3 issue. The five public read
+  helpers preserve exact release/route identity, lifecycle-UUID binding scope,
+  deterministic operation order, first-lifecycle initial queue scope, and
+  incomplete snapshot components without fallback or inference.
+- Regression: targeted MESQL V2 `227` tests and combined station-execution
+  config/location/MESQL V2 `263` tests, both `OK`; compile and diff checks
+  passed.
+- Source `mes` remained read-only. Backup and repeatable-read baseline were
+  taken before an empty `template0` database was restored from the logical
+  dump; restore equality was `15/15` counts and `15/15` digests.
+- Before migration `010`, the real release read raised unmasked
+  `psycopg.errors.UndefinedTable` with SQLSTATE `42P01`.
+- Migrations `009`, `010`, and Canonical V2 seed `006` ran only on the exact
+  disposable clone. Verified shapes were binding `9/9/4`, release `14/15/5`,
+  V2 route/operations/steps `1/2/4`, OP10/OP20 steps `3/1`, and roles `5/5`.
+- UUIDv5 namespace recomputation, fixed operation UUIDs, fixed binding IDs,
+  exact one-LF canonical names, fixed digest
+  `4063a5c72fd4d38f11757a4bf1115f83e1c05e8b97624deb808193c5d0fcb2e2`,
+  repeated-call stability, caller non-mutation, and utility no-DB behavior all
+  passed.
+- Release reads returned exact 14-field JSON-safe rows with dictionary metadata
+  and ISO timestamps. Case-mismatched release identity returned `None`.
+- Exact route version `2` and OP10/OP20 order passed; wrong version `999`
+  returned `None`, missing route operations returned `[]`, and no fallback or
+  inference occurred.
+- Complete snapshot returned exact 8-field work order, exact 14-field lifecycle
+  operations in `10,20` order, lifecycle-scoped bindings in the same order, and
+  an initial queue bound only to OP10. A foreign work-order binding to the same
+  route operation was excluded.
+- Incomplete snapshot retained release and work order while returning
+  operations `[]`, bindings `[]`, and queue `None`.
+- Repeated helper reads preserved `17/17` table count/digest snapshots. The
+  instrumented full snapshot used one connection, one cursor, and zero commit
+  calls.
+- Exact clone cleanup left zero matching databases. Final source integrity was
+  `15/15` counts and `15/15` digests; extended schema/V2 state, retained V1,
+  and `4/0/0` audit counts were unchanged, fixture IDs were absent, and health
+  remained HTTP `200` with `status=ok`.
+- No release writer, API, completion bridge, FERP/MESQL integration,
+  implementation change, commit, or push occurred.
+- Evidence:
+  `docs/runbooks/work_order_route_release_read_helper_isolated_smoke_evidence_20260715.md`.

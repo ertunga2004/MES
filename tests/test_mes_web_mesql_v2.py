@@ -3270,6 +3270,230 @@ class MesqlV2Tests(unittest.TestCase):
         )
         self.assertNotIn("insert into mes.work_order_operation_steps", transaction_sql)
 
+    def test_new_runtime_ready_state_has_no_current_step(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(connection.cursor_instance)
+
+        result = self._initialize_runtime(connection)
+
+        self.assertTrue(result["initialized"])
+        self.assertEqual(result["execution_state"]["execution_status"], "ready")
+        self.assertIsNone(result["execution_state"]["current_step_code"])
+        self.assertTrue(all(step["status"] == "pending" for step in result["steps"]))
+
+    def test_new_runtime_initial_steps_are_pending_and_unstarted(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(connection.cursor_instance)
+
+        result = self._initialize_runtime(connection)
+
+        for step in result["steps"]:
+            self.assertEqual(step["status"], "pending")
+            self.assertIsNone(step["started_at"])
+            self.assertIsNone(step["completed_at"])
+            self.assertIsNone(step["started_by_event_id"])
+            self.assertIsNone(step["completed_by_event_id"])
+
+    def test_new_runtime_initialization_creates_no_start_event_evidence(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        _seed_matching_runtime_binding(connection.cursor_instance)
+
+        self._initialize_runtime(connection)
+        transaction_sql = "\n".join(
+            sql.lower() for sql, _params in connection.transaction_sql_history
+        )
+
+        self.assertEqual(connection.cursor_instance.operation_event_rows, [])
+        self.assertNotIn("insert into mes.operation_events", transaction_sql)
+        self.assertNotIn("update mes.work_order_operation_execution_state", transaction_sql)
+        self.assertNotIn("update mes.work_order_operation_steps", transaction_sql)
+
+    def test_new_runtime_first_pending_step_remains_ordered_read_model(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        connection.cursor_instance.operation_step_rows.append(
+            _fake_operation_step(step_code="ROBOT_ARM_DROP_COMPLETED", step_no=20)
+        )
+        _seed_matching_runtime_binding(connection.cursor_instance)
+
+        result = self._initialize_runtime(connection)
+
+        self.assertIsNone(result["execution_state"]["current_step_code"])
+        self.assertEqual(
+            [step["step_code"] for step in result["steps"]],
+            ["COLOR_SENSOR_ENTRY_EVIDENCE", "ROBOT_ARM_DROP_COMPLETED"],
+        )
+        self.assertEqual(result["steps"][0]["status"], "pending")
+
+    def test_matching_existing_route_replay_uses_stored_identity(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        state = _fake_execution_state()
+        state["metadata"] = {
+            "source": "runtime_engine_v0_phase1",
+            "route_operation_id": "ROUTE_BOX_PACKAGING_V1_OP10",
+        }
+        connection.cursor_instance.execution_state_row = state
+        connection.cursor_instance.execution_step_rows = [_fake_execution_step()]
+
+        result = self._initialize_runtime(
+            connection,
+            route_operation_id="route_box_packaging_v1_op10",
+        )
+
+        self.assertFalse(result["initialized"])
+        self.assertEqual(
+            result["route_operation_id"],
+            state["metadata"]["route_operation_id"],
+        )
+
+    def test_matching_existing_route_replay_skips_binding_lookup(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        state = _fake_execution_state()
+        state["metadata"] = {"route_operation_id": "ROUTE_BOX_PACKAGING_V1_OP10"}
+        connection.cursor_instance.execution_state_row = state
+        connection.cursor_instance.execution_step_rows = [_fake_execution_step()]
+        connection.cursor_instance.exception_on_sql_fragment = (
+            "from mes.work_order_operation_route_bindings",
+            UndefinedTable('relation "mes.work_order_operation_route_bindings" does not exist'),
+        )
+
+        result = self._initialize_runtime(connection)
+        transaction_sql = "\n".join(
+            sql.lower() for sql, _params in connection.transaction_sql_history
+        )
+
+        self.assertFalse(result["initialized"])
+        self.assertNotIn("from mes.work_order_operation_route_bindings", transaction_sql)
+
+    def test_matching_existing_route_replay_preserves_runtime_rows(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        state = _fake_execution_state(execution_status="active")
+        state["metadata"] = {"route_operation_id": "ROUTE_BOX_PACKAGING_V1_OP10"}
+        state["current_step_code"] = "COLOR_SENSOR_ENTRY_EVIDENCE"
+        state["started_at"] = datetime(2026, 7, 9, 11, 0, 0)
+        connection.cursor_instance.execution_state_row = state
+        connection.cursor_instance.execution_step_rows = [
+            _fake_execution_step(status="active")
+        ]
+        before_state = deepcopy(state)
+        before_steps = deepcopy(connection.cursor_instance.execution_step_rows)
+
+        result = self._initialize_runtime(connection)
+
+        self.assertFalse(result["initialized"])
+        self.assertEqual(connection.cursor_instance.execution_state_row, before_state)
+        self.assertEqual(connection.cursor_instance.execution_step_rows, before_steps)
+
+    def test_existing_state_wrong_route_raises_explicit_conflict(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        state = _fake_execution_state()
+        state["metadata"] = {"route_operation_id": "ROUTE_BOX_PACKAGING_V2_OP10"}
+        connection.cursor_instance.execution_state_row = state
+        connection.cursor_instance.execution_step_rows = [_fake_execution_step()]
+
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            self._initialize_runtime(connection)
+
+        self.assertEqual(
+            error.exception.detail,
+            "EXECUTION_STATE_ROUTE_OPERATION_MISMATCH",
+        )
+        self.assertEqual(error.exception.status_code, 409)
+
+    def test_existing_state_wrong_route_performs_no_runtime_or_binding_write(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        state = _fake_execution_state()
+        state["metadata"] = {"route_operation_id": "ROUTE_BOX_PACKAGING_V2_OP10"}
+        connection.cursor_instance.execution_state_row = state
+        connection.cursor_instance.execution_step_rows = [_fake_execution_step()]
+        before_state = deepcopy(state)
+        before_steps = deepcopy(connection.cursor_instance.execution_step_rows)
+
+        with self.assertRaises(mesql_v2.MesqlV2Error):
+            self._initialize_runtime(connection)
+        transaction_sql = "\n".join(
+            sql.lower() for sql, _params in connection.transaction_sql_history
+        )
+
+        self.assertEqual(connection.cursor_instance.execution_state_row, before_state)
+        self.assertEqual(connection.cursor_instance.execution_step_rows, before_steps)
+        self.assertNotRegex(
+            transaction_sql,
+            r"(insert\s+into|update|delete\s+from)\s+mes\.(work_order_operation_execution_state|work_order_operation_steps|work_order_operation_route_bindings)",
+        )
+        self.assertNotIn("from mes.work_order_operation_route_bindings", transaction_sql)
+
+    def test_existing_state_wrong_route_rolls_back_and_cleans_up(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        state = _fake_execution_state()
+        state["metadata"] = {"route_operation_id": "ROUTE_BOX_PACKAGING_V2_OP10"}
+        connection.cursor_instance.execution_state_row = state
+        connection.cursor_instance.execution_step_rows = [_fake_execution_step()]
+        cleanup = {"calls": 0}
+
+        @contextmanager
+        def fake_connection(_config):
+            try:
+                yield connection
+            finally:
+                cleanup["calls"] += 1
+
+        with patch.object(mesql_v2, "database_connection", fake_connection):
+            with self.assertRaises(mesql_v2.MesqlV2Error):
+                initialize_execution_state(
+                    AppConfig(db_enabled=True),
+                    work_order_operation_id="11111111-1111-1111-1111-111111111111",
+                    route_operation_id="ROUTE_BOX_PACKAGING_V1_OP10",
+                    station_code="ASSEMBLY_01",
+                )
+
+        self.assertGreater(cleanup["calls"], 0)
+        self.assertTrue(connection.transaction_rolled_back)
+        self.assertFalse(connection.committed)
+
+    def test_historical_state_without_route_identity_keeps_requested_response_identity(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        state = _fake_execution_state()
+        state["metadata"] = {"source": "historical_runtime"}
+        connection.cursor_instance.execution_state_row = state
+        connection.cursor_instance.execution_step_rows = [_fake_execution_step()]
+
+        result = self._initialize_runtime(connection)
+
+        self.assertFalse(result["initialized"])
+        self.assertEqual(result["route_operation_id"], "ROUTE_BOX_PACKAGING_V1_OP10")
+
+    def test_historical_state_without_route_identity_preserves_rows_when_binding_table_missing(self) -> None:
+        connection = _Connection()
+        _seed_valid_route_operation_config(connection.cursor_instance)
+        state = _fake_execution_state()
+        state["metadata"] = {}
+        connection.cursor_instance.execution_state_row = state
+        connection.cursor_instance.execution_step_rows = [_fake_execution_step()]
+        connection.cursor_instance.exception_on_sql_fragment = (
+            "from mes.work_order_operation_route_bindings",
+            UndefinedTable('relation "mes.work_order_operation_route_bindings" does not exist'),
+        )
+        before_state = deepcopy(state)
+        before_steps = deepcopy(connection.cursor_instance.execution_step_rows)
+
+        result = self._initialize_runtime(connection)
+
+        self.assertFalse(result["initialized"])
+        self.assertEqual(connection.cursor_instance.execution_state_row, before_state)
+        self.assertEqual(connection.cursor_instance.execution_step_rows, before_steps)
+        self.assertFalse(connection.transaction_rolled_back)
+
     def test_new_runtime_init_propagates_binding_undefined_table(self) -> None:
         connection = _Connection()
         _seed_valid_route_operation_config(connection.cursor_instance)

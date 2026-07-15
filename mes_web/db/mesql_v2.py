@@ -2838,6 +2838,7 @@ def initialize_execution_state(
     normalized_route_operation_id = _upper(route_operation_id)
     normalized_station_code = _upper(station_code)
     normalized_actor_id = _nullable_text(actor_id)
+    response_route_operation_id = normalized_route_operation_id
     if not normalized_operation_id or not normalized_route_operation_id or not normalized_station_code:
         raise MesqlV2Error("RUNTIME_IDENTIFIER_REQUIRED", status_code=400)
 
@@ -2873,7 +2874,22 @@ def initialize_execution_state(
                 existing_state = cursor.fetchone()
                 initialized = existing_state is None
 
-                if initialized:
+                if existing_state is not None:
+                    mapped_existing_state = _execution_state_row(existing_state)
+                    existing_metadata = mapped_existing_state.get("metadata") or {}
+                    stored_route_operation_id = (
+                        _text(existing_metadata.get("route_operation_id"))
+                        if isinstance(existing_metadata, dict)
+                        else ""
+                    )
+                    if stored_route_operation_id:
+                        if stored_route_operation_id != normalized_route_operation_id:
+                            raise MesqlV2Error(
+                                "EXECUTION_STATE_ROUTE_OPERATION_MISMATCH",
+                                status_code=409,
+                            )
+                        response_route_operation_id = stored_route_operation_id
+                else:
                     binding = _get_work_order_operation_route_binding_with_cursor(
                         cursor,
                         normalized_operation_id,
@@ -2961,7 +2977,7 @@ def initialize_execution_state(
     return _json_safe({
         "status": "ok",
         "work_order_operation_id": normalized_operation_id,
-        "route_operation_id": normalized_route_operation_id,
+        "route_operation_id": response_route_operation_id,
         "station_code": normalized_station_code,
         "initialized": initialized,
         "execution_state": _execution_state_row(state_row) if state_row else None,

@@ -8110,5 +8110,826 @@ for _name, (_constant, _required, _forbidden) in _RELEASE_SQL_CONTRACTS.items():
     )
 
 
+class _BridgeCursor:
+    def __init__(self, *, one=None, all_rows=None) -> None:
+        self.one = list(one or [])
+        self.all_rows = list(all_rows or [])
+        self.executed: list[tuple[str, dict]] = []
+
+    def execute(self, sql, params=None) -> None:
+        self.executed.append((sql, dict(params or {})))
+
+    def fetchone(self):
+        return self.one.pop(0) if self.one else None
+
+    def fetchall(self):
+        return self.all_rows.pop(0) if self.all_rows else []
+
+
+class CompletionBridgePrimitiveTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.release_id = "RELEASE-5G-A-001"
+        self.order_id = "WO-5G-A-001"
+        self.route_ids = ["ROP-10", "ROP-20"]
+        self.operation_ids = [
+            mesql_v2._derive_work_order_release_operation_id(
+                self.release_id, route_operation_id
+            )
+            for route_operation_id in self.route_ids
+        ]
+        self.operations = [
+            self._operation(0, status="queued"),
+            self._operation(1, status="planned"),
+        ]
+        self.bindings = [self._binding(0), self._binding(1)]
+        self.release = {
+            "release_pk": 1,
+            "release_id": self.release_id,
+            "order_id": self.order_id,
+            "process_route_id": "ROUTE-ID-V2",
+            "route_code": "ROUTE-V2",
+            "route_version": 2,
+            "release_mode": "route_generated",
+            "release_source": "local_planning",
+            "released_by": "planner",
+            "released_at": "2026-07-15T10:00:00+00:00",
+            "route_operation_count": 2,
+            "metadata": {},
+            "created_at": "2026-07-15T10:00:00+00:00",
+        }
+        self.release["operation_set_digest"] = (
+            mesql_v2._compute_work_order_release_operation_set_digest(
+                process_route_id=self.release["process_route_id"],
+                route_code=self.release["route_code"],
+                route_version=self.release["route_version"],
+                release_mode=self.release["release_mode"],
+                pairs=[
+                    {
+                        "sequence_no": operation["sequence_no"],
+                        "route_operation_id": binding["route_operation_id"],
+                        "work_order_operation_id": operation["work_order_operation_id"],
+                    }
+                    for operation, binding in zip(self.operations, self.bindings)
+                ],
+            )
+        )
+        self.runtime = {
+            "work_order_operation_id": self.operation_ids[0],
+            "work_order_id": self.order_id,
+            "station_code": "ST-10",
+            "operation_code": "OP-10",
+            "execution_status": "closed",
+            "closed_at": "2026-07-15T11:00:00+00:00",
+            "metadata": {"route_operation_id": self.route_ids[0]},
+        }
+        self.work_order = {
+            "order_id": self.order_id,
+            "status": "queued",
+            "completed_at": None,
+            "payload": {"keep": True},
+            "metadata": {"keep": True},
+        }
+        initial = mesql_v2._build_initial_queue_snapshot(
+            release_id=self.release_id,
+            operation_snapshot=self.operations[0],
+            queue_rank=4,
+        )
+        self.initial_queue = {
+            "station_queue_pk": 10,
+            **initial,
+            "created_at": "2026-07-15T10:00:00+00:00",
+            "updated_at": "2026-07-15T10:00:00+00:00",
+        }
+
+    def _operation(self, index, *, status):
+        sequence = (index + 1) * 10
+        return {
+            "work_order_operation_id": self.operation_ids[index],
+            "order_id": self.order_id,
+            "mesql_work_order_operation_id": None,
+            "operation_no": sequence,
+            "operation_code": f"OP-{sequence}",
+            "operation_name": f"Operation {sequence}",
+            "sequence_no": sequence,
+            "station_code": f"ST-{sequence}",
+            "status": status,
+            "planned_quantity": 1,
+            "good_quantity": 0,
+            "scrap_quantity": 0,
+            "uom_code": "EA",
+            "started_at": None,
+            "completed_at": None,
+            "payload": {},
+            "metadata": {
+                "source": "work_order_release",
+                "release_id": self.release_id,
+                "process_route_id": "ROUTE-ID-V2",
+                "route_code": "ROUTE-V2",
+                "route_version": 2,
+                "route_operation_id": self.route_ids[index],
+            },
+            "created_at": None,
+            "updated_at": None,
+        }
+
+    def _binding(self, index):
+        return {
+            "binding_pk": index + 1,
+            "binding_id": mesql_v2._derive_work_order_release_binding_id(
+                self.release_id, self.route_ids[index]
+            ),
+            "work_order_operation_id": self.operation_ids[index],
+            "route_operation_id": self.route_ids[index],
+            "binding_source": "work_order_release",
+            "bound_by": "planner",
+            "bound_at": None,
+            "metadata": {"release_id": self.release_id},
+            "created_at": None,
+        }
+
+    def _error(self, detail, callback):
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            callback()
+        self.assertEqual(error.exception.detail, detail)
+
+    def _classify(self, **changes):
+        values = {
+            "work_order": deepcopy(self.work_order),
+            "release": deepcopy(self.release),
+            "lifecycle_operations": deepcopy(self.operations),
+            "bindings": deepcopy(self.bindings),
+            "runtime_state": deepcopy(self.runtime),
+            "station_queue_rows": [deepcopy(self.initial_queue)],
+            "current_work_order_operation_id": self.operation_ids[0],
+        }
+        values.update(changes)
+        return mesql_v2._classify_completion_bridge_state(**values)
+
+    def test_applicability_query_maps_json_safe_values(self):
+        cursor = _BridgeCursor(one=[{
+            "work_order_operation_id": UUID(self.operation_ids[0]),
+            "order_id": self.order_id,
+            "operation_code": "OP-10",
+            "sequence_no": 10,
+            "station_code": "ST-10",
+            "status": "queued",
+            "completed_at": datetime(2026, 7, 15, 11, 0, 0),
+            "payload": {},
+            "metadata": {"source": "work_order_release", "release_id": self.release_id},
+        }])
+        row = mesql_v2._select_completion_bridge_applicability_cursor(
+            cursor, self.operation_ids[0]
+        )
+        self.assertEqual(row["work_order_operation_id"], self.operation_ids[0])
+        self.assertEqual(row["completed_at"], "2026-07-15T11:00:00")
+        self.assertEqual(len(cursor.executed), 1)
+
+    def test_applicability_missing_row_is_none(self):
+        self.assertIsNone(mesql_v2._select_completion_bridge_applicability_cursor(
+            _BridgeCursor(), self.operation_ids[0]
+        ))
+
+    def test_applicability_exact_marker_is_true(self):
+        self.assertTrue(mesql_v2._is_completion_bridge_applicable({
+            "metadata": {"source": "work_order_release", "release_id": " Mixed-Id "}
+        }))
+
+    def test_applicability_empty_metadata_is_false(self):
+        self.assertFalse(mesql_v2._is_completion_bridge_applicable({"metadata": {}}))
+
+    def test_applicability_legacy_source_is_false(self):
+        self.assertFalse(mesql_v2._is_completion_bridge_applicable({
+            "metadata": {"source": "mesql"}
+        }))
+
+    def test_schema_readiness_both_tables(self):
+        cursor = _BridgeCursor(one=[(True, True)])
+        self.assertEqual(
+            mesql_v2._get_completion_bridge_schema_readiness_cursor(cursor),
+            {"release_table_ready": True, "binding_table_ready": True, "ready": True},
+        )
+
+    def test_schema_readiness_validator_uses_503(self):
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            mesql_v2._validate_completion_bridge_schema_readiness({"ready": False})
+        self.assertEqual((error.exception.detail, error.exception.status_code), (
+            "RUNTIME_COMPLETION_BRIDGE_SCHEMA_NOT_READY", 503
+        ))
+
+    def test_station_lock_set_is_unique_lexical_and_case_preserved(self):
+        source = ["z", "A"]
+        result = mesql_v2._normalize_completion_bridge_station_lock_set(*source)
+        self.assertEqual(result, ["A", "z"])
+        self.assertEqual(source, ["z", "A"])
+
+    def test_same_station_locks_once(self):
+        cursor = _BridgeCursor(one=[None])
+        stations = mesql_v2._normalize_completion_bridge_station_lock_set("ST", "ST")
+        self.assertEqual(mesql_v2._lock_completion_bridge_station_scopes_cursor(cursor, stations), ["ST"])
+        self.assertEqual(len(cursor.executed), 1)
+
+    def test_exact_queue_distinguishes_missing_exact_duplicate(self):
+        kwargs = {
+            "work_order_id": self.order_id,
+            "work_order_operation_id": self.operation_ids[0],
+            "station_code": "ST-10",
+        }
+        self.assertEqual(mesql_v2._select_exact_completion_bridge_queue([], **kwargs)["classification"], "missing")
+        self.assertEqual(mesql_v2._select_exact_completion_bridge_queue([self.initial_queue], **kwargs)["classification"], "exact")
+        self.assertEqual(mesql_v2._select_exact_completion_bridge_queue([self.initial_queue, deepcopy(self.initial_queue)], **kwargs)["classification"], "duplicate")
+
+    def test_next_rank_exact_three_statuses(self):
+        rows = [
+            {"station_code": "ST", "status": status, "queue_rank": rank}
+            for rank, status in enumerate(("queued", "ready", "active", "pending_approval", "completed"), 1)
+        ]
+        self.assertEqual(mesql_v2._compute_completion_bridge_next_queue_rank(rows, "ST"), 5)
+
+    def test_identity_valid_complete_set(self):
+        mesql_v2._validate_completion_bridge_release_identity(self.release, self.operations)
+        mesql_v2._validate_completion_bridge_binding_set(self.release, self.operations, self.bindings)
+        self.assertEqual(
+            mesql_v2._recompute_completion_bridge_operation_set_digest(
+                self.release, self.operations, self.bindings
+            ),
+            self.release["operation_set_digest"],
+        )
+
+    def test_runtime_identity_valid(self):
+        mesql_v2._validate_completion_bridge_runtime_identity(
+            self.runtime, self.operations[0], self.bindings[0]
+        )
+
+    def test_successor_resolves_terminal_row(self):
+        operations = deepcopy(self.operations)
+        operations[1]["status"] = "completed"
+        self.assertEqual(
+            mesql_v2._resolve_completion_bridge_successor(operations, self.operation_ids[0])["work_order_operation_id"],
+            self.operation_ids[1],
+        )
+
+    def test_successor_final_is_none(self):
+        self.assertIsNone(mesql_v2._resolve_completion_bridge_successor(
+            self.operations, self.operation_ids[1]
+        ))
+
+    def test_classifier_first_nonfinal(self):
+        result = self._classify()
+        self.assertEqual(result["classification"], "first_bridge")
+        self.assertFalse(result["final_operation"])
+
+    def test_classifier_immediate_replay(self):
+        operations = deepcopy(self.operations)
+        operations[0].update(status="completed", completed_at=self.runtime["closed_at"])
+        current_queue = deepcopy(self.initial_queue)
+        current_queue["status"] = "completed"
+        successor_queue = mesql_v2._build_completion_bridge_successor_queue_snapshot(
+            release=self.release,
+            predecessor_operation=operations[0],
+            successor_operation=operations[1],
+            queue_rank=7,
+        )
+        successor_queue["station_queue_pk"] = 11
+        operations[1]["status"] = "queued"
+        result = self._classify(
+            lifecycle_operations=operations,
+            station_queue_rows=[current_queue, successor_queue],
+        )
+        self.assertEqual(result["classification"], "exact_replay")
+
+    def _single_final_context(self, *, replay=False):
+        operation = deepcopy(self.operations[1])
+        operation["status"] = "completed" if replay else "active"
+        operation["completed_at"] = self.runtime["closed_at"] if replay else None
+        binding = deepcopy(self.bindings[1])
+        release = deepcopy(self.release)
+        release["route_operation_count"] = 1
+        release["operation_set_digest"] = mesql_v2._compute_work_order_release_operation_set_digest(
+            process_route_id=release["process_route_id"],
+            route_code=release["route_code"],
+            route_version=release["route_version"],
+            release_mode=release["release_mode"],
+            pairs=[{
+                "sequence_no": operation["sequence_no"],
+                "route_operation_id": binding["route_operation_id"],
+                "work_order_operation_id": operation["work_order_operation_id"],
+            }],
+        )
+        runtime = deepcopy(self.runtime)
+        runtime.update({
+            "work_order_operation_id": operation["work_order_operation_id"],
+            "station_code": operation["station_code"],
+            "operation_code": operation["operation_code"],
+            "metadata": {"route_operation_id": binding["route_operation_id"]},
+        })
+        work_order = deepcopy(self.work_order)
+        if replay:
+            work_order.update(status="completed", completed_at=runtime["closed_at"])
+        queue = mesql_v2._build_initial_queue_snapshot(
+            release_id=release["release_id"], operation_snapshot=operation, queue_rank=3
+        )
+        queue.update(station_queue_pk=30, status="completed" if replay else "active")
+        return {
+            "work_order": work_order,
+            "release": release,
+            "lifecycle_operations": [operation],
+            "bindings": [binding],
+            "runtime_state": runtime,
+            "station_queue_rows": [queue],
+            "current_work_order_operation_id": operation["work_order_operation_id"],
+        }
+
+    def test_classifier_first_final_bridge(self):
+        result = mesql_v2._classify_completion_bridge_state(
+            **self._single_final_context()
+        )
+        self.assertEqual((result["classification"], result["final_operation"]), (
+            "first_bridge", True
+        ))
+
+    def test_classifier_exact_final_replay(self):
+        result = mesql_v2._classify_completion_bridge_state(
+            **self._single_final_context(replay=True)
+        )
+        self.assertEqual(result["classification"], "exact_replay")
+
+    def test_classifier_final_timestamp_conflict(self):
+        context = self._single_final_context(replay=True)
+        context["work_order"]["completed_at"] = "2026-07-15T12:00:00+00:00"
+        self._error(
+            "RUNTIME_COMPLETION_BRIDGE_WORK_ORDER_CONFLICT",
+            lambda: mesql_v2._classify_completion_bridge_state(**context),
+        )
+
+    def test_classifier_partial_current_state_conflict(self):
+        operations = deepcopy(self.operations)
+        operations[0]["status"] = "completed"
+        operations[0]["completed_at"] = None
+        self._error(
+            "RUNTIME_COMPLETION_BRIDGE_OPERATION_STATE_CONFLICT",
+            lambda: self._classify(lifecycle_operations=operations),
+        )
+
+    def test_classifier_premature_successor_conflict(self):
+        operations = deepcopy(self.operations)
+        operations[1]["status"] = "queued"
+        self._error(
+            "RUNTIME_COMPLETION_BRIDGE_SUCCESSOR_CONFLICT",
+            lambda: self._classify(lifecycle_operations=operations),
+        )
+
+    def test_classifier_missing_current_queue_conflict(self):
+        self._error(
+            "RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT",
+            lambda: self._classify(station_queue_rows=[]),
+        )
+
+    def test_classifier_duplicate_current_queue_conflict(self):
+        self._error(
+            "RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT",
+            lambda: self._classify(station_queue_rows=[
+                deepcopy(self.initial_queue), deepcopy(self.initial_queue)
+            ]),
+        )
+
+    def _progressed_replay(self, lifecycle_status, queue_status):
+        operations = deepcopy(self.operations)
+        operations[0].update(status="completed", completed_at=self.runtime["closed_at"])
+        operations[1]["status"] = lifecycle_status
+        if lifecycle_status == "completed":
+            operations[1]["completed_at"] = "2026-07-15T12:00:00+00:00"
+        current_queue = deepcopy(self.initial_queue)
+        current_queue["status"] = "completed"
+        successor_queue = mesql_v2._build_completion_bridge_successor_queue_snapshot(
+            release=self.release, predecessor_operation=operations[0],
+            successor_operation=operations[1], queue_rank=7,
+        )
+        successor_queue.update(station_queue_pk=11, status=queue_status)
+        result = self._classify(
+            lifecycle_operations=operations,
+            station_queue_rows=[current_queue, successor_queue],
+        )
+        self.assertEqual(result["classification"], "exact_replay")
+
+    def test_replay_after_successor_queued(self):
+        self._progressed_replay("queued", "queued")
+
+    def test_replay_after_successor_active(self):
+        self._progressed_replay("active", "active")
+
+    def test_replay_after_successor_completed(self):
+        self._progressed_replay("completed", "completed")
+
+    def test_work_order_lock_mapper_uses_dict_rows(self):
+        row = {
+            "work_order_pk": 1, "order_id": self.order_id, "erp_type": "production",
+            "status": "queued", "product_code": "ITEM", "target_quantity": Decimal("1.5"),
+            "started_at": None, "completed_at": None, "source_system": "mes_web",
+            "source_file": None, "external_ref": None, "payload": {}, "metadata": {},
+            "created_at": datetime(2026, 7, 15), "updated_at": datetime(2026, 7, 15),
+        }
+        result = mesql_v2._select_completion_bridge_work_order_for_update_cursor(
+            _BridgeCursor(one=[row]), self.order_id
+        )
+        self.assertEqual(result["target_quantity"], 1.5)
+        self.assertEqual(result["created_at"], "2026-07-15T00:00:00")
+
+    def test_release_lock_rejects_duplicate_rows(self):
+        self._error(
+            "RUNTIME_COMPLETION_BRIDGE_RELEASE_CONFLICT",
+            lambda: mesql_v2._select_completion_bridge_release_for_update_cursor(
+                _BridgeCursor(all_rows=[[self.release, deepcopy(self.release)]]), self.order_id
+            ),
+        )
+
+    def test_binding_lock_is_lifecycle_join_scoped(self):
+        cursor = _BridgeCursor(all_rows=[[self.bindings[0]]])
+        result = mesql_v2._list_completion_bridge_bindings_for_update_cursor(
+            cursor, self.order_id
+        )
+        self.assertEqual(result[0]["work_order_operation_id"], self.operation_ids[0])
+        self.assertEqual(cursor.executed[0][1], {"work_order_id": self.order_id})
+
+    def test_execution_state_lock_mapper_includes_pk(self):
+        row = {
+            "execution_state_pk": 9, "execution_state_id": "STATE-1",
+            **self.runtime, "operation_completion_policy": "auto_close_on_required_steps",
+            "current_step_code": None, "started_at": None, "evidence_completed_at": None,
+            "pending_final_approval_at": None, "last_event_id": None,
+            "last_approval_id": None, "created_at": None, "updated_at": None,
+        }
+        result = mesql_v2._select_completion_bridge_execution_state_for_update_cursor(
+            _BridgeCursor(one=[row]), self.operation_ids[0]
+        )
+        self.assertEqual(result["execution_state_pk"], 9)
+
+    def test_runtime_step_lock_mapper_includes_pk(self):
+        row = {
+            "work_order_operation_step_pk": 5, "work_order_operation_step_id": "STEP-1",
+            "work_order_operation_id": self.operation_ids[0], "work_order_id": self.order_id,
+            "operation_code": "OP-10", "step_code": "S1", "step_no": 1,
+            "station_code": "ST-10", "status": "completed", "started_at": None,
+            "completed_at": datetime(2026, 7, 15), "started_by_event_id": None,
+            "completed_by_event_id": "E1", "required_for_completion": True,
+            "records_duration": True, "approval_required_after_finish": False,
+            "created_at": None, "updated_at": None, "metadata": {},
+        }
+        result = mesql_v2._list_completion_bridge_runtime_steps_for_update_cursor(
+            _BridgeCursor(all_rows=[[row]]), self.operation_ids[0]
+        )
+        self.assertEqual(result[0]["work_order_operation_step_pk"], 5)
+        self.assertEqual(result[0]["completed_at"], "2026-07-15T00:00:00")
+
+    def test_station_queue_lock_normalizes_without_mutation(self):
+        stations = ["ST-20", "ST-10", "ST-20"]
+        cursor = _BridgeCursor(all_rows=[[self.initial_queue]])
+        result = mesql_v2._list_completion_bridge_station_queue_rows_for_update_cursor(
+            cursor, stations
+        )
+        self.assertEqual(stations, ["ST-20", "ST-10", "ST-20"])
+        self.assertEqual(cursor.executed[0][1]["station_codes"], ["ST-10", "ST-20"])
+        self.assertEqual(result[0]["station_queue_pk"], 10)
+
+    def test_successor_lifecycle_write_is_guarded(self):
+        cursor = _BridgeCursor(one=[self.operations[1]])
+        result = mesql_v2._queue_successor_lifecycle_cursor(
+            cursor, work_order_operation_id=self.operation_ids[1]
+        )
+        self.assertEqual(result["work_order_operation_id"], self.operation_ids[1])
+        self.assertEqual(cursor.executed[0][1], {"work_order_operation_id": self.operation_ids[1]})
+
+    def test_successor_queue_insert_uses_jsonb_payload_and_metadata(self):
+        snapshot = mesql_v2._build_completion_bridge_successor_queue_snapshot(
+            release=self.release, predecessor_operation=self.operations[0],
+            successor_operation=self.operations[1], queue_rank=8,
+        )
+        returned = {"station_queue_pk": 12, **snapshot, "created_at": None, "updated_at": None}
+        cursor = _BridgeCursor(one=[returned])
+        result = mesql_v2._insert_completion_bridge_successor_queue_cursor(cursor, snapshot)
+        self.assertEqual(result["source"], "runtime_completion_bridge")
+        self.assertNotIn("source", cursor.executed[0][1])
+        self.assertEqual(_unwrap_json_value(cursor.executed[0][1]["metadata"]), snapshot["metadata"])
+
+    def test_work_order_completion_write_maps_timestamp(self):
+        row = {"work_order_pk": 1, **self.work_order, "erp_type": "production",
+               "product_code": "ITEM", "target_quantity": 1, "started_at": None,
+               "source_system": "mes_web", "source_file": None, "external_ref": None,
+               "created_at": None, "updated_at": None}
+        row.update(status="completed", completed_at=self.runtime["closed_at"])
+        result = mesql_v2._complete_work_order_from_runtime_cursor(
+            _BridgeCursor(one=[row]), work_order_id=self.order_id,
+            closed_at=self.runtime["closed_at"],
+        )
+        self.assertEqual(result["completed_at"], self.runtime["closed_at"])
+
+    def _snapshot_work_order_row(self, *, status="queued", completed_at=None):
+        return {
+            "work_order_pk": 1, "order_id": self.order_id,
+            "erp_type": "production", "status": status,
+            "product_code": "ITEM", "target_quantity": Decimal("1.5"),
+            "started_at": None, "completed_at": completed_at,
+            "source_system": "mes_web", "source_file": None,
+            "external_ref": None, "payload": {"keep": True},
+            "metadata": {"keep": True}, "created_at": datetime(2026, 7, 15),
+            "updated_at": datetime(2026, 7, 15),
+        }
+
+    def _snapshot_execution_row(self):
+        return {
+            "execution_state_id": "STATE-1", **self.runtime,
+            "operation_completion_policy": "auto_close_on_required_steps",
+            "current_step_code": None, "started_at": None,
+            "evidence_completed_at": self.runtime["closed_at"],
+            "pending_final_approval_at": None, "last_event_id": "EVENT-1",
+            "last_approval_id": None, "created_at": datetime(2026, 7, 15),
+            "updated_at": datetime(2026, 7, 15),
+        }
+
+    def test_snapshot_nonfinal_shape_and_exact_scoping(self):
+        completed = deepcopy(self.operations[0])
+        completed.update(status="completed", completed_at=self.runtime["closed_at"])
+        current_queue = deepcopy(self.initial_queue)
+        current_queue["status"] = "completed"
+        successor = deepcopy(self.operations[1])
+        successor["status"] = "queued"
+        successor_queue = mesql_v2._build_completion_bridge_successor_queue_snapshot(
+            release=self.release, predecessor_operation=completed,
+            successor_operation=successor, queue_rank=8,
+        )
+        successor_queue.update(station_queue_pk=11, created_at=None, updated_at=None)
+        cursor = _BridgeCursor(
+            one=[self._snapshot_execution_row(), completed, successor, self._snapshot_work_order_row()],
+            all_rows=[[current_queue], [successor_queue]],
+        )
+        result = mesql_v2._read_completion_bridge_snapshot_cursor(
+            cursor, work_order_id=self.order_id,
+            completed_work_order_operation_id=self.operation_ids[0],
+            successor_work_order_operation_id=self.operation_ids[1],
+        )
+        self.assertEqual(set(result), {
+            "execution_state", "completed_operation", "completed_queue",
+            "successor_operation", "successor_queue", "work_order",
+        })
+        self.assertEqual(result["work_order"]["target_quantity"], 1.5)
+        for _sql, params in cursor.executed[1:5]:
+            if "work_order_id" in params:
+                self.assertEqual(params["work_order_id"], self.order_id)
+
+    def test_snapshot_final_shape_uses_none_successor(self):
+        completed = deepcopy(self.operations[0])
+        completed.update(status="completed", completed_at=self.runtime["closed_at"])
+        current_queue = deepcopy(self.initial_queue)
+        current_queue["status"] = "completed"
+        cursor = _BridgeCursor(
+            one=[self._snapshot_execution_row(), completed,
+                 self._snapshot_work_order_row(status="completed", completed_at=self.runtime["closed_at"])],
+            all_rows=[[current_queue]],
+        )
+        result = mesql_v2._read_completion_bridge_snapshot_cursor(
+            cursor, work_order_id=self.order_id,
+            completed_work_order_operation_id=self.operation_ids[0],
+        )
+        self.assertIsNone(result["successor_operation"])
+        self.assertIsNone(result["successor_queue"])
+        self.assertEqual(len(cursor.executed), 4)
+
+    def test_snapshot_duplicate_exact_queue_is_conflict(self):
+        completed = deepcopy(self.operations[0])
+        cursor = _BridgeCursor(
+            one=[self._snapshot_execution_row(), completed],
+            all_rows=[[self.initial_queue, deepcopy(self.initial_queue)]],
+        )
+        self._error(
+            "RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT",
+            lambda: mesql_v2._read_completion_bridge_snapshot_cursor(
+                cursor, work_order_id=self.order_id,
+                completed_work_order_operation_id=self.operation_ids[0],
+            ),
+        )
+
+    def test_first_write_invariants_validate_authoritative_nonfinal_snapshot(self):
+        expected = self._classify()
+        completed = deepcopy(self.operations[0])
+        completed.update(status="completed", completed_at=self.runtime["closed_at"])
+        completed_queue = deepcopy(self.initial_queue)
+        completed_queue["status"] = "completed"
+        successor = deepcopy(self.operations[1])
+        successor["status"] = "queued"
+        successor_queue = mesql_v2._build_completion_bridge_successor_queue_snapshot(
+            release=self.release, predecessor_operation=completed,
+            successor_operation=successor, queue_rank=8,
+        )
+        successor_queue.update(station_queue_pk=11, created_at=None, updated_at=None)
+        cursor = _BridgeCursor(
+            one=[self._snapshot_execution_row(), completed, successor, self._snapshot_work_order_row()],
+            all_rows=[[completed_queue], [successor_queue]],
+        )
+        snapshot = mesql_v2._validate_completion_bridge_first_write_invariants_cursor(
+            cursor, expected
+        )
+        self.assertEqual(snapshot["completed_operation"]["status"], "completed")
+        self.assertEqual(snapshot["successor_operation"]["status"], "queued")
+
+    def test_successor_queue_snapshot_does_not_mutate_inputs(self):
+        release = deepcopy(self.release)
+        predecessor = deepcopy(self.operations[0])
+        successor = deepcopy(self.operations[1])
+        before = deepcopy((release, predecessor, successor))
+        snapshot = mesql_v2._build_completion_bridge_successor_queue_snapshot(
+            release=release, predecessor_operation=predecessor,
+            successor_operation=successor, queue_rank=8,
+        )
+        self.assertEqual((release, predecessor, successor), before)
+        self.assertEqual(snapshot["source"], "runtime_completion_bridge")
+        self.assertEqual(set(snapshot["metadata"]), {
+            "source", "release_id", "predecessor_work_order_operation_id"
+        })
+
+    def test_write_primitives_use_exact_parameters(self):
+        cursor = _BridgeCursor(one=[deepcopy(self.operations[0]), deepcopy(self.initial_queue)])
+        mesql_v2._complete_lifecycle_operation_from_runtime_cursor(
+            cursor, work_order_operation_id=self.operation_ids[0],
+            closed_at=self.runtime["closed_at"],
+        )
+        mesql_v2._complete_current_queue_from_runtime_cursor(cursor, station_queue_pk=10)
+        self.assertEqual(cursor.executed[0][1]["work_order_operation_id"], self.operation_ids[0])
+        self.assertEqual(cursor.executed[1][1], {"station_queue_pk": 10})
+
+    def test_private_primitives_open_no_connections(self):
+        for name in (
+            "_select_completion_bridge_applicability_cursor",
+            "_get_completion_bridge_schema_readiness_cursor",
+            "_select_completion_bridge_work_order_for_update_cursor",
+            "_complete_lifecycle_operation_from_runtime_cursor",
+            "_read_completion_bridge_snapshot_cursor",
+        ):
+            source = inspect.getsource(getattr(mesql_v2, name))
+            self.assertNotIn("database_connection", source)
+            self.assertNotIn(".commit(", source)
+            self.assertNotIn(".rollback(", source)
+
+    def test_finish_execution_step_has_no_bridge_integration(self):
+        self.assertNotIn("completion_bridge", inspect.getsource(mesql_v2.finish_execution_step))
+
+
+def _make_bridge_marker_error_test(metadata):
+    def test(self):
+        self._error(
+            "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT",
+            lambda: mesql_v2._is_completion_bridge_applicable({"metadata": deepcopy(metadata)}),
+        )
+    return test
+
+
+for _name, _metadata in {
+    "missing_release": {"source": "work_order_release"},
+    "blank_release": {"source": "work_order_release", "release_id": " "},
+    "missing_source": {"release_id": "REL"},
+    "wrong_source_with_release": {"source": "MESQL", "release_id": "REL"},
+    "source_none": {"source": None, "release_id": "REL"},
+    "release_nonstring": {"source": "work_order_release", "release_id": 1},
+}.items():
+    setattr(CompletionBridgePrimitiveTests, f"test_marker_error_{_name}", _make_bridge_marker_error_test(_metadata))
+
+
+def _make_bridge_readiness_test(row, expected):
+    def test(self):
+        self.assertEqual(
+            mesql_v2._get_completion_bridge_schema_readiness_cursor(_BridgeCursor(one=[row])),
+            expected,
+        )
+    return test
+
+
+for _name, _row, _expected in (
+    ("release_absent", (False, True), {"release_table_ready": False, "binding_table_ready": True, "ready": False}),
+    ("binding_absent", (True, False), {"release_table_ready": True, "binding_table_ready": False, "ready": False}),
+    ("both_absent", (False, False), {"release_table_ready": False, "binding_table_ready": False, "ready": False}),
+    ("dict_row", {"release_table_ready": True, "binding_table_ready": True}, {"release_table_ready": True, "binding_table_ready": True, "ready": True}),
+):
+    setattr(CompletionBridgePrimitiveTests, f"test_readiness_{_name}", _make_bridge_readiness_test(_row, _expected))
+
+
+_BRIDGE_SQL_CONTRACTS = {
+    "applicability": ("SELECT_COMPLETION_BRIDGE_APPLICABILITY_CURSOR_SQL", ("work_order_operation_id = %(work_order_operation_id)s::uuid", "metadata"), ("for update", "work_order_route_releases", "route_bindings", "select *")),
+    "schema_catalog": ("SELECT_COMPLETION_BRIDGE_SCHEMA_READINESS_CURSOR_SQL", ("to_regclass('mes.work_order_route_releases')", "to_regclass('mes.work_order_operation_route_bindings')"), ("from mes.work_order_route", "for update", "select *")),
+    "work_order_lock": ("SELECT_COMPLETION_BRIDGE_WORK_ORDER_FOR_UPDATE_CURSOR_SQL", ("order_id = %(work_order_id)s", "for update"), ("select *",)),
+    "release_lock": ("SELECT_COMPLETION_BRIDGE_RELEASE_FOR_UPDATE_CURSOR_SQL", ("order by release_pk", "for update"), ("select *", " or ")),
+    "lifecycle_lock": ("SELECT_COMPLETION_BRIDGE_OPERATIONS_FOR_UPDATE_CURSOR_SQL", ("order by work_order_operation_id", "for update"), ("select *",)),
+    "binding_lock": ("SELECT_COMPLETION_BRIDGE_BINDINGS_FOR_UPDATE_CURSOR_SQL", ("join mes.work_order_operations", "order by binding.binding_pk", "for update of binding"), ("select *",)),
+    "execution_lock": ("SELECT_COMPLETION_BRIDGE_EXECUTION_STATE_FOR_UPDATE_CURSOR_SQL", ("execution_state_pk", "for update"), ("select *",)),
+    "steps_lock": ("SELECT_COMPLETION_BRIDGE_RUNTIME_STEPS_FOR_UPDATE_CURSOR_SQL", ("order by step_no", "for update"), ("select *",)),
+    "station_lock": ("LOCK_COMPLETION_BRIDGE_STATION_SCOPE_CURSOR_SQL", ("pg_advisory_xact_lock", "mes:work_order_release:station_queue:", "%(station_code)s"), ("commit",)),
+    "queue_lock": ("SELECT_COMPLETION_BRIDGE_STATION_QUEUE_ROWS_FOR_UPDATE_CURSOR_SQL", ("any(%(station_codes)s)", "order by station_code asc, station_queue_pk asc", "for update"), ("select *",)),
+    "lifecycle_update": ("UPDATE_COMPLETION_BRIDGE_LIFECYCLE_CURSOR_SQL", ("status = 'completed'", "completed_at = %(closed_at)s", "returning"), ("payload =", "metadata =", "good_quantity =", "scrap_quantity =")),
+    "queue_update": ("UPDATE_COMPLETION_BRIDGE_CURRENT_QUEUE_CURSOR_SQL", ("status = 'completed'", "station_queue_pk = %(station_queue_pk)s", "returning"), ("queue_rank =", "payload =", "metadata =")),
+    "successor_update": ("UPDATE_COMPLETION_BRIDGE_SUCCESSOR_LIFECYCLE_CURSOR_SQL", ("status = 'queued'", "status = 'planned'", "returning"), ("on conflict",)),
+    "successor_insert": ("INSERT_COMPLETION_BRIDGE_SUCCESSOR_QUEUE_CURSOR_SQL", ("runtime_completion_bridge", "work_order_operation_id", "returning"), ("on conflict", "route_operation_id")),
+    "work_order_update": ("UPDATE_COMPLETION_BRIDGE_WORK_ORDER_CURSOR_SQL", ("status = 'completed'", "completed_at = %(closed_at)s", "returning"), ("payload =", "metadata =", "started_at =")),
+    "snapshot_operation": ("SELECT_COMPLETION_BRIDGE_OPERATION_CURSOR_SQL", ("order_id = %(work_order_id)s", "work_order_operation_id = %(work_order_operation_id)s::uuid"), ("for update", "select *")),
+    "snapshot_queue": ("SELECT_COMPLETION_BRIDGE_QUEUE_CURSOR_SQL", ("order_id = %(work_order_id)s", "work_order_operation_id = %(work_order_operation_id)s::uuid"), ("for update", "select *")),
+    "snapshot_order": ("SELECT_COMPLETION_BRIDGE_WORK_ORDER_CURSOR_SQL", ("order_id = %(work_order_id)s",), ("for update", "select *")),
+}
+
+for _name, (_constant, _required, _forbidden) in _BRIDGE_SQL_CONTRACTS.items():
+    setattr(
+        CompletionBridgePrimitiveTests,
+        f"test_bridge_sql_{_name}",
+        _make_sql_contract_test(_constant, _required, _forbidden),
+    )
+
+
+def _make_identity_mutation_test(target, field, value, expected_detail):
+    def test(self):
+        release = deepcopy(self.release)
+        operations = deepcopy(self.operations)
+        bindings = deepcopy(self.bindings)
+        if target == "release":
+            release[field] = value
+            callback = lambda: mesql_v2._validate_completion_bridge_release_identity(release, operations)
+        elif target == "operation":
+            operations[1][field] = value
+            callback = lambda: mesql_v2._validate_completion_bridge_release_identity(release, operations)
+        elif target == "operation_metadata":
+            operations[1]["metadata"][field] = value
+            callback = lambda: mesql_v2._validate_completion_bridge_release_identity(release, operations)
+        else:
+            bindings[1][field] = value
+            callback = lambda: mesql_v2._validate_completion_bridge_binding_set(release, operations, bindings)
+        self._error(expected_detail, callback)
+    return test
+
+
+for _name, _target, _field, _value, _detail in (
+    ("count", "release", "route_operation_count", 3, "RUNTIME_COMPLETION_BRIDGE_RELEASE_CONFLICT"),
+    ("mode", "release", "release_mode", "explicit_existing_operation_mapping", "RUNTIME_COMPLETION_BRIDGE_RELEASE_CONFLICT"),
+    ("sequence_duplicate", "operation", "sequence_no", 10, "RUNTIME_COMPLETION_BRIDGE_SEQUENCE_CONFLICT"),
+    ("sequence_zero", "operation", "sequence_no", 0, "RUNTIME_COMPLETION_BRIDGE_SEQUENCE_CONFLICT"),
+    ("sequence_bool", "operation", "sequence_no", True, "RUNTIME_COMPLETION_BRIDGE_SEQUENCE_CONFLICT"),
+    ("foreign_order", "operation", "order_id", "WO-FOREIGN", "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT"),
+    ("route_code", "operation_metadata", "route_code", "OTHER", "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT"),
+    ("release_id", "operation_metadata", "release_id", "OTHER", "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT"),
+    ("binding_source", "binding", "binding_source", "manual_setup", "RUNTIME_COMPLETION_BRIDGE_BINDING_CONFLICT"),
+    ("binding_route", "binding", "route_operation_id", "OTHER", "RUNTIME_COMPLETION_BRIDGE_BINDING_CONFLICT"),
+    ("binding_id", "binding", "binding_id", "OTHER", "RUNTIME_COMPLETION_BRIDGE_BINDING_CONFLICT"),
+    ("binding_operation", "binding", "work_order_operation_id", "00000000-0000-0000-0000-000000000000", "RUNTIME_COMPLETION_BRIDGE_BINDING_CONFLICT"),
+):
+    setattr(
+        CompletionBridgePrimitiveTests,
+        f"test_identity_error_{_name}",
+        _make_identity_mutation_test(_target, _field, _value, _detail),
+    )
+
+
+def _make_runtime_identity_error_test(field, value, detail):
+    def test(self):
+        runtime = deepcopy(self.runtime)
+        if field.startswith("metadata."):
+            runtime["metadata"][field.split(".", 1)[1]] = value
+        else:
+            runtime[field] = value
+        self._error(detail, lambda: mesql_v2._validate_completion_bridge_runtime_identity(
+            runtime, self.operations[0], self.bindings[0]
+        ))
+    return test
+
+
+for _name, _field, _value, _detail in (
+    ("not_closed", "execution_status", "active", "RUNTIME_COMPLETION_BRIDGE_RUNTIME_NOT_CLOSED"),
+    ("missing_closed_at", "closed_at", None, "RUNTIME_COMPLETION_BRIDGE_RUNTIME_NOT_CLOSED"),
+    ("order", "work_order_id", "OTHER", "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT"),
+    ("uuid", "work_order_operation_id", "00000000-0000-0000-0000-000000000000", "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT"),
+    ("code", "operation_code", "OTHER", "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT"),
+    ("station", "station_code", "OTHER", "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT"),
+    ("binding", "metadata.route_operation_id", "OTHER", "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT"),
+):
+    setattr(
+        CompletionBridgePrimitiveTests,
+        f"test_runtime_identity_error_{_name}",
+        _make_runtime_identity_error_test(_field, _value, _detail),
+    )
+
+
+def _make_rank_status_test(status, included):
+    def test(self):
+        rows = [{"station_code": "ST", "status": status, "queue_rank": 9}]
+        self.assertEqual(
+            mesql_v2._compute_completion_bridge_next_queue_rank(rows, "ST"),
+            10 if included else 0,
+        )
+    return test
+
+
+for _status, _included in (
+    ("queued", True), ("active", True), ("pending_approval", True),
+    ("ready", False), ("completed", False), ("cancelled", False),
+):
+    setattr(
+        CompletionBridgePrimitiveTests,
+        f"test_rank_status_{_status}",
+        _make_rank_status_test(_status, _included),
+    )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1660,6 +1660,217 @@ ORDER BY step_no ASC
 FOR UPDATE
 """
 
+SELECT_COMPLETION_BRIDGE_APPLICABILITY_CURSOR_SQL = """
+SELECT
+    work_order_operation_id,
+    order_id,
+    operation_code,
+    sequence_no,
+    station_code,
+    status,
+    completed_at,
+    payload,
+    metadata
+FROM mes.work_order_operations
+WHERE work_order_operation_id = %(work_order_operation_id)s::uuid
+LIMIT 1
+"""
+
+SELECT_COMPLETION_BRIDGE_SCHEMA_READINESS_CURSOR_SQL = """
+SELECT
+    to_regclass('mes.work_order_route_releases') IS NOT NULL AS release_table_ready,
+    to_regclass('mes.work_order_operation_route_bindings') IS NOT NULL AS binding_table_ready
+"""
+
+SELECT_COMPLETION_BRIDGE_WORK_ORDER_FOR_UPDATE_CURSOR_SQL = """
+SELECT
+    work_order_pk, order_id, erp_type, status, product_code, target_quantity,
+    started_at, completed_at, source_system, source_file, external_ref,
+    payload, metadata, created_at, updated_at
+FROM mes.work_orders
+WHERE order_id = %(work_order_id)s
+FOR UPDATE
+"""
+
+SELECT_COMPLETION_BRIDGE_RELEASE_FOR_UPDATE_CURSOR_SQL = """
+SELECT
+    release_pk, release_id, order_id, process_route_id, route_code,
+    route_version, release_mode, release_source, released_by, released_at,
+    route_operation_count, operation_set_digest, metadata, created_at
+FROM mes.work_order_route_releases
+WHERE order_id = %(work_order_id)s
+ORDER BY release_pk ASC
+FOR UPDATE
+"""
+
+SELECT_COMPLETION_BRIDGE_OPERATIONS_FOR_UPDATE_CURSOR_SQL = """
+SELECT
+    work_order_operation_id, order_id, mesql_work_order_operation_id,
+    operation_no, operation_code, operation_name, sequence_no, station_code,
+    status, planned_quantity, good_quantity, scrap_quantity, uom_code,
+    started_at, completed_at, payload, metadata, created_at, updated_at
+FROM mes.work_order_operations
+WHERE order_id = %(work_order_id)s
+ORDER BY work_order_operation_id ASC
+FOR UPDATE
+"""
+
+SELECT_COMPLETION_BRIDGE_BINDINGS_FOR_UPDATE_CURSOR_SQL = """
+SELECT
+    binding.binding_pk, binding.binding_id, binding.work_order_operation_id,
+    binding.route_operation_id, binding.binding_source, binding.bound_by,
+    binding.bound_at, binding.metadata, binding.created_at
+FROM mes.work_order_operation_route_bindings binding
+JOIN mes.work_order_operations operation
+  ON operation.work_order_operation_id = binding.work_order_operation_id
+WHERE operation.order_id = %(work_order_id)s
+ORDER BY binding.binding_pk ASC
+FOR UPDATE OF binding
+"""
+
+SELECT_COMPLETION_BRIDGE_EXECUTION_STATE_FOR_UPDATE_CURSOR_SQL = """
+SELECT
+    execution_state_pk, execution_state_id, work_order_operation_id,
+    work_order_id, station_code, operation_code, execution_status,
+    operation_completion_policy, current_step_code, started_at,
+    evidence_completed_at, pending_final_approval_at, closed_at,
+    last_event_id, last_approval_id, created_at, updated_at, metadata
+FROM mes.work_order_operation_execution_state
+WHERE work_order_operation_id = %(work_order_operation_id)s::uuid
+FOR UPDATE
+"""
+
+SELECT_COMPLETION_BRIDGE_RUNTIME_STEPS_FOR_UPDATE_CURSOR_SQL = """
+SELECT
+    work_order_operation_step_pk, work_order_operation_step_id,
+    work_order_operation_id, work_order_id, operation_code, step_code,
+    step_no, station_code, status, started_at, completed_at,
+    started_by_event_id, completed_by_event_id, required_for_completion,
+    records_duration, approval_required_after_finish, created_at, updated_at,
+    metadata
+FROM mes.work_order_operation_steps
+WHERE work_order_operation_id = %(work_order_operation_id)s::uuid
+ORDER BY step_no ASC
+FOR UPDATE
+"""
+
+LOCK_COMPLETION_BRIDGE_STATION_SCOPE_CURSOR_SQL = """
+SELECT pg_advisory_xact_lock(
+    hashtextextended(
+        'mes:work_order_release:station_queue:' || %(station_code)s,
+        0
+    )
+)
+"""
+
+SELECT_COMPLETION_BRIDGE_STATION_QUEUE_ROWS_FOR_UPDATE_CURSOR_SQL = """
+SELECT
+    station_queue_pk, station_code, order_id, queue_rank, status, source,
+    payload, metadata, created_at, updated_at, work_order_operation_id
+FROM mes.station_queue
+WHERE station_code = ANY(%(station_codes)s)
+ORDER BY station_code ASC, station_queue_pk ASC
+FOR UPDATE
+"""
+
+UPDATE_COMPLETION_BRIDGE_LIFECYCLE_CURSOR_SQL = """
+UPDATE mes.work_order_operations
+SET status = 'completed',
+    completed_at = %(closed_at)s,
+    updated_at = now()
+WHERE work_order_operation_id = %(work_order_operation_id)s::uuid
+  AND status IN ('queued', 'active')
+  AND completed_at IS NULL
+RETURNING
+    work_order_operation_id, order_id, mesql_work_order_operation_id,
+    operation_no, operation_code, operation_name, sequence_no, station_code,
+    status, planned_quantity, good_quantity, scrap_quantity, uom_code,
+    started_at, completed_at, payload, metadata, created_at, updated_at
+"""
+
+UPDATE_COMPLETION_BRIDGE_CURRENT_QUEUE_CURSOR_SQL = """
+UPDATE mes.station_queue
+SET status = 'completed',
+    updated_at = now()
+WHERE station_queue_pk = %(station_queue_pk)s
+  AND status IN ('queued', 'ready', 'active', 'pending_approval')
+RETURNING
+    station_queue_pk, station_code, order_id, queue_rank, status, source,
+    payload, metadata, created_at, updated_at, work_order_operation_id
+"""
+
+UPDATE_COMPLETION_BRIDGE_SUCCESSOR_LIFECYCLE_CURSOR_SQL = """
+UPDATE mes.work_order_operations
+SET status = 'queued',
+    updated_at = now()
+WHERE work_order_operation_id = %(work_order_operation_id)s::uuid
+  AND status = 'planned'
+  AND completed_at IS NULL
+RETURNING
+    work_order_operation_id, order_id, mesql_work_order_operation_id,
+    operation_no, operation_code, operation_name, sequence_no, station_code,
+    status, planned_quantity, good_quantity, scrap_quantity, uom_code,
+    started_at, completed_at, payload, metadata, created_at, updated_at
+"""
+
+INSERT_COMPLETION_BRIDGE_SUCCESSOR_QUEUE_CURSOR_SQL = """
+INSERT INTO mes.station_queue (
+    station_code, order_id, queue_rank, status, source, payload, metadata,
+    work_order_operation_id
+) VALUES (
+    %(station_code)s, %(order_id)s, %(queue_rank)s, 'queued',
+    'runtime_completion_bridge', %(payload)s, %(metadata)s,
+    %(work_order_operation_id)s::uuid
+)
+RETURNING
+    station_queue_pk, station_code, order_id, queue_rank, status, source,
+    payload, metadata, created_at, updated_at, work_order_operation_id
+"""
+
+UPDATE_COMPLETION_BRIDGE_WORK_ORDER_CURSOR_SQL = """
+UPDATE mes.work_orders
+SET status = 'completed',
+    completed_at = %(closed_at)s,
+    updated_at = now()
+WHERE order_id = %(work_order_id)s
+  AND status <> 'completed'
+  AND completed_at IS NULL
+RETURNING
+    work_order_pk, order_id, erp_type, status, product_code, target_quantity,
+    started_at, completed_at, source_system, source_file, external_ref,
+    payload, metadata, created_at, updated_at
+"""
+
+SELECT_COMPLETION_BRIDGE_OPERATION_CURSOR_SQL = """
+SELECT
+    work_order_operation_id, order_id, mesql_work_order_operation_id,
+    operation_no, operation_code, operation_name, sequence_no, station_code,
+    status, planned_quantity, good_quantity, scrap_quantity, uom_code,
+    started_at, completed_at, payload, metadata, created_at, updated_at
+FROM mes.work_order_operations
+WHERE order_id = %(work_order_id)s
+  AND work_order_operation_id = %(work_order_operation_id)s::uuid
+"""
+
+SELECT_COMPLETION_BRIDGE_QUEUE_CURSOR_SQL = """
+SELECT
+    station_queue_pk, station_code, order_id, queue_rank, status, source,
+    payload, metadata, created_at, updated_at, work_order_operation_id
+FROM mes.station_queue
+WHERE order_id = %(work_order_id)s
+  AND work_order_operation_id = %(work_order_operation_id)s::uuid
+ORDER BY station_queue_pk ASC
+"""
+
+SELECT_COMPLETION_BRIDGE_WORK_ORDER_CURSOR_SQL = """
+SELECT
+    work_order_pk, order_id, erp_type, status, product_code, target_quantity,
+    started_at, completed_at, source_system, source_file, external_ref,
+    payload, metadata, created_at, updated_at
+FROM mes.work_orders
+WHERE order_id = %(work_order_id)s
+"""
+
 INSERT_EXECUTION_STATE_SQL = """
 INSERT INTO mes.work_order_operation_execution_state (
     execution_state_id,
@@ -4195,6 +4406,927 @@ def _operation_event_row(row: Any) -> JsonObject:
         "rejection_reason": _nullable_text(_field(row, 15, "rejection_reason")),
         "created_at": _field(row, 16, "created_at"),
     })
+
+
+def _completion_bridge_applicability_row(row: Any) -> JsonObject:
+    names = (
+        "work_order_operation_id", "order_id", "operation_code",
+        "sequence_no", "station_code", "status", "completed_at", "payload",
+        "metadata",
+    )
+    result = {name: _field(row, index, name) for index, name in enumerate(names)}
+    if result["payload"] is None:
+        result["payload"] = {}
+    if result["metadata"] is None:
+        result["metadata"] = {}
+    return _json_safe(result)
+
+
+def _completion_bridge_execution_state_row(row: Any) -> JsonObject:
+    names = (
+        "execution_state_pk", "execution_state_id", "work_order_operation_id",
+        "work_order_id", "station_code", "operation_code", "execution_status",
+        "operation_completion_policy", "current_step_code", "started_at",
+        "evidence_completed_at", "pending_final_approval_at", "closed_at",
+        "last_event_id", "last_approval_id", "created_at", "updated_at",
+        "metadata",
+    )
+    result = {name: _field(row, index, name) for index, name in enumerate(names)}
+    result["metadata"] = result["metadata"] or {}
+    return _json_safe(result)
+
+
+def _completion_bridge_runtime_step_row(row: Any) -> JsonObject:
+    names = (
+        "work_order_operation_step_pk", "work_order_operation_step_id",
+        "work_order_operation_id", "work_order_id", "operation_code",
+        "step_code", "step_no", "station_code", "status", "started_at",
+        "completed_at", "started_by_event_id", "completed_by_event_id",
+        "required_for_completion", "records_duration",
+        "approval_required_after_finish", "created_at", "updated_at",
+        "metadata",
+    )
+    result = {name: _field(row, index, name) for index, name in enumerate(names)}
+    result["metadata"] = result["metadata"] or {}
+    return _json_safe(result)
+
+
+def _select_completion_bridge_applicability_cursor(
+    cursor: Any,
+    work_order_operation_id: str,
+) -> JsonObject | None:
+    cursor.execute(
+        SELECT_COMPLETION_BRIDGE_APPLICABILITY_CURSOR_SQL,
+        {"work_order_operation_id": work_order_operation_id},
+    )
+    row = cursor.fetchone()
+    return _completion_bridge_applicability_row(row) if row else None
+
+
+def _is_completion_bridge_applicable(lifecycle_row: JsonObject | None) -> bool:
+    if lifecycle_row is None:
+        return False
+    metadata = lifecycle_row.get("metadata")
+    if not isinstance(metadata, dict):
+        raise MesqlV2Error(
+            "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT", status_code=409
+        )
+    source_present = "source" in metadata
+    release_present = "release_id" in metadata
+    source = metadata.get("source")
+    release_id = metadata.get("release_id")
+    if not source_present and not release_present:
+        return False
+    if (
+        source == "work_order_release"
+        and isinstance(release_id, str)
+        and bool(release_id.strip())
+    ):
+        return True
+    if source_present and source != "work_order_release" and not release_present:
+        return False
+    raise MesqlV2Error(
+        "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT", status_code=409
+    )
+
+
+def _get_completion_bridge_schema_readiness_cursor(cursor: Any) -> JsonObject:
+    cursor.execute(SELECT_COMPLETION_BRIDGE_SCHEMA_READINESS_CURSOR_SQL)
+    row = cursor.fetchone()
+    release_ready = bool(_field(row, 0, "release_table_ready")) if row else False
+    binding_ready = bool(_field(row, 1, "binding_table_ready")) if row else False
+    return {
+        "release_table_ready": release_ready,
+        "binding_table_ready": binding_ready,
+        "ready": release_ready and binding_ready,
+    }
+
+
+def _validate_completion_bridge_schema_readiness(readiness: JsonObject) -> None:
+    if not isinstance(readiness, dict) or readiness.get("ready") is not True:
+        raise MesqlV2Error(
+            "RUNTIME_COMPLETION_BRIDGE_SCHEMA_NOT_READY", status_code=503
+        )
+
+
+def _select_completion_bridge_work_order_for_update_cursor(
+    cursor: Any,
+    work_order_id: str,
+) -> JsonObject | None:
+    cursor.execute(
+        SELECT_COMPLETION_BRIDGE_WORK_ORDER_FOR_UPDATE_CURSOR_SQL,
+        {"work_order_id": work_order_id},
+    )
+    row = cursor.fetchone()
+    return _release_work_order_full_row(row) if row else None
+
+
+def _select_completion_bridge_release_for_update_cursor(
+    cursor: Any,
+    work_order_id: str,
+) -> JsonObject | None:
+    cursor.execute(
+        SELECT_COMPLETION_BRIDGE_RELEASE_FOR_UPDATE_CURSOR_SQL,
+        {"work_order_id": work_order_id},
+    )
+    rows = cursor.fetchall()
+    if len(rows) > 1:
+        raise MesqlV2Error(
+            "RUNTIME_COMPLETION_BRIDGE_RELEASE_CONFLICT", status_code=409
+        )
+    return _work_order_route_release_row(rows[0]) if rows else None
+
+
+def _list_completion_bridge_operations_for_update_cursor(
+    cursor: Any,
+    work_order_id: str,
+) -> list[JsonObject]:
+    cursor.execute(
+        SELECT_COMPLETION_BRIDGE_OPERATIONS_FOR_UPDATE_CURSOR_SQL,
+        {"work_order_id": work_order_id},
+    )
+    return [_release_work_order_operation_full_row(row) for row in cursor.fetchall()]
+
+
+def _list_completion_bridge_bindings_for_update_cursor(
+    cursor: Any,
+    work_order_id: str,
+) -> list[JsonObject]:
+    cursor.execute(
+        SELECT_COMPLETION_BRIDGE_BINDINGS_FOR_UPDATE_CURSOR_SQL,
+        {"work_order_id": work_order_id},
+    )
+    return [_work_order_operation_route_binding_row(row) for row in cursor.fetchall()]
+
+
+def _select_completion_bridge_execution_state_for_update_cursor(
+    cursor: Any,
+    work_order_operation_id: str,
+) -> JsonObject | None:
+    cursor.execute(
+        SELECT_COMPLETION_BRIDGE_EXECUTION_STATE_FOR_UPDATE_CURSOR_SQL,
+        {"work_order_operation_id": work_order_operation_id},
+    )
+    row = cursor.fetchone()
+    return _completion_bridge_execution_state_row(row) if row else None
+
+
+def _list_completion_bridge_runtime_steps_for_update_cursor(
+    cursor: Any,
+    work_order_operation_id: str,
+) -> list[JsonObject]:
+    cursor.execute(
+        SELECT_COMPLETION_BRIDGE_RUNTIME_STEPS_FOR_UPDATE_CURSOR_SQL,
+        {"work_order_operation_id": work_order_operation_id},
+    )
+    return [_completion_bridge_runtime_step_row(row) for row in cursor.fetchall()]
+
+
+def _normalize_completion_bridge_station_lock_set(
+    current_station_code: Any,
+    successor_station_code: Any | None = None,
+) -> list[str]:
+    values = [current_station_code]
+    if successor_station_code is not None:
+        values.append(successor_station_code)
+    normalized: set[str] = set()
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            raise MesqlV2Error(
+                "RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT", status_code=409
+            )
+        normalized.add(value)
+    return sorted(normalized)
+
+
+def _lock_completion_bridge_station_scopes_cursor(
+    cursor: Any,
+    station_codes: list[str],
+) -> list[str]:
+    if not isinstance(station_codes, (list, tuple)) or not station_codes:
+        raise MesqlV2Error(
+            "RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT", status_code=409
+        )
+    normalized = _normalize_completion_bridge_station_lock_set(
+        station_codes[0],
+        None,
+    )
+    for value in station_codes[1:]:
+        normalized = sorted(set(normalized + _normalize_completion_bridge_station_lock_set(value)))
+    for station_code in normalized:
+        cursor.execute(
+            LOCK_COMPLETION_BRIDGE_STATION_SCOPE_CURSOR_SQL,
+            {"station_code": station_code},
+        )
+        cursor.fetchone()
+    return normalized
+
+
+def _list_completion_bridge_station_queue_rows_for_update_cursor(
+    cursor: Any,
+    station_codes: list[str],
+) -> list[JsonObject]:
+    normalized = _lockless_completion_bridge_station_set(station_codes)
+    cursor.execute(
+        SELECT_COMPLETION_BRIDGE_STATION_QUEUE_ROWS_FOR_UPDATE_CURSOR_SQL,
+        {"station_codes": normalized},
+    )
+    return [_work_order_release_initial_queue_row(row) for row in cursor.fetchall()]
+
+
+def _lockless_completion_bridge_station_set(station_codes: Any) -> list[str]:
+    if not isinstance(station_codes, (list, tuple)) or not station_codes:
+        raise MesqlV2Error(
+            "RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT", status_code=409
+        )
+    result: set[str] = set()
+    for station_code in station_codes:
+        if not isinstance(station_code, str) or not station_code.strip():
+            raise MesqlV2Error(
+                "RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT", status_code=409
+            )
+        result.add(station_code)
+    return sorted(result)
+
+
+def _select_exact_completion_bridge_queue(
+    rows: list[JsonObject],
+    *,
+    work_order_id: str,
+    work_order_operation_id: str,
+    station_code: str,
+) -> JsonObject:
+    matches = [
+        row for row in list(rows)
+        if row.get("order_id") == work_order_id
+        and str(row.get("work_order_operation_id")) == work_order_operation_id
+        and row.get("station_code") == station_code
+    ]
+    if not matches:
+        return {"classification": "missing", "row": None, "matches": []}
+    if len(matches) > 1:
+        return {"classification": "duplicate", "row": None, "matches": _json_safe(matches)}
+    return {"classification": "exact", "row": _json_safe(matches[0]), "matches": _json_safe(matches)}
+
+
+def _compute_completion_bridge_next_queue_rank(
+    station_rows: list[JsonObject],
+    station_code: str,
+) -> int:
+    ranks = []
+    for row in list(station_rows):
+        if row.get("station_code") != station_code:
+            continue
+        if row.get("status") not in {"queued", "active", "pending_approval"}:
+            continue
+        rank = row.get("queue_rank")
+        if isinstance(rank, bool) or not isinstance(rank, int) or rank < 0:
+            raise MesqlV2Error(
+                "RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT", status_code=409
+            )
+        ranks.append(rank)
+    return max(ranks) + 1 if ranks else 0
+
+
+def _completion_bridge_error(detail: str) -> None:
+    raise MesqlV2Error(detail, status_code=409)
+
+
+def _validate_completion_bridge_lifecycle_set(
+    release: JsonObject,
+    lifecycle_operations: list[JsonObject],
+) -> None:
+    if not isinstance(release, dict) or not isinstance(lifecycle_operations, list):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_RELEASE_CONFLICT")
+    expected_count = release.get("route_operation_count")
+    if (
+        isinstance(expected_count, bool)
+        or not isinstance(expected_count, int)
+        or expected_count != len(lifecycle_operations)
+        or expected_count <= 0
+    ):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_RELEASE_CONFLICT")
+    release_id = release.get("release_id")
+    order_id = release.get("order_id")
+    seen_sequences: set[int] = set()
+    seen_ids: set[str] = set()
+    for operation in lifecycle_operations:
+        sequence_no = operation.get("sequence_no")
+        if (
+            isinstance(sequence_no, bool)
+            or not isinstance(sequence_no, int)
+            or sequence_no <= 0
+            or sequence_no in seen_sequences
+        ):
+            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_SEQUENCE_CONFLICT")
+        operation_id = operation.get("work_order_operation_id")
+        try:
+            canonical_id = str(UUID(str(operation_id)))
+        except (TypeError, ValueError, AttributeError):
+            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
+        if operation_id != canonical_id or canonical_id in seen_ids:
+            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
+        metadata = operation.get("metadata")
+        if not isinstance(metadata, dict):
+            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
+        route_operation_id = metadata.get("route_operation_id")
+        if (
+            operation.get("order_id") != order_id
+            or metadata.get("source") != "work_order_release"
+            or metadata.get("release_id") != release_id
+            or metadata.get("process_route_id") != release.get("process_route_id")
+            or metadata.get("route_code") != release.get("route_code")
+            or metadata.get("route_version") != release.get("route_version")
+            or not isinstance(route_operation_id, str)
+            or not route_operation_id.strip()
+            or canonical_id != _derive_work_order_release_operation_id(
+                release_id, route_operation_id
+            )
+        ):
+            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
+        seen_sequences.add(sequence_no)
+        seen_ids.add(canonical_id)
+
+
+def _validate_completion_bridge_release_identity(
+    release: JsonObject | None,
+    lifecycle_operations: list[JsonObject],
+) -> None:
+    if not isinstance(release, dict):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_RELEASE_CONFLICT")
+    required = (
+        "release_id", "order_id", "process_route_id", "route_code",
+        "route_version", "route_operation_count", "operation_set_digest",
+    )
+    if any(release.get(name) in (None, "") for name in required):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_RELEASE_CONFLICT")
+    if release.get("release_mode") != "route_generated":
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_RELEASE_CONFLICT")
+    _validate_completion_bridge_lifecycle_set(release, lifecycle_operations)
+
+
+def _validate_completion_bridge_binding_set(
+    release: JsonObject,
+    lifecycle_operations: list[JsonObject],
+    bindings: list[JsonObject],
+) -> None:
+    if not isinstance(bindings, list) or len(bindings) != len(lifecycle_operations):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_BINDING_CONFLICT")
+    operations_by_id = {
+        operation["work_order_operation_id"]: operation
+        for operation in lifecycle_operations
+    }
+    seen_operation_ids: set[str] = set()
+    seen_binding_ids: set[str] = set()
+    for binding in bindings:
+        operation_id = str(binding.get("work_order_operation_id"))
+        operation = operations_by_id.get(operation_id)
+        metadata = binding.get("metadata")
+        route_operation_id = binding.get("route_operation_id")
+        expected_binding_id = (
+            _derive_work_order_release_binding_id(
+                release["release_id"], route_operation_id
+            )
+            if isinstance(route_operation_id, str) and route_operation_id.strip()
+            else None
+        )
+        if (
+            operation is None
+            or operation_id in seen_operation_ids
+            or binding.get("binding_id") in seen_binding_ids
+            or binding.get("binding_source") != "work_order_release"
+            or not isinstance(metadata, dict)
+            or metadata != {"release_id": release.get("release_id")}
+            or route_operation_id
+            != (operation.get("metadata") or {}).get("route_operation_id")
+            or binding.get("binding_id") != expected_binding_id
+        ):
+            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_BINDING_CONFLICT")
+        seen_operation_ids.add(operation_id)
+        seen_binding_ids.add(binding["binding_id"])
+    if seen_operation_ids != set(operations_by_id):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_BINDING_CONFLICT")
+
+
+def _recompute_completion_bridge_operation_set_digest(
+    release: JsonObject,
+    lifecycle_operations: list[JsonObject],
+    bindings: list[JsonObject],
+) -> str:
+    binding_by_operation = {
+        str(binding.get("work_order_operation_id")): binding
+        for binding in bindings
+    }
+    if len(binding_by_operation) != len(bindings):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_BINDING_CONFLICT")
+    pairs = []
+    for operation in lifecycle_operations:
+        operation_id = operation.get("work_order_operation_id")
+        binding = binding_by_operation.get(operation_id)
+        if binding is None:
+            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_BINDING_CONFLICT")
+        pairs.append({
+            "sequence_no": operation.get("sequence_no"),
+            "route_operation_id": binding.get("route_operation_id"),
+            "work_order_operation_id": operation_id,
+        })
+    try:
+        return _compute_work_order_release_operation_set_digest(
+            process_route_id=release.get("process_route_id"),
+            route_code=release.get("route_code"),
+            route_version=release.get("route_version"),
+            release_mode=release.get("release_mode"),
+            pairs=pairs,
+        )
+    except MesqlV2Error:
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
+
+
+def _validate_completion_bridge_runtime_identity(
+    runtime_state: JsonObject | None,
+    current_operation: JsonObject,
+    current_binding: JsonObject,
+) -> None:
+    if not isinstance(runtime_state, dict):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
+    if runtime_state.get("execution_status") != "closed" or runtime_state.get("closed_at") is None:
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_RUNTIME_NOT_CLOSED")
+    metadata = runtime_state.get("metadata")
+    if (
+        runtime_state.get("work_order_operation_id")
+        != current_operation.get("work_order_operation_id")
+        or runtime_state.get("work_order_id") != current_operation.get("order_id")
+        or runtime_state.get("operation_code") != current_operation.get("operation_code")
+        or runtime_state.get("station_code") != current_operation.get("station_code")
+        or not isinstance(metadata, dict)
+        or metadata.get("route_operation_id") != current_binding.get("route_operation_id")
+    ):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
+
+
+def _resolve_completion_bridge_successor(
+    lifecycle_operations: list[JsonObject],
+    current_work_order_operation_id: str,
+) -> JsonObject | None:
+    operations = list(lifecycle_operations)
+    sequences: set[int] = set()
+    current = None
+    for operation in operations:
+        sequence_no = operation.get("sequence_no")
+        if (
+            isinstance(sequence_no, bool)
+            or not isinstance(sequence_no, int)
+            or sequence_no <= 0
+            or sequence_no in sequences
+        ):
+            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_SEQUENCE_CONFLICT")
+        sequences.add(sequence_no)
+        if operation.get("work_order_operation_id") == current_work_order_operation_id:
+            current = operation
+    if current is None:
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
+    successors = [
+        operation for operation in operations
+        if operation["sequence_no"] > current["sequence_no"]
+    ]
+    if not successors:
+        return None
+    return _json_safe(min(
+        successors,
+        key=lambda operation: (
+            operation["sequence_no"], operation["work_order_operation_id"]
+        ),
+    ))
+
+
+def _build_completion_bridge_successor_queue_snapshot(
+    *,
+    release: JsonObject,
+    predecessor_operation: JsonObject,
+    successor_operation: JsonObject,
+    queue_rank: int,
+) -> JsonObject:
+    if isinstance(queue_rank, bool) or not isinstance(queue_rank, int) or queue_rank < 0:
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT")
+    order_id = successor_operation.get("order_id")
+    operation_id = successor_operation.get("work_order_operation_id")
+    station_code = successor_operation.get("station_code")
+    operation_no = successor_operation.get("operation_no")
+    sequence_no = successor_operation.get("sequence_no")
+    if (
+        order_id != release.get("order_id")
+        or not isinstance(operation_id, str)
+        or not isinstance(station_code, str)
+        or not station_code.strip()
+        or isinstance(operation_no, bool)
+        or not isinstance(operation_no, int)
+        or isinstance(sequence_no, bool)
+        or not isinstance(sequence_no, int)
+    ):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
+    return {
+        "station_code": station_code,
+        "order_id": order_id,
+        "queue_rank": queue_rank,
+        "status": "queued",
+        "source": "runtime_completion_bridge",
+        "payload": {
+            "order_id": order_id,
+            "work_order_operation_id": operation_id,
+            "operation_no": operation_no,
+            "sequence_no": sequence_no,
+            "station_code": station_code,
+            "status": "queued",
+        },
+        "metadata": {
+            "source": "runtime_completion_bridge",
+            "release_id": release.get("release_id"),
+            "predecessor_work_order_operation_id": predecessor_operation.get(
+                "work_order_operation_id"
+            ),
+        },
+        "work_order_operation_id": operation_id,
+    }
+
+
+def _completion_bridge_queue_identity_matches(
+    queue: JsonObject,
+    expected: JsonObject,
+) -> bool:
+    return all(
+        _json_safe(queue.get(name)) == _json_safe(expected.get(name))
+        for name in (
+            "station_code", "order_id", "source", "payload", "metadata",
+            "work_order_operation_id",
+        )
+    )
+
+
+def _classify_completion_bridge_state(
+    *,
+    work_order: JsonObject,
+    release: JsonObject,
+    lifecycle_operations: list[JsonObject],
+    bindings: list[JsonObject],
+    runtime_state: JsonObject,
+    station_queue_rows: list[JsonObject],
+    current_work_order_operation_id: str,
+) -> JsonObject:
+    _validate_completion_bridge_release_identity(release, lifecycle_operations)
+    _validate_completion_bridge_binding_set(release, lifecycle_operations, bindings)
+    digest = _recompute_completion_bridge_operation_set_digest(
+        release, lifecycle_operations, bindings
+    )
+    if digest != release.get("operation_set_digest"):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_RELEASE_CONFLICT")
+    operations_by_id = {
+        operation["work_order_operation_id"]: operation
+        for operation in lifecycle_operations
+    }
+    bindings_by_id = {
+        str(binding["work_order_operation_id"]): binding for binding in bindings
+    }
+    current = operations_by_id.get(current_work_order_operation_id)
+    current_binding = bindings_by_id.get(current_work_order_operation_id)
+    if current is None or current_binding is None:
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT")
+    _validate_completion_bridge_runtime_identity(runtime_state, current, current_binding)
+    successor = _resolve_completion_bridge_successor(
+        lifecycle_operations, current_work_order_operation_id
+    )
+    ordered = sorted(lifecycle_operations, key=lambda item: item["sequence_no"])
+    current_index = next(
+        index for index, item in enumerate(ordered)
+        if item["work_order_operation_id"] == current_work_order_operation_id
+    )
+    predecessor = ordered[current_index - 1] if current_index > 0 else None
+    current_selection = _select_exact_completion_bridge_queue(
+        station_queue_rows,
+        work_order_id=release["order_id"],
+        work_order_operation_id=current_work_order_operation_id,
+        station_code=current["station_code"],
+    )
+    if current_selection["classification"] != "exact":
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT")
+    current_queue = current_selection["row"]
+    if predecessor is None:
+        expected_current_queue = _build_initial_queue_snapshot(
+            release_id=release["release_id"],
+            operation_snapshot=current,
+            queue_rank=current_queue.get("queue_rank"),
+        )
+    else:
+        expected_current_queue = _build_completion_bridge_successor_queue_snapshot(
+            release=release,
+            predecessor_operation=predecessor,
+            successor_operation=current,
+            queue_rank=current_queue.get("queue_rank"),
+        )
+    if not _completion_bridge_queue_identity_matches(
+        current_queue, expected_current_queue
+    ):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT")
+    successor_queue = None
+    if successor is not None:
+        successor_selection = _select_exact_completion_bridge_queue(
+            station_queue_rows,
+            work_order_id=release["order_id"],
+            work_order_operation_id=successor["work_order_operation_id"],
+            station_code=successor["station_code"],
+        )
+        if successor_selection["classification"] == "duplicate":
+            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT")
+        successor_queue = successor_selection["row"]
+
+    closed_at = _json_safe(runtime_state.get("closed_at"))
+    first_state = (
+        current.get("status") in {"queued", "active"}
+        and current.get("completed_at") is None
+        and current_queue.get("status")
+        in {"queued", "ready", "active", "pending_approval"}
+    )
+    replay_state = (
+        current.get("status") == "completed"
+        and _json_safe(current.get("completed_at")) == closed_at
+        and current_queue.get("status") == "completed"
+    )
+    if first_state:
+        if work_order.get("order_id") != release.get("order_id"):
+            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_WORK_ORDER_CONFLICT")
+        if successor is not None:
+            if (
+                successor.get("status") != "planned"
+                or successor.get("completed_at") is not None
+                or successor_queue is not None
+            ):
+                _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_SUCCESSOR_CONFLICT")
+        else:
+            if any(
+                operation["work_order_operation_id"] != current_work_order_operation_id
+                and operation.get("status") != "completed"
+                for operation in lifecycle_operations
+            ):
+                _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_WORK_ORDER_CONFLICT")
+            if work_order.get("status") == "completed" or work_order.get("completed_at") is not None:
+                _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_WORK_ORDER_CONFLICT")
+        classification = "first_bridge"
+    elif replay_state:
+        if successor is not None:
+            if successor_queue is None:
+                _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT")
+            expected_successor_queue = _build_completion_bridge_successor_queue_snapshot(
+                release=release,
+                predecessor_operation=current,
+                successor_operation=successor,
+                queue_rank=successor_queue.get("queue_rank"),
+            )
+            if (
+                successor.get("status") not in {"queued", "active", "completed"}
+                or successor_queue.get("status")
+                not in {"queued", "ready", "active", "pending_approval", "completed"}
+                or not _completion_bridge_queue_identity_matches(
+                    successor_queue, expected_successor_queue
+                )
+            ):
+                _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_SUCCESSOR_CONFLICT")
+        elif (
+            work_order.get("status") != "completed"
+            or _json_safe(work_order.get("completed_at")) != closed_at
+        ):
+            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_WORK_ORDER_CONFLICT")
+        classification = "exact_replay"
+    else:
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_OPERATION_STATE_CONFLICT")
+    return _json_safe({
+        "classification": classification,
+        "current_operation": current,
+        "current_queue": current_queue,
+        "successor_operation": successor,
+        "successor_queue": successor_queue,
+        "final_operation": successor is None,
+        "runtime_state": runtime_state,
+        "work_order": work_order,
+        "release": release,
+    })
+
+
+def _complete_lifecycle_operation_from_runtime_cursor(
+    cursor: Any,
+    *,
+    work_order_operation_id: str,
+    closed_at: Any,
+) -> JsonObject | None:
+    cursor.execute(
+        UPDATE_COMPLETION_BRIDGE_LIFECYCLE_CURSOR_SQL,
+        {
+            "work_order_operation_id": work_order_operation_id,
+            "closed_at": closed_at,
+        },
+    )
+    row = cursor.fetchone()
+    return _release_work_order_operation_full_row(row) if row else None
+
+
+def _complete_current_queue_from_runtime_cursor(
+    cursor: Any,
+    *,
+    station_queue_pk: int,
+) -> JsonObject | None:
+    cursor.execute(
+        UPDATE_COMPLETION_BRIDGE_CURRENT_QUEUE_CURSOR_SQL,
+        {"station_queue_pk": station_queue_pk},
+    )
+    row = cursor.fetchone()
+    return _work_order_release_initial_queue_row(row) if row else None
+
+
+def _queue_successor_lifecycle_cursor(
+    cursor: Any,
+    *,
+    work_order_operation_id: str,
+) -> JsonObject | None:
+    cursor.execute(
+        UPDATE_COMPLETION_BRIDGE_SUCCESSOR_LIFECYCLE_CURSOR_SQL,
+        {"work_order_operation_id": work_order_operation_id},
+    )
+    row = cursor.fetchone()
+    return _release_work_order_operation_full_row(row) if row else None
+
+
+def _insert_completion_bridge_successor_queue_cursor(
+    cursor: Any,
+    queue_snapshot: JsonObject,
+) -> JsonObject:
+    parameters = {
+        name: queue_snapshot[name]
+        for name in (
+            "station_code", "order_id", "queue_rank", "work_order_operation_id"
+        )
+    }
+    parameters["payload"] = _jsonb(_json_safe(queue_snapshot.get("payload") or {}))
+    parameters["metadata"] = _jsonb(_json_safe(queue_snapshot.get("metadata") or {}))
+    cursor.execute(INSERT_COMPLETION_BRIDGE_SUCCESSOR_QUEUE_CURSOR_SQL, parameters)
+    return _work_order_release_initial_queue_row(cursor.fetchone())
+
+
+def _complete_work_order_from_runtime_cursor(
+    cursor: Any,
+    *,
+    work_order_id: str,
+    closed_at: Any,
+) -> JsonObject | None:
+    cursor.execute(
+        UPDATE_COMPLETION_BRIDGE_WORK_ORDER_CURSOR_SQL,
+        {"work_order_id": work_order_id, "closed_at": closed_at},
+    )
+    row = cursor.fetchone()
+    return _release_work_order_full_row(row) if row else None
+
+
+def _read_completion_bridge_operation_cursor(
+    cursor: Any,
+    *,
+    work_order_id: str,
+    work_order_operation_id: str,
+) -> JsonObject | None:
+    cursor.execute(
+        SELECT_COMPLETION_BRIDGE_OPERATION_CURSOR_SQL,
+        {
+            "work_order_id": work_order_id,
+            "work_order_operation_id": work_order_operation_id,
+        },
+    )
+    row = cursor.fetchone()
+    return _release_work_order_operation_full_row(row) if row else None
+
+
+def _read_completion_bridge_queue_cursor(
+    cursor: Any,
+    *,
+    work_order_id: str,
+    work_order_operation_id: str,
+) -> JsonObject | None:
+    cursor.execute(
+        SELECT_COMPLETION_BRIDGE_QUEUE_CURSOR_SQL,
+        {
+            "work_order_id": work_order_id,
+            "work_order_operation_id": work_order_operation_id,
+        },
+    )
+    rows = cursor.fetchall()
+    if len(rows) > 1:
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_QUEUE_CONFLICT")
+    return _work_order_release_initial_queue_row(rows[0]) if rows else None
+
+
+def _read_completion_bridge_snapshot_cursor(
+    cursor: Any,
+    *,
+    work_order_id: str,
+    completed_work_order_operation_id: str,
+    successor_work_order_operation_id: str | None = None,
+) -> JsonObject:
+    cursor.execute(
+        SELECT_EXECUTION_STATE_SQL,
+        {"work_order_operation_id": completed_work_order_operation_id},
+    )
+    execution_row = cursor.fetchone()
+    completed_operation = _read_completion_bridge_operation_cursor(
+        cursor,
+        work_order_id=work_order_id,
+        work_order_operation_id=completed_work_order_operation_id,
+    )
+    completed_queue = _read_completion_bridge_queue_cursor(
+        cursor,
+        work_order_id=work_order_id,
+        work_order_operation_id=completed_work_order_operation_id,
+    )
+    successor_operation = None
+    successor_queue = None
+    if successor_work_order_operation_id is not None:
+        successor_operation = _read_completion_bridge_operation_cursor(
+            cursor,
+            work_order_id=work_order_id,
+            work_order_operation_id=successor_work_order_operation_id,
+        )
+        successor_queue = _read_completion_bridge_queue_cursor(
+            cursor,
+            work_order_id=work_order_id,
+            work_order_operation_id=successor_work_order_operation_id,
+        )
+    cursor.execute(
+        SELECT_COMPLETION_BRIDGE_WORK_ORDER_CURSOR_SQL,
+        {"work_order_id": work_order_id},
+    )
+    work_order_row = cursor.fetchone()
+    return _json_safe({
+        "execution_state": _execution_state_row(execution_row) if execution_row else None,
+        "completed_operation": completed_operation,
+        "completed_queue": completed_queue,
+        "successor_operation": successor_operation,
+        "successor_queue": successor_queue,
+        "work_order": _release_work_order_full_row(work_order_row) if work_order_row else None,
+    })
+
+
+def _validate_completion_bridge_first_write_invariants_cursor(
+    cursor: Any,
+    expected_state: JsonObject,
+) -> JsonObject:
+    current = expected_state.get("current_operation") or {}
+    successor = expected_state.get("successor_operation")
+    runtime = expected_state.get("runtime_state") or {}
+    work_order = expected_state.get("work_order") or {}
+    snapshot = _read_completion_bridge_snapshot_cursor(
+        cursor,
+        work_order_id=work_order.get("order_id"),
+        completed_work_order_operation_id=current.get("work_order_operation_id"),
+        successor_work_order_operation_id=(
+            successor.get("work_order_operation_id") if successor else None
+        ),
+    )
+    completed_operation = snapshot.get("completed_operation") or {}
+    completed_queue = snapshot.get("completed_queue") or {}
+    closed_at = _json_safe(runtime.get("closed_at"))
+    if (
+        (snapshot.get("execution_state") or {}).get("execution_status") != "closed"
+        or _json_safe((snapshot.get("execution_state") or {}).get("closed_at")) != closed_at
+        or completed_operation.get("status") != "completed"
+        or _json_safe(completed_operation.get("completed_at")) != closed_at
+        or completed_queue.get("status") != "completed"
+        or not _completion_bridge_queue_identity_matches(
+            completed_queue, expected_state.get("current_queue") or {}
+        )
+        or completed_queue.get("queue_rank")
+        != (expected_state.get("current_queue") or {}).get("queue_rank")
+    ):
+        _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_OPERATION_STATE_CONFLICT")
+    if successor:
+        successor_operation = snapshot.get("successor_operation") or {}
+        successor_queue = snapshot.get("successor_queue") or {}
+        expected_successor_queue = _build_completion_bridge_successor_queue_snapshot(
+            release=expected_state.get("release") or {},
+            predecessor_operation=current,
+            successor_operation=successor,
+            queue_rank=successor_queue.get("queue_rank"),
+        )
+        if (
+            successor_operation.get("status") != "queued"
+            or successor_queue.get("status") != "queued"
+            or not _completion_bridge_queue_identity_matches(
+                successor_queue, expected_successor_queue
+            )
+            or (snapshot.get("work_order") or {}).get("status") == "completed"
+        ):
+            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_SUCCESSOR_CONFLICT")
+    else:
+        completed_work_order = snapshot.get("work_order") or {}
+        if (
+            completed_work_order.get("status") != "completed"
+            or _json_safe(completed_work_order.get("completed_at")) != closed_at
+        ):
+            _completion_bridge_error("RUNTIME_COMPLETION_BRIDGE_WORK_ORDER_CONFLICT")
+    return snapshot
 
 
 def list_locations(config: AppConfig, active_only: bool = True, location_type: str | None = None) -> list[JsonObject]:

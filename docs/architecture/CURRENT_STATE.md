@@ -1815,3 +1815,75 @@ mutation was performed.
 - Status: `VERIFIED / PHASE_5H_C_COMPLETE`.
 - Recovery evidence:
   `docs/runbooks/canonical_v2_source_local_release_replay_recovery_evidence_20260717.md`.
+
+## Canonical V2 Controlled Route-Release Entrypoint Design
+
+- Phase 5H-C verified closure commit:
+  `301ae800d3c06311409c5260be0ec4767fa42768`
+  (`docs: record verified canonical v2 source-local flow`). It records the
+  immutable historical FAIL evidence plus the Phase 5H-CR2 clone/source replay
+  recovery that completed the source-local acceptance chain.
+- Existing internal baseline remains
+  `release_work_order_to_route(config, ...)`. It owns request normalization,
+  one atomic PostgreSQL transaction, exact route/version resolution,
+  deterministic lifecycle/binding identity, queue-rank serialization, replay,
+  conflict classification, rollback, and authoritative readback.
+- Selected controlled HTTP boundary:
+  `POST /api/v2/work-orders/{work_order_id}/route-release`.
+- The HTTP entry point is default-disabled through
+  `MES_WEB_DB_WORK_ORDER_ROUTE_RELEASE_ENABLED=false`. Disabled behavior is
+  exact `503 {"detail":"WORK_ORDER_ROUTE_RELEASE_DISABLED"}`. The flag gates
+  only HTTP exposure; it does not disable the internal helper, enable
+  FERP/MESQL, or provide authentication.
+- Client fields are exact `release_id`, `route_code`, `route_version`,
+  `released_by`, and optional `metadata`; path identity is `work_order_id`.
+  Server-controlled values are `release_source=local_planning`,
+  `mode=route_generated`, and `operation_bindings=None`.
+- Phase 5H-D1 must use bounded raw-body parsing rather than automatic Pydantic
+  validation: actual raw size, strict UTF-8, standard JSON, top-level object,
+  allowlist/server-field rejection, scalar/metadata validation, then one helper
+  call. The exact maximum is `65,536` raw bytes; `65,536` proceeds and `65,537`
+  returns `413 WORK_ORDER_ROUTE_RELEASE_REQUEST_TOO_LARGE`. `Content-Length`
+  is only an early guard; actual bytes remain authoritative.
+- Duplicate JSON keys are rejected at every object nesting level; the parser
+  never accepts last-value-wins behavior. UTF-8/JSON decode failures,
+  non-finite constants, duplicate-key/object-pairs-hook validation failures,
+  `RecursionError`, and excessive-nesting/parser-depth failures all return
+  `400 WORK_ORDER_ROUTE_RELEASE_REQUEST_INVALID` with zero helper calls, never
+  Pydantic `422` or generic `500`.
+- Success is HTTP `200` for first release and exact replay with repository
+  envelope `ok=true` plus top-level helper fields `released`, `release`,
+  `work_order`, `operations`, `bindings`, and `initial_queue`. No `data` wrapper
+  is added. First release reports `released=true`; replay reports
+  `released=false`.
+- Errors preserve FastAPI repository wire format
+  `{"detail":"<ERROR_CODE>"}`. `MesqlV2Error.status_code/detail` pass through
+  unchanged; generic exceptions return `500 {"detail":"INTERNAL_ERROR"}`.
+  No separate error envelope or API-level SQLSTATE/replay classifier is added.
+- Exact immutable replay remains idempotent and zero-write after legitimate
+  operational progression, including completed OP10/OP20, successor queues,
+  runtime/events, and completed work order state. The API performs no pre-read,
+  SQL, lock, rank allocation, retry, or compensation.
+- Concurrency ownership remains in the helper: identical requests yield one
+  `released=true` and one `released=false`; a cross-work-order release ID is a
+  deterministic conflict; same-station releases receive distinct valid ranks.
+- The repository has no authentication/authorization layer. `released_by` is
+  client-self-asserted and unverified and is accepted only inside the trusted
+  local operator/planning-service boundary. Public/untrusted exposure is
+  prohibited without a separate security design.
+- The endpoint adds no automatic nonproduction marker, retained-fixture prefix
+  behavior, audit/event/outbox row, runtime initialization, package/inventory
+  effect, or analytics/export filter. Future consumers must still exclude
+  explicitly marked nonproduction fixtures; implementation remains deferred.
+- Phase boundaries:
+  - 5H-D1: flag/config wiring, bounded parser, handler, serialization/logging,
+    and unit/API tests without schema changes;
+  - 5H-D2: separately approved disposable/clone HTTP smoke;
+  - 5H-D3: separately approved controlled source HTTP smoke; the retained
+    Phase 5H-C fixture may be only a zero-write progressed replay candidate;
+  - Phase 5I: FERP mapping/acknowledgement/retry only after D1-D3 PASS.
+- Status: `READY_FOR_CONTROLLED_RELEASE_API_IMPLEMENTATION`.
+- Design artefacts:
+  - `docs/architecture/canonical_v2_controlled_release_entrypoint_design.md`;
+  - `docs/architecture/canonical_v2_controlled_release_api_contract.md`;
+  - `docs/runbooks/canonical_v2_controlled_release_api_smoke_plan.md`.

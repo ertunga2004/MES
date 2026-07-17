@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-15
+Last updated: 2026-07-17
 
 ## Local MES Execution and Portable Runtime Baseline
 
@@ -1756,3 +1756,62 @@ mutation was performed.
   Docker lifecycle, cleanup, H-C commit, or push was added or performed.
 - Failure evidence:
   `docs/runbooks/canonical_v2_source_local_functional_smoke_evidence_20260715.md`.
+
+## Verified Canonical V2 Source-Local Functional Flow
+
+- Original functional execution: `2026-07-15`; release-replay recovery
+  verification: `2026-07-17`.
+- Phase 5H-B closure commit:
+  `764eb3c84a4aebac9b9927bcec4dc0f7275b343c`. Historical Phase 5H-C FAIL
+  evidence remains committed unchanged under
+  `22e9bb75c250bb0e58f7330def665927c5266988`.
+- CR1 hotfix commit:
+  `c7e7ea2698d873a7ac5c8737bddd97b349355675`
+  (`fix: allow route release replay after queue progression`). Focused review
+  and regression passed at targeted `632` and combined `668`.
+- The retained nonproduction order
+  `PHASE5HC-SOURCE-SMOKE-20260715-181940` and release
+  `PHASE5HC-SOURCE-RELEASE-20260715-181940` were independently read back
+  exact. OP10/OP20 lifecycle and queues remained completed, both runtime states
+  remained closed, all `3 + 1` steps remained completed, the work order
+  remained completed at `2026-07-15T18:35:41.238660+00:00`, and the six
+  configured events remained exact.
+- The recovery preflight closes the post-error independent-readback gap recorded
+  by the historical FAIL evidence. It found source identity
+  `mes_postgres / mes / mes`, PostgreSQL `16.14`, zero competing sessions,
+  exact `40` base tables, exact `35` sequence states, and the complete
+  retained fixture.
+- Byte-safe recovery backup:
+  `C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups\mes_before_phase5hc_release_replay_recovery_20260717-080314.sql`, `2911692` bytes, SHA-256
+  `f4e19c0bd8f97ff898fbc3a1de63ee0c125ee67a437de78292d74c971740e2f0`. Container/host size, header, and hash equality passed; the host
+  backup remains retained.
+- A `template0` logical-restore clone reproduced source exactly at `40/40`
+  table counts/digests, `35/35` sequence states, fixture snapshot, V1, and
+  sidecar/V2 state. Its exact release replay returned `released=false`, used
+  OP10 PK `6853` as initial queue, performed zero writer/advisory-rank calls,
+  and preserved every pre/post snapshot. The clone and restore temp were
+  removed; matching clone count is `0`.
+- After clone PASS and cleanup, the same exact replay was called on source
+  exactly once. It returned `released=false`, agreed with authoritative read
+  helpers, performed zero writer/advisory-rank calls, and preserved source
+  `40/40` table counts/digests, `35/35` sequence states, and the complete
+  fixture snapshot.
+- Retained V1 remained `1 / 2 / 5` with exact scoped digests. Audit, outbox,
+  package, inventory, locations, and bindings remained exact through full-table
+  comparison. PostgreSQL is `running / healthy`; HTTP health is
+  `200 / status=ok`.
+- The historical failure section and evidence remain unchanged as defect
+  history. The recovery evidence supersedes only its failed final-replay
+  acceptance result; together the original functional execution and this
+  recovery establish the complete Phase 5H-C acceptance chain.
+- No new fixture, release, runtime execution, completion bridge, API/Kiosk/IoT
+  action, FERP/MESQL operation, inventory/package helper, migration/seed,
+  source restore, repair, compensation, or delete was performed. No recovery
+  evidence commit or push was created.
+- The fixture remains nonproduction and must be excluded from future OEE, KPI,
+  analytics, reporting, FERP/MESQL export, and generic export by exact prefix
+  or `exclude_from_analytics=true`. Consumer filter implementation remains
+  deferred.
+- Status: `VERIFIED / PHASE_5H_C_COMPLETE`.
+- Recovery evidence:
+  `docs/runbooks/canonical_v2_source_local_release_replay_recovery_evidence_20260717.md`.

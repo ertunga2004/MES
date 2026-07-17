@@ -1698,3 +1698,61 @@ mutation was performed.
   `READY_FOR_SEPARATELY_APPROVED_SOURCE_LOCAL_FUNCTIONAL_SMOKE`.
 - Apply evidence:
   `docs/runbooks/canonical_v2_source_schema_seed_apply_evidence_20260715.md`.
+
+## Canonical V2 Source-Local Functional Smoke Failure
+
+- Executed: `2026-07-15`, under the separately approved Phase 5H-C source-local
+  smoke task. Phase 5H-B documentation closure commit is
+  `764eb3c84a4aebac9b9927bcec4dc0f7275b343c`
+  (`docs: record applied canonical v2 source schema and seed`).
+- The one retained nonproduction fixture is
+  `PHASE5HC-SOURCE-SMOKE-20260715-181940`, with release
+  `PHASE5HC-SOURCE-RELEASE-20260715-181940` and actor
+  `PHASE5HC_SOURCE_SMOKE`. Its payload/metadata retain
+  `disposable_test=true`, `production_release=false`,
+  `exclude_from_analytics=true`, and
+  `retention_reason=source_rollout_validation`.
+- First route release succeeded with one immutable release, deterministic OP10
+  UUID `52fb8cd4-005e-51f2-9557-a6ff31ce5063`, deterministic OP20 UUID
+  `d78c3f30-9e49-51a3-ad58-a13e45f3705f`, two immutable bindings, and the
+  exact two-operation digest. Immediate release replay returned
+  `released=false` with zero writes.
+- OP10 initialized and completed its exact three configured steps. Its close
+  bridged OP20 to queued state and created the exact successor queue. OP20 then
+  initialized, completed its one configured step, closed, and completed the
+  work order at `2026-07-15T18:35:41.238660+00:00`.
+- OP10 and OP20 initialization replays, the immediate/final OP10 finish
+  replays, and the OP20 finish replay were idempotent with zero writes. Static
+  release, binding, and lifecycle identity snapshots remained immutable.
+- Acceptance failed on the required exact route-release replay after final
+  completion. It raised `WORK_ORDER_RELEASE_QUEUE_CONFLICT` instead of
+  returning `released=false`.
+- Root cause is the replay validator's whole-order
+  `len(existing_queue) == 1` requirement in
+  `_validate_existing_work_order_release_replay`. A completed two-operation
+  route correctly retains both the original OP10 queue row and the OP20
+  successor queue row. Mutable status/rank fields are not compared, but this
+  cardinality check still rejects valid progressed operational state.
+- Execution stopped immediately under the Phase 5H-C failure policy. The
+  completed but failed-validation fixture was not deleted, repaired,
+  compensated, restored, disguised, retried with a new identity, or resumed.
+  An independent post-error digest readback could not be obtained because the
+  execution environment rejected Docker access after exhausting its usage
+  quota; this limitation is recorded in the evidence and does not change the
+  required `FAIL` result.
+- At the last authoritative final snapshot, only the six explicit configured
+  runtime events were added. There was no bridge-added system-transition,
+  approval, production-flow/completion, work-order event, outbox, package, or
+  inventory effect. Retained V1 remained `1 / 2 / 5` with exact scoped
+  digests; locations and station bindings remained unchanged.
+- The retained fixture must be excluded from future OEE, KPI, analytics,
+  reporting, FERP/MESQL export, and generic export by exact prefix or
+  `exclude_from_analytics=true`. Consumer filter implementation remains
+  deferred.
+- Phase 5H-C status:
+  `FAIL_REQUIRES_RELEASE_REPLAY_FIX_AND_SEPARATE_RECOVERY_APPROVAL`.
+  No API, feature flag, Kiosk/IoT action, FERP/MESQL input, automatic route
+  selection, analytics filter, inventory behavior, migration/seed apply,
+  Docker lifecycle, cleanup, H-C commit, or push was added or performed.
+- Failure evidence:
+  `docs/runbooks/canonical_v2_source_local_functional_smoke_evidence_20260715.md`.

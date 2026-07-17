@@ -7103,6 +7103,416 @@ class WorkOrderReleaseWriterTests(unittest.TestCase):
             "initial_queue": deepcopy(context["initial_queue_snapshot"]),
         }
 
+    def _successor_queue(
+        self,
+        context,
+        *,
+        operation_index=1,
+        status="queued",
+        queue_rank=7,
+    ):
+        operation = context["operation_snapshots"][operation_index]
+        predecessor = context["operation_snapshots"][operation_index - 1]
+        return {
+            "station_queue_pk": 100 + operation_index,
+            "station_code": operation["station_code"],
+            "order_id": operation["order_id"],
+            "queue_rank": queue_rank,
+            "status": status,
+            "source": "runtime_completion_bridge",
+            "payload": {
+                "status": "queued",
+                "order_id": operation["order_id"],
+                "sequence_no": operation["sequence_no"],
+                "operation_no": operation["operation_no"],
+                "station_code": operation["station_code"],
+                "work_order_operation_id": operation[
+                    "work_order_operation_id"
+                ],
+            },
+            "metadata": {
+                "source": "runtime_completion_bridge",
+                "release_id": context["release_snapshot"]["release_id"],
+                "predecessor_work_order_operation_id": predecessor[
+                    "work_order_operation_id"
+                ],
+            },
+            "created_at": "successor-created",
+            "updated_at": "successor-updated",
+            "work_order_operation_id": operation["work_order_operation_id"],
+        }
+
+    def _progressed_replay_context(
+        self,
+        *,
+        successor_status="queued",
+        work_order_status="queued",
+    ):
+        context = self._context(existing=True)
+        context["work_order"].update({
+            "status": work_order_status,
+            "completed_at": (
+                "work-order-completed" if work_order_status == "completed" else None
+            ),
+        })
+        context["existing_operations"][0].update({
+            "status": "completed",
+            "started_at": "op10-started",
+            "completed_at": "op10-completed",
+            "good_quantity": 5,
+        })
+        context["existing_operations"][1].update({
+            "status": successor_status,
+            "started_at": "op20-started",
+            "completed_at": (
+                "op20-completed" if successor_status == "completed" else None
+            ),
+        })
+        context["existing_queue"][0].update({
+            "status": "completed",
+            "queue_rank": 19,
+            "updated_at": "op10-queue-completed",
+        })
+        context["existing_queue"].append(
+            self._successor_queue(
+                context,
+                status=successor_status,
+                queue_rank=23,
+            )
+        )
+        return context
+
+    def _assert_replay_queue_conflict(self, context):
+        with self.assertRaises(mesql_v2.MesqlV2Error) as error:
+            mesql_v2._validate_existing_work_order_release_replay(context)
+        self.assertEqual(
+            error.exception.detail,
+            "WORK_ORDER_RELEASE_QUEUE_CONFLICT",
+        )
+        self.assertEqual(error.exception.status_code, 409)
+
+    def _run_completed_progressed_replay(self):
+        context = self._progressed_replay_context(
+            successor_status="completed",
+            work_order_status="completed",
+        )
+        authoritative = self._response(context, False)
+        authoritative["work_order"] = deepcopy(context["work_order"])
+        authoritative["operations"] = deepcopy(context["existing_operations"])
+        authoritative["initial_queue"] = deepcopy(context["existing_queue"][0])
+        forbidden_names = (
+            "_lock_station_queue_scope_cursor",
+            "_insert_work_order_route_release_cursor",
+            "_insert_route_generated_work_order_operation_cursor",
+            "_insert_work_order_operation_route_binding_cursor",
+            "_insert_initial_station_queue_cursor",
+            "_update_work_order_released_state_cursor",
+        )
+        forbidden = {}
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(
+                mesql_v2,
+                "_prepare_work_order_release_context_cursor",
+                return_value=context,
+            ))
+            for name in forbidden_names:
+                forbidden[name] = stack.enter_context(
+                    patch.object(mesql_v2, name)
+                )
+            invariant = stack.enter_context(patch.object(
+                mesql_v2,
+                "_validate_work_order_release_invariants_cursor",
+                return_value={},
+            ))
+            reader = stack.enter_context(patch.object(
+                mesql_v2,
+                "_work_order_release_response_cursor",
+                return_value=authoritative,
+            ))
+            result = mesql_v2._release_work_order_to_route_cursor(
+                object(), self._request()
+            )
+        return result, context, authoritative, forbidden, invariant, reader
+
+    def test_initial_release_queue_selector_returns_first_lifecycle_match(self) -> None:
+        context = self._progressed_replay_context()
+        selected = mesql_v2._select_existing_initial_release_queue(
+            context["existing_queue"],
+            first_work_order_operation_id=context["operation_snapshots"][0][
+                "work_order_operation_id"
+            ],
+        )
+        self.assertIs(selected, context["existing_queue"][0])
+
+    def test_initial_release_queue_selector_is_queue_order_independent(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"].reverse()
+        selected = mesql_v2._select_existing_initial_release_queue(
+            context["existing_queue"],
+            first_work_order_operation_id=context["operation_snapshots"][0][
+                "work_order_operation_id"
+            ],
+        )
+        self.assertEqual(selected["source"], "work_order_release")
+
+    def test_initial_release_queue_selector_rejects_missing_initial(self) -> None:
+        context = self._progressed_replay_context()
+        with self.assertRaisesRegex(
+            mesql_v2.MesqlV2Error, "WORK_ORDER_RELEASE_QUEUE_CONFLICT"
+        ):
+            mesql_v2._select_existing_initial_release_queue(
+                context["existing_queue"][1:],
+                first_work_order_operation_id=context["operation_snapshots"][0][
+                    "work_order_operation_id"
+                ],
+            )
+
+    def test_initial_release_queue_selector_rejects_duplicate_initial(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"].append(deepcopy(context["existing_queue"][0]))
+        with self.assertRaisesRegex(
+            mesql_v2.MesqlV2Error, "WORK_ORDER_RELEASE_QUEUE_CONFLICT"
+        ):
+            mesql_v2._select_existing_initial_release_queue(
+                context["existing_queue"],
+                first_work_order_operation_id=context["operation_snapshots"][0][
+                    "work_order_operation_id"
+                ],
+            )
+
+    def test_initial_release_queue_selector_ignores_successor_mutable_state(self) -> None:
+        context = self._progressed_replay_context(successor_status="active")
+        context["existing_queue"][1].update({
+            "queue_rank": 999,
+            "updated_at": "later",
+        })
+        selected = mesql_v2._select_existing_initial_release_queue(
+            context["existing_queue"],
+            first_work_order_operation_id=context["operation_snapshots"][0][
+                "work_order_operation_id"
+            ],
+        )
+        self.assertEqual(selected["work_order_operation_id"], context[
+            "operation_snapshots"
+        ][0]["work_order_operation_id"])
+
+    def test_progressed_replay_accepts_immediate_single_queue(self) -> None:
+        context = self._context(existing=True)
+        mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def test_progressed_replay_accepts_successor_queued(self) -> None:
+        context = self._progressed_replay_context(successor_status="queued")
+        mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def test_progressed_replay_accepts_successor_active(self) -> None:
+        context = self._progressed_replay_context(successor_status="active")
+        mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def test_progressed_replay_accepts_successor_pending_approval(self) -> None:
+        context = self._progressed_replay_context(
+            successor_status="pending_approval"
+        )
+        mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def test_progressed_replay_accepts_both_queues_completed(self) -> None:
+        context = self._progressed_replay_context(successor_status="completed")
+        mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def test_progressed_replay_accepts_completed_work_order(self) -> None:
+        context = self._progressed_replay_context(
+            successor_status="completed",
+            work_order_status="completed",
+        )
+        mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def test_progressed_replay_ignores_initial_queue_rank(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"][0]["queue_rank"] = 1001
+        mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def test_progressed_replay_ignores_initial_queue_status(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"][0]["status"] = "completed"
+        mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def test_progressed_replay_ignores_successor_rank_and_status(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"][1].update({
+            "status": "pending_approval",
+            "queue_rank": 2002,
+            "updated_at": "much-later",
+        })
+        mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def test_progressed_replay_ignores_successor_owned_identity_fields(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"][1].update({
+            "source": "runtime-owned-source",
+            "payload": {"runtime": "progressed"},
+            "metadata": {"runtime": "progressed"},
+        })
+        mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def test_progressed_replay_resolves_smallest_sequence_operation(self) -> None:
+        context = self._progressed_replay_context()
+        context["operation_snapshots"].reverse()
+        context["existing_operations"].reverse()
+        mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def test_progressed_replay_accepts_three_lifecycle_queues(self) -> None:
+        context = self._context(existing=True)
+        third = deepcopy(context["operation_snapshots"][1])
+        third.update({
+            "work_order_operation_id": "aaaaaaaa-aaaa-5aaa-8aaa-aaaaaaaaaaaa",
+            "operation_no": 30,
+            "operation_code": "OP30",
+            "operation_name": "Operation 30",
+            "sequence_no": 30,
+            "station_code": "ST-3",
+        })
+        context["operation_snapshots"].append(third)
+        context["existing_operations"] = deepcopy(context["operation_snapshots"])
+        third_binding = deepcopy(context["binding_snapshots"][1])
+        third_binding.update({
+            "binding_id": "BINDING-WORK-ORDER-RELEASE-OP30",
+            "work_order_operation_id": third["work_order_operation_id"],
+            "route_operation_id": "ROUTE-1-OP30",
+        })
+        context["binding_snapshots"].append(third_binding)
+        context["existing_bindings"] = deepcopy(context["binding_snapshots"])
+        binding_by_operation = {
+            binding["work_order_operation_id"]: binding
+            for binding in context["binding_snapshots"]
+        }
+        digest = mesql_v2._compute_work_order_release_operation_set_digest(
+            process_route_id=context["release_snapshot"]["process_route_id"],
+            route_code=context["release_snapshot"]["route_code"],
+            route_version=context["release_snapshot"]["route_version"],
+            release_mode=context["release_snapshot"]["release_mode"],
+            pairs=[
+                {
+                    "sequence_no": operation["sequence_no"],
+                    "route_operation_id": binding_by_operation[
+                        operation["work_order_operation_id"]
+                    ]["route_operation_id"],
+                    "work_order_operation_id": operation[
+                        "work_order_operation_id"
+                    ],
+                }
+                for operation in context["operation_snapshots"]
+            ],
+        )
+        context["release_snapshot"].update({
+            "route_operation_count": 3,
+            "operation_set_digest": digest,
+        })
+        context["existing_release"] = deepcopy(context["release_snapshot"])
+        context["existing_queue"].extend([
+            self._successor_queue(context, operation_index=1),
+            self._successor_queue(context, operation_index=2),
+        ])
+        mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def test_completed_phase_5h_c_replay_returns_released_false(self) -> None:
+        result, _, authoritative, _, _, _ = self._run_completed_progressed_replay()
+        self.assertIs(result, authoritative)
+        self.assertFalse(result["released"])
+
+    def test_completed_phase_5h_c_replay_performs_zero_writes(self) -> None:
+        _, _, _, forbidden, _, _ = self._run_completed_progressed_replay()
+        for writer in forbidden.values():
+            writer.assert_not_called()
+
+    def test_completed_phase_5h_c_replay_performs_no_advisory_or_rank_read(self) -> None:
+        _, _, _, forbidden, _, _ = self._run_completed_progressed_replay()
+        forbidden["_lock_station_queue_scope_cursor"].assert_not_called()
+
+    def test_completed_phase_5h_c_replay_uses_authoritative_snapshot(self) -> None:
+        result, context, authoritative, _, invariant, reader = (
+            self._run_completed_progressed_replay()
+        )
+        self.assertIs(result, authoritative)
+        self.assertEqual(result["work_order"]["status"], "completed")
+        self.assertEqual(
+            result["release"],
+            context["existing_release"],
+        )
+        invariant.assert_called_once()
+        reader.assert_called_once()
+
+    def test_progressed_replay_rejects_initial_queue_wrong_order(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"][0]["order_id"] = "WO-OTHER"
+        self._assert_replay_queue_conflict(context)
+
+    def test_progressed_replay_rejects_initial_queue_wrong_station(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"][0]["station_code"] = "ST-OTHER"
+        self._assert_replay_queue_conflict(context)
+
+    def test_progressed_replay_rejects_initial_queue_wrong_source(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"][0]["source"] = "runtime_completion_bridge"
+        self._assert_replay_queue_conflict(context)
+
+    def test_progressed_replay_rejects_initial_queue_wrong_payload(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"][0]["payload"] = {"wrong": True}
+        self._assert_replay_queue_conflict(context)
+
+    def test_progressed_replay_rejects_initial_queue_wrong_metadata(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"][0]["metadata"] = {"wrong": True}
+        self._assert_replay_queue_conflict(context)
+
+    def test_progressed_replay_rejects_missing_initial_lifecycle_queue(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"] = context["existing_queue"][1:]
+        self._assert_replay_queue_conflict(context)
+
+    def test_progressed_replay_rejects_duplicate_initial_lifecycle_queue(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"].append(deepcopy(context["existing_queue"][0]))
+        self._assert_replay_queue_conflict(context)
+
+    def test_progressed_replay_rejects_wrong_initial_lifecycle_uuid(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_queue"][0]["work_order_operation_id"] = context[
+            "operation_snapshots"
+        ][1]["work_order_operation_id"]
+        self._assert_replay_queue_conflict(context)
+
+    def test_progressed_replay_rejects_queue_outside_release_lifecycle_scope(self) -> None:
+        context = self._progressed_replay_context()
+        unrelated = deepcopy(context["existing_queue"][1])
+        unrelated["work_order_operation_id"] = (
+            "bbbbbbbb-bbbb-5bbb-8bbb-bbbbbbbbbbbb"
+        )
+        context["existing_queue"].append(unrelated)
+        self._assert_replay_queue_conflict(context)
+
+    def test_progressed_replay_preserves_lifecycle_set_conflict(self) -> None:
+        context = self._progressed_replay_context()
+        unrelated = deepcopy(context["existing_operations"][1])
+        unrelated["work_order_operation_id"] = (
+            "cccccccc-cccc-5ccc-8ccc-cccccccccccc"
+        )
+        context["existing_operations"].append(unrelated)
+        with self.assertRaisesRegex(
+            mesql_v2.MesqlV2Error,
+            "WORK_ORDER_RELEASE_OPERATION_COUNT_MISMATCH",
+        ):
+            mesql_v2._validate_existing_work_order_release_replay(context)
+
+    def test_progressed_replay_preserves_incomplete_binding_conflict(self) -> None:
+        context = self._progressed_replay_context()
+        context["existing_bindings"] = context["existing_bindings"][:1]
+        with self.assertRaisesRegex(
+            mesql_v2.MesqlV2Error,
+            "WORK_ORDER_RELEASE_PARTIAL_BINDING_CONFLICT",
+        ):
+            mesql_v2._validate_existing_work_order_release_replay(context)
+
     def test_public_writer_signature_is_exact(self) -> None:
         self.assertEqual(
             list(inspect.signature(mesql_v2.release_work_order_to_route).parameters),

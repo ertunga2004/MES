@@ -3677,6 +3677,22 @@ def _compare_initial_queue_identity(
     )
 
 
+def _select_existing_initial_release_queue(
+    existing_queue: list[JsonObject],
+    *,
+    first_work_order_operation_id: str,
+) -> JsonObject:
+    matches = [
+        queue
+        for queue in existing_queue
+        if _text(queue.get("work_order_operation_id"))
+        == first_work_order_operation_id
+    ]
+    if len(matches) != 1:
+        raise MesqlV2Error("WORK_ORDER_RELEASE_QUEUE_CONFLICT", status_code=409)
+    return matches[0]
+
+
 def _read_work_order_release_snapshot_cursor(
     cursor: Any,
     work_order_id: str,
@@ -4078,11 +4094,7 @@ def _prepare_work_order_release_context_cursor(
     initial_queue_snapshot = _build_initial_queue_snapshot(
         release_id=request["release_id"],
         operation_snapshot=operation_snapshots[0],
-        queue_rank=(
-            _safe_int(existing_queue[0].get("queue_rank"), 0)
-            if len(existing_queue) == 1
-            else 0
-        ),
+        queue_rank=0,
     )
     return {
         "work_order": work_order,
@@ -4146,8 +4158,30 @@ def _validate_existing_work_order_release_replay(
     ]:
         raise MesqlV2Error("WORK_ORDER_RELEASE_MAPPING_CONFLICT", status_code=409)
     existing_queue = context["existing_queue"]
-    if len(existing_queue) != 1 or not _compare_initial_queue_identity(
-        existing_queue[0], context["initial_queue_snapshot"]
+    expected_operation_ids = {
+        _text(operation.get("work_order_operation_id"))
+        for operation in expected_operations
+    }
+    if any(
+        _text(queue.get("work_order_operation_id")) not in expected_operation_ids
+        for queue in existing_queue
+    ):
+        raise MesqlV2Error("WORK_ORDER_RELEASE_QUEUE_CONFLICT", status_code=409)
+    first_operation = min(
+        expected_operations,
+        key=lambda operation: (
+            operation.get("sequence_no"),
+            _text(operation.get("work_order_operation_id")),
+        ),
+    )
+    initial_queue = _select_existing_initial_release_queue(
+        existing_queue,
+        first_work_order_operation_id=_text(
+            first_operation.get("work_order_operation_id")
+        ),
+    )
+    if not _compare_initial_queue_identity(
+        initial_queue, context["initial_queue_snapshot"]
     ):
         raise MesqlV2Error("WORK_ORDER_RELEASE_QUEUE_CONFLICT", status_code=409)
 

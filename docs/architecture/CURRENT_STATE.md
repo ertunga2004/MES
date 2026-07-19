@@ -1932,3 +1932,63 @@ mutation was performed.
 - Status: `FAIL / PHASE_5H_D2_STRUCTURED_LOG_EVENT_NOT_EMITTED`.
 - Immutable failure evidence:
   `docs/runbooks/canonical_v2_controlled_release_api_disposable_http_smoke_evidence_20260719.md`.
+
+## Verified Canonical V2 Controlled Route-Release HTTP Clone Smoke Recovery
+
+- The immutable Phase 5H-D2 failure evidence above remains unchanged and
+  authoritative for the `149`-request functional matrix. Its sole failed
+  acceptance criterion was the absence of a dedicated real-process structured
+  event; its historical execution and defect record are not rewritten.
+- Logging implementation commit
+  `002c326bedf01d10b1f7d2c58f76018efaae807d`
+  (`fix: emit route release structured logs in real process`) was verified on
+  `2026-07-19` with a fresh disposable clone and normal
+  `.venv\Scripts\python.exe -m mes_web` processes.
+- Retry container preflight matched the exact historical container ID
+  `c5e10132d9ce26bbbaecf0ca9c5fe95020d1c0450e2f55f53c318a89ba7afa27`,
+  unchanged data/backup mounts, PostgreSQL `16.14`, and `running/healthy`
+  state. No lifecycle command was needed; compose, recreate, restart, remove,
+  and volume operations remained prohibited and unused.
+- Exact retained backup size/SHA-256 remained
+  `2911692` /
+  `f4e19c0bd8f97ff898fbc3a1de63ee0c125ee67a437de78292d74c971740e2f0`.
+  It was restored only to fresh template0 clone
+  `mes_phase5hd2_api_recovery_20260719-142719`, which verified `40` base
+  tables, `35` sequences, Canonical V2 route/operations `1/2`, OP10/OP20 steps
+  `3/1`, and both sidecars. Source database `mes`, retained source fixture,
+  source HTTP, and port `8080` were never targeted.
+- Three accepted real processes used loopback ports `61354`, `61365`, and
+  `61377`. Disabled, DB-disabled, parser-invalid, first-release, and immediate
+  replay requests each emitted exactly one parseable
+  `work_order_route_release_request` JSON line with the exact nine-key
+  contract. The focused recovery observed `5/5` events, `0` duplicates, and
+  `0` unparseable event lines.
+- Disabled and DB-disabled requests returned exact `503` details; malformed
+  JSON returned exact `400 WORK_ORDER_ROUTE_RELEASE_REQUEST_INVALID` with
+  `40/40` table and `35/35` sequence zero delta. First release returned
+  `200`, `ok=true`, `released=true`; immediate replay returned `200`,
+  `ok=true`, `released=false`.
+- Aggregate process logs contained no raw body, metadata keys/values,
+  `D2_RECOVERY_METADATA_MUST_NOT_APPEAR`, password, connection string,
+  complete response, or database rows. Every structured identity was sanitized
+  and every duration was nonnegative.
+- Clone-only first release changed exactly `work_orders`,
+  `work_order_route_releases`, `work_order_operations`,
+  `work_order_operation_route_bindings`, and `station_queue`. It created one
+  release, two deterministic lifecycle rows, two immutable bindings, and one
+  OP10 queue while changing no other base table. Exact replay preserved all
+  `40` table count/digests, all `35` sequence states, timestamps, static
+  snapshots, bindings, queue, and work-order state.
+- Cleanup is complete: all recovery PIDs/listeners and host temp paths are
+  absent, clone sessions were `0`, the exact clone and container temp are
+  absent, retained backup identity is unchanged, and the same PostgreSQL
+  container remains running/healthy.
+- Current regression passed: API `112`, MESQL V2 `632`, combined `780`, plus
+  `py_compile` and diff checks. The focused recovery supersedes only the failed
+  historical logging criterion; the combined Phase 5H-D2 acceptance is now
+  `PASS / VERIFIED_FOCUSED_STRUCTURED_LOGGING_RECOVERY`.
+- Recovery evidence:
+  `docs/runbooks/canonical_v2_controlled_release_api_disposable_http_smoke_recovery_evidence_20260719.md`.
+- Phase 5H-D3 remains `NOT STARTED` and requires separate explicit approval.
+  Source release/replay, FERP/MESQL, implementation, migration/seed, compose,
+  and push boundaries remain untouched.

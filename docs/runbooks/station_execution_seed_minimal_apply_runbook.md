@@ -198,7 +198,7 @@ Seed apply öncesi backup alınmalıdır.
 Backup root:
 
 ```text
-C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups
+<portable-runtime-root>\data\db_backups
 ```
 
 Örnek backup adı:
@@ -210,8 +210,18 @@ mes_postgres_before_005_station_execution_seed_minimal_YYYYMMDD-HHMMSS.sql
 PowerShell backup komutu:
 
 ```powershell
+$PortableRuntimeRootInput = '<approved-portable-runtime-root>'
+if ([string]::IsNullOrWhiteSpace($PortableRuntimeRootInput) -or
+    $PortableRuntimeRootInput -eq '<approved-portable-runtime-root>') {
+  throw 'Set PortableRuntimeRootInput to the approved portable runtime root.'
+}
+$PortableRuntimeRoot =
+  (Resolve-Path -LiteralPath $PortableRuntimeRootInput -ErrorAction Stop).Path
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$BackupDir = "C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups"
+$BackupDir = Join-Path $PortableRuntimeRoot "data\db_backups"
+if (-not (Test-Path -LiteralPath $BackupDir -PathType Container)) {
+  throw "Approved backup directory is missing: $BackupDir"
+}
 $BackupFile = Join-Path $BackupDir "mes_postgres_before_005_station_execution_seed_minimal_$Stamp.sql"
 docker exec -i mes_postgres sh -lc 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > $BackupFile
 Write-Output $BackupFile

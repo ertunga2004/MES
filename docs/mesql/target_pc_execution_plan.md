@@ -31,7 +31,7 @@ git tag --points-at HEAD
 
 ### P2 — Docker Servislerinin Durumu
 
-Compose dosyası: `c:\Users\ertun\Documents\.CODE\.DOCKER\MES\compose.yaml`
+Compose dosyası: `<portable-runtime-root>\compose.yaml`
 
 Beklenen çalışan servisler ve container adları:
 
@@ -111,7 +111,7 @@ work_order_events, work_orders
 
 **A) `backup_mes_db.cmd` kullanarak (önerilen — mevcut script):**
 ```cmd
-cd c:\Users\ertun\Documents\.CODE\.DOCKER\MES\launchers\maintenance
+cd <portable-runtime-root>\launchers\maintenance
 backup_mes_db.cmd
 ```
 Backup `data\db_backups\` altına yazılır.
@@ -237,7 +237,8 @@ docker exec -i mes_postgres psql -U mes -d mes ^
 
 ### Result Template Nasıl Doldurulur
 
-Dosya: [`docs/mesql/read_only_compatibility_report_result_template.md`](file:///c:/Users/ertun/Documents/.CODE/codex/MES/docs/mesql/read_only_compatibility_report_result_template.md)
+Dosya:
+[`read_only_compatibility_report_result_template.md`](read_only_compatibility_report_result_template.md)
 
 Dolduracağınız alanlar:
 
@@ -358,7 +359,7 @@ Aşağıdaki komutlar sırasıyla çalıştırılmalıdır. Her biri çalıştı
 ┌──────────────────────────────────────────────────────────────────┐
 │ ADIM 4: BACKUP (zorunlu)                                         │
 │                                                                  │
-│   cd c:\Users\ertun\Documents\.CODE\.DOCKER\MES\launchers\       │
+│   cd <portable-runtime-root>\launchers\                             │
 │           maintenance                                            │
 │   backup_mes_db.cmd                                              │
 │   dir ..\..\data\db_backups\                                     │

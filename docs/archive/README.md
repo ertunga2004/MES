@@ -1,30 +1,34 @@
-# Docs / Archive
+# Documentation Archive
 
-Bu klasör, MES projesinde artık aktif olmayan veya daha güncel dokümanlar tarafından kapsanmış eski plan ve yol haritası dosyalarını içerir.
+Documents under `docs/archive/` are retained historical or superseded context.
+They are noncanonical.
 
-## Amaç
+## Rules
 
-Buradaki dosyalar geliştirme sürecinin tarihsel izini korumak amacıyla saklanmaktadır. **Aktif mimari kaynak değildir.**
+- Archived documents may describe superseded plans, assumptions, or system
+  boundaries.
+- They do not override
+  [CURRENT_STATE](../architecture/CURRENT_STATE.md), an active design, or
+  acceptance evidence.
+- Historical execution, failure, recovery, migration, and smoke evidence
+  normally remains under [`docs/runbooks/`](../runbooks/) and is not moved here.
+- New work must not be based on an archived document without revalidating it
+  against current repository behavior and canonical documents.
+- Archival preserves history; it is not deletion and does not imply that every
+  statement remains true.
 
-## Kritik Kurallar
+## Archived documents
 
-- Bu klasördeki dosyalar kod kararına dayanak yapılmamalıdır.
-- Aktif mimari hafıza ve çalışma kuralları için `docs/agent_memory/` klasörü kullanılmalıdır.
-- Aktif PostgreSQL geçiş dokümanları için `docs/postgres/` klasörü kullanılmalıdır.
+| Document | Reason retained |
+| --- | --- |
+| [Legacy roadmap](legacy_plans/roadmap.md) | Early project roadmap retained as historical planning context |
+| [Superseded AI guide](legacy_plans/ai_guide.md) | Replaced by root/scoped `AGENTS.md` governance and the documentation authority registry |
+| [Pre-Phase-6 architecture overview](legacy_plans/architecture_overview.md) | Workbook-first/reference-plant overview superseded by current verified state |
+| [Pre-Phase-6 roadmap](legacy_plans/pre_phase6_roadmap.md) | Earlier transition roadmap superseded by completed Canonical V2 and Phase 6A evidence |
 
-## Alt Klasörler
+Current entry points:
 
-### `legacy_plans/`
-
-Eski yol haritası ve aşama planlarını içerir. Bu dosyalar, `docs/agent_memory/` içindeki hafıza dokümanları tarafından kapsanmış ve superseded olmuştur.
-
-| Dosya | Neden arşivlendi |
-|---|---|
-| `roadmap.md` | Proje gelişim hedefleri ve kısa/orta/uzun vade planı. `agent_memory/01_current_progress.md` ve `09_antigravity_handoff.md` tarafından kapsanmıştır. |
-
-## Aktif Kaynaklar İçin Okuma Sırası
-
-1. `docs/agent_memory/README.md`
-2. `docs/agent_memory/00_masterplan.md`
-3. `docs/agent_memory/08_guardrails_and_do_not_touch.md`
-4. `docs/agent_memory/09_antigravity_handoff.md`
+- [Documentation Index](../INDEX.md)
+- [Current Verified State](../architecture/CURRENT_STATE.md)
+- [Phase 6B Entry](../architecture/PHASE_6B_ENTRY.md)
+- [Repository governance](../../AGENTS.md)

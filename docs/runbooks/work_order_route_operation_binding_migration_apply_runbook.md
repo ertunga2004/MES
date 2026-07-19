@@ -64,9 +64,20 @@ unreviewed migration with the same prefix or target table has appeared.
 Use the approved local backup launcher:
 
 ```powershell
+$PortableRuntimeRootInput = '<approved-portable-runtime-root>'
+if ([string]::IsNullOrWhiteSpace($PortableRuntimeRootInput) -or
+    $PortableRuntimeRootInput -eq '<approved-portable-runtime-root>') {
+  throw 'Set PortableRuntimeRootInput to the approved portable runtime root.'
+}
+$PortableRuntimeRoot =
+  (Resolve-Path -LiteralPath $PortableRuntimeRootInput -ErrorAction Stop).Path
+$BackupDir = Join-Path $PortableRuntimeRoot "data\db_backups"
+if (-not (Test-Path -LiteralPath $BackupDir -PathType Container)) {
+  throw "Approved backup directory is missing: $BackupDir"
+}
+$env:MES_PORTABLE_RUNTIME_ROOT = $PortableRuntimeRoot
 $BackupStartedAt = Get-Date
 & "docker\mes\launchers\maintenance\backup_mes_db.cmd"
-$BackupDir = "C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups"
 $BackupCandidates = @(
   Get-ChildItem -LiteralPath $BackupDir -File -Filter "*.sql" |
     Where-Object { $_.LastWriteTime -ge $BackupStartedAt.AddSeconds(-2) } |

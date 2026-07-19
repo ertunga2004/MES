@@ -92,7 +92,7 @@ Bu mod icin:
 
 1. `scripts/set_system_time.sh` dosyasini calisabilir yap
 2. `systemd/mes-observer-time-sync.sudoers.example` icerigini `visudo` ile kur
-3. observer'i `MES_OBSERVER_SET_CLOCK_CMD=/usr/bin/sudo -n /home/pi/Documents/vision/scripts/set_system_time.sh` ortam degiskeni ile baslat
+3. observer'i `MES_OBSERVER_SET_CLOCK_CMD=/usr/bin/sudo -n <observer-root>/scripts/set_system_time.sh` ortam degiskeni ile baslat
 
 Windows tarafindan mevcut saati otomatik publish etmek icin:
 
@@ -369,6 +369,6 @@ Tuslar:
 
 ## Bu Modulu Degistirirken
 
-- [README/mqtt-topics.md](/Users/acer/Documents/.CODE/codex/MES/README/mqtt-topics.md) ile topic uyumunu koru
+- [MQTT topic contract](../docs/runtime/mqtt-topics.md) ile topic uyumunu koru
 - ana karar zincirini vision'a tasimaya calisma
 - event isimlerini degistirirsen `mes_web/parsers.py` ve ilgili UI etkilerini birlikte dusun

@@ -156,14 +156,14 @@ Hurda kurali:
 En rahat yol:
 
 ```powershell
-cd C:\Users\acer\Documents\.CODE\codex\MES
+Set-Location -LiteralPath '<repo-root>'
 Baslaticilar\MES Web.cmd
 ```
 
 Manuel calistirma:
 
 ```powershell
-cd C:\Users\acer\Documents\.CODE\codex\MES
+Set-Location -LiteralPath '<repo-root>'
 python -m pip install -r mes_web\requirements.txt
 $env:MES_WEB_HOST = "0.0.0.0"
 $env:MES_WEB_PORT = "8080"
@@ -259,6 +259,6 @@ Windows loglarinda `WinError 121`:
 ## Test
 
 ```powershell
-cd C:\Users\acer\Documents\.CODE\codex\MES
+Set-Location -LiteralPath '<repo-root>'
 python -m unittest discover -s tests -p "test_mes_web_*.py"
 ```

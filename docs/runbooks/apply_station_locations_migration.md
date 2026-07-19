@@ -122,7 +122,7 @@ docker\mes\launchers\maintenance\backup_mes_db.cmd
 Backup hedefi:
 
 ```text
-C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups
+<portable-runtime-root>\data\db_backups
 ```
 
 Bu backup PostgreSQL içindir. JSON, Excel, FERP veya diğer runtime file flow'larını değiştirmez.

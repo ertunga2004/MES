@@ -70,7 +70,7 @@ Bu agac ana konveyor MQTT topiclerinden mantiksal olarak ayridir.
 Python GUI:
 
 ```powershell
-cd C:\Users\acer\Documents\.CODE\codex\MES\picktolight
+Set-Location -LiteralPath '<repo-root>\picktolight'
 python -m pip install -r requirements.txt
 python app.py
 ```
@@ -78,7 +78,7 @@ python app.py
 ESP32 tarafi:
 
 ```powershell
-cd C:\Users\acer\Documents\.CODE\codex\MES\picktolight\esp32\picktolight_nokia5110
+Set-Location -LiteralPath '<repo-root>\picktolight\esp32\picktolight_nokia5110'
 pio run
 pio run -t upload
 ```

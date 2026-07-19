@@ -114,7 +114,7 @@ production or validation release may run before all three checkpoints pass.
 Phase 5H-B requires one retained plain logical dump:
 
 ```text
-C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups\
+<portable-runtime-root>\data\db_backups\
 mes_before_canonical_v2_source_rollout_<timestamp>.sql
 ```
 

@@ -1,21 +1,23 @@
-# Architecture Docs
+# Architecture Documentation
 
-Bu klasor repo mimarisi ve sistem genel bakisi icindir.
+Use the repository [Documentation Index](../INDEX.md) as the registry for
+current, design, evidence, and archived material.
 
-## Ana Dokumanlar
+## Canonical state and boundary
 
-- [Roadmap](roadmap.md)
-- [System Architecture Overview](overview.md)
+- [Current Verified State](CURRENT_STATE.md)
+- [Phase 6B Entry](PHASE_6B_ENTRY.md) — `NOT_STARTED`
 
-## Bu Klasorde Ne Yapilmamali?
+## Architecture contracts
 
-- Runtime kodu, Docker ayari veya migration talimati buraya yazilmamali.
-- MESQL schema kararlari icin `docs/mesql/` kullanilmali.
-- BOM/BOP importer veya source mapping gelistirmesi bu klasorde baslatilmamali.
+This directory contains decisions, designs, schema plans, concurrency
+contracts, and phase boundaries for station/location, station execution,
+work-order binding/release, completion bridge, and controlled source/API
+rollout.
 
-## Ilgili Klasorler
+A design describes intended behavior. It is not proof that implementation,
+migration apply, source rollout, or smoke execution occurred. Use the linked
+evidence registry in [docs/INDEX.md](../INDEX.md) for observed results.
 
-- [MESQL](../mesql/README.md)
-- [Runtime](../runtime/README.md)
-- [BOM/BOP](../bombop/README.md)
-- [Docs Index](../INDEX.md)
+Superseded pre-Phase-6 overview and roadmap material is retained under
+[`docs/archive/legacy_plans/`](../archive/legacy_plans/).

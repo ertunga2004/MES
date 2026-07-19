@@ -236,8 +236,15 @@ The existing launcher is not used because its filename is not the rollout
 contract. Create the exact retained plain dump:
 
 ```powershell
+$PortableRuntimeRootInput = '<approved-portable-runtime-root>'
+if ([string]::IsNullOrWhiteSpace($PortableRuntimeRootInput) -or
+    $PortableRuntimeRootInput -eq '<approved-portable-runtime-root>') {
+  throw 'Set PortableRuntimeRootInput to the approved portable runtime root.'
+}
+$PortableRuntimeRoot =
+  (Resolve-Path -LiteralPath $PortableRuntimeRootInput -ErrorAction Stop).Path
 $RunStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$BackupDir = 'C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups'
+$BackupDir = Join-Path $PortableRuntimeRoot 'data\db_backups'
 $BackupFile = Join-Path $BackupDir `
   "mes_before_canonical_v2_source_rollout_$RunStamp.sql"
 $ContainerBackup = `

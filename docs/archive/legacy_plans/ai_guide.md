@@ -1,5 +1,10 @@
 # AI Guide
 
+> Archived, noncanonical guidance. Use
+> [root AGENTS](../../../AGENTS.md),
+> [docs/AGENTS](../../AGENTS.md), and the
+> [Documentation Index](../../INDEX.md) for current governance.
+
 Bu belge, repo uzerinde calisan ekip uyelerinin ChatGPT, Codex veya benzeri araclara daha dogru baglam vermesini saglar. Amac, AI'nin eski CSV merkezli varsayimlara veya sadece Node-RED tabanli bir zihniyete kaymasini engellemektir.
 
 ## Repo Icin Kisa Baglam
@@ -70,21 +75,21 @@ Bu belge, repo uzerinde calisan ekip uyelerinin ChatGPT, Codex veya benzeri arac
 
 Bir AI aracina repo baglami verilirken su belgeler once okunmalidir:
 
-1. [README.md](README.md)
-2. [INDEX.md](INDEX.md)
-3. [architecture/overview.md](architecture/overview.md)
-4. [runtime/runtime_guardrails.md](runtime/runtime_guardrails.md)
-5. [runtime/mqtt-topics.md](runtime/mqtt-topics.md)
-6. [notebooklm/NOTEBOOK_INDEX.md](notebooklm/NOTEBOOK_INDEX.md)
-7. [mes_web/README.md](../mes_web/README.md)
+1. [README.md](../../../README.md)
+2. [INDEX.md](../../INDEX.md)
+3. [Current verified state](../../architecture/CURRENT_STATE.md)
+4. [runtime/runtime_guardrails.md](../../runtime/runtime_guardrails.md)
+5. [runtime/mqtt-topics.md](../../runtime/mqtt-topics.md)
+6. [notebooklm/NOTEBOOK_INDEX.md](../../notebooklm/NOTEBOOK_INDEX.md)
+7. [mes_web/README.md](../../../mes_web/README.md)
 
-DB gecis isi icin once [mesql/sql_source_of_truth.md](mesql/sql_source_of_truth.md) okunmalidir.
-Feature flag isi icin once [runtime/feature_flags.md](runtime/feature_flags.md) okunmalidir.
-Runtime isi icin once [runtime/runtime_guardrails.md](runtime/runtime_guardrails.md) okunmalidir.
+DB gecis isi icin once [mesql/sql_source_of_truth.md](../../mesql/sql_source_of_truth.md) okunmalidir.
+Feature flag isi icin once [runtime/feature_flags.md](../../runtime/feature_flags.md) okunmalidir.
+Runtime isi icin once [runtime/runtime_guardrails.md](../../runtime/runtime_guardrails.md) okunmalidir.
 `docs/agent_memory/` tarihsel checkpoint alanidir; aktif dokumanlarin yerine gecmez.
 
 MESQL, ERP/F-ERP ve BOM/BOP konularinda ilgili domain README'si once okunmalidir:
 
-- [MESQL](mesql/README.md)
-- [ERP / F-ERP](erp/README.md)
-- [BOM/BOP](bombop/README.md)
+- [MESQL](../../mesql/README.md)
+- [ERP / F-ERP](../../erp/README.md)
+- [BOM/BOP](../../bombop/README.md)

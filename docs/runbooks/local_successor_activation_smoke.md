@@ -91,21 +91,21 @@ skips_terminal True
 
 ```text
 Repo root:
-C:\Users\ertun\Documents\.CODE\codex\MES
+<repo-root>
 
 Docker control root:
-C:\Users\ertun\Documents\.CODE\codex\MES\docker\mes
+<repo-root>\docker\mes
 
 Portable runtime/data root:
-C:\Users\ertun\Documents\.CODE\.DOCKER\MES
+<portable-runtime-root>
 ```
 
 Runtime data:
 
 ```text
-C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\logs
-C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\work_orders
-C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups
+<portable-runtime-root>\data\logs
+<portable-runtime-root>\data\work_orders
+<portable-runtime-root>\data\db_backups
 ```
 
 ## Guardrails

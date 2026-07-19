@@ -53,7 +53,11 @@ Yardimci legacy referanslar:
 
 ## FERP Uretim / Is Emri JSON Siniri
 
-`C:\Users\acer\Downloads\GÜNCEL ERP 1.xlsx` dosyasinda is emri alanlari `ÜRETİM YÖNETİMİ` sheet'i altinda geciyor. MES tarafinda import icin canonical JSON anahtarlari korunur; FERP'ten gelen `lbl...` kodlari ayni alanlarin alias'i olarak kabul edilir.
+İnceleme sırasında kullanılan dış FERP workbook'unda iş emri alanları
+`ÜRETİM YÖNETİMİ` sheet'i altında geçiyordu. MES tarafında import için
+canonical JSON anahtarları korunur; FERP'ten gelen `lbl...` kodları aynı
+alanların alias'ı olarak kabul edilir. Dış workbook yolu repository contract'ı
+değildir.
 
 Ilgili FERP bloklari:
 

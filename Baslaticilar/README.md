@@ -62,7 +62,7 @@ Baslaticilar paket kurmaz. Gereken paketler once kurulmalidir.
 MES Web icin:
 
 ```powershell
-<launcherin_kullandigi_python> -m pip install -r C:\Users\acer\Documents\.CODE\codex\MES\mes_web\requirements.txt
+<launcherin_kullandigi_python> -m pip install -r .\mes_web\requirements.txt
 ```
 
 Ozellikle:

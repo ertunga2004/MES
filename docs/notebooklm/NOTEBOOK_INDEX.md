@@ -20,15 +20,19 @@ Icerik:
 
 - `README.md`
 - `docs/README.md`
-- `docs/AI_GUIDE.md`
+- `AGENTS.md`
 - `docs/INDEX.md`
-- `docs/architecture/overview.md`
+- `docs/architecture/CURRENT_STATE.md`
+- `docs/architecture/PHASE_6B_ENTRY.md`
 - `docs/data-model.md`
 - `docs/runtime/mqtt-topics.md`
 - `docs/runtime/tablet_plan.md`
 - `docs/runtime/hardware.md`
 - `docs/runtime/field-test-plan.md`
-- `docs/archive/legacy_plans/roadmap.md` (arşivlendi; aktif referans için `docs/agent_memory/` kullanın)
+- `docs/archive/legacy_plans/roadmap.md` (historical)
+- `docs/archive/legacy_plans/ai_guide.md` (superseded governance)
+- `docs/archive/legacy_plans/architecture_overview.md` (superseded overview)
+- `docs/archive/legacy_plans/pre_phase6_roadmap.md` (superseded roadmap)
 - `mes_web/README.md`
 - `raspberry/README.md`
 - `picktolight/README.md`

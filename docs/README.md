@@ -1,97 +1,41 @@
-# MES
+# MES Documentation
 
-Bu repo, mini konveyor hattinin kontrol, izleme, OEE, operator kiosk, teknisyen cagri ekrani ve workbook tabanli audit akisini ayni kod tabaninda toplar. Ana aktif gelistirme ekseni `mes_web/` altindaki FastAPI + WebSocket + Excel runtime yapisidir.
+The authoritative documentation registry is [docs/INDEX.md](INDEX.md).
+Start there instead of using directory age, filename, or incoming-link count
+as an authority signal.
 
-## Bugunku Durum
+## Current entry points
 
-- fiziksel karar ve hareket otoritesi `mega.cpp`
-- seri <-> MQTT bridge `esp32.cpp`
-- dashboard, operator kiosk, teknisyen kiosk, OEE runtime ve workbook yazimi `mes_web/`
-- vision observer `raspberry/` altinda pasif gozlemci
-- pick-to-light `picktolight/` altinda ayri modul
-- birincil kalici veri siniri CSV degil, tarihli workbook ve runtime state dosyalaridir
+- [Project README](../README.md) — concise repository purpose and startup.
+- [Current Verified State](architecture/CURRENT_STATE.md) — current verified
+  capabilities, database/configuration baseline, flags, compatibility, and
+  deferred scope.
+- [Phase 6B Entry](architecture/PHASE_6B_ENTRY.md) — next-phase boundary;
+  status is `NOT_STARTED`.
+- [Phase 6A acceptance](runbooks/phase_6a_station_integration_acceptance_evidence_20260719.md)
+  — final station-integration evidence.
+- [Repository governance](../AGENTS.md) and
+  [documentation governance](AGENTS.md).
 
-## Su Anda Sistem Nasil Calisiyor
+## Main documentation areas
 
-1. Mega; olcum, queue ve robot olaylarini text log ve status satiri olarak uretir.
-2. ESP32 bu satirlari MQTT topiclerine tasir.
-3. `mes_web` topicleri dinler, dashboard, kiosk ve teknisyen snapshot'larini uretir.
-4. Browser dashboard REST + WebSocket ile; kiosk ve teknisyen ekranlari ayri route, bootstrap ve WebSocket akislari ile beslenir.
-5. `mes_web` ayni olaylardan workbook'a kayit yazar.
-6. OEE runtime `logs/oee_runtime_state.json` icinde tutulur ve backend tarafinda hesaplanir.
-7. Dahili sure alanlari milisaniye birincil olacak sekilde tutulur.
+- `architecture/` — current state, phase boundaries, decisions, designs, and
+  contracts.
+- `runbooks/` — repeatable procedures plus immutable smoke/apply/failure/
+  recovery evidence.
+- `runtime/` — retained runtime, feature-flag, MQTT, hardware, and field-test
+  references.
+- `mesql/` — frozen MESQL planning and reference material unless explicitly
+  reactivated.
+- `erp/` and `bombop/` — deferred integration contracts and source-readiness
+  material.
+- `agent_memory/` — historical checkpoints pending manual consolidation;
+  noncanonical for current Codex work.
+- `archive/` — superseded context that must not override current state or
+  evidence.
+- `FERP_XLS/` and `db_pre_plan/` — retained source material, not active
+  implementation instructions.
 
-## Hizli Baslangic
-
-Launcher ile:
-
-```powershell
-cd C:\Users\acer\Documents\.CODE\codex\MES
-Baslaticilar\MES Web.cmd
-```
-
-Manuel:
-
-```powershell
-cd C:\Users\acer\Documents\.CODE\codex\MES
-python -m pip install -r mes_web\requirements.txt
-$env:MES_WEB_HOST = "0.0.0.0"
-$env:MES_WEB_PORT = "8080"
-python -m mes_web
-```
-
-Adresler:
-
-- dashboard: `http://127.0.0.1:8080`
-- kiosk ornegi: `http://127.0.0.1:8080/kiosk/kiosk-test-1`
-- teknisyen ekrani: `http://127.0.0.1:8080/technician/tech-1`
-- ayni agdaki cihazdan: `http://<PC_IP>:8080/kiosk/kiosk-test-1`
-
-`Baslaticilar\MES Web.cmd`, server hazir oldugunda dashboard, kiosk ve teknisyen ekranlarini varsayilan tarayicida otomatik acar; linkler CMD ekraninda da yazilir.
-
-## Operasyonel Notlar
-
-- sistem acildiginda acik kalan vardiya otomatik devam ettirilmez
-- `__reset_counts__` Mega'ya gitmez; backend icinde yerel sifirlama yapar
-- kiosk browser tabanlidir; MQTT bilgisi bilmez
-- teknisyen ekrani browser tabanlidir; MQTT bilgisi bilmez
-- kioskta son 5 tamamlanan urun icin kalite duzeltme vardir
-- `Ariza Bildir`, manuel fault ile birlikte teknisyen cagrisi acar
-- teknisyen `Cevapla` ve `Tamamla` aksiyonlariyla cevap, giderme ve toplam sureleri sabitler
-- hurda urun depoya dusmez
-- `Broker Offline` goruluyorsa once launcher'in kullandigi interpreter'da `paho-mqtt` kurulu mu kontrol edilmelidir
-
-## Dokuman Haritasi
-
-- [Docs Index](INDEX.md)
-- [Genel Mimari](architecture/overview.md)
-- [Veri Modeli](data-model.md)
-- [MQTT Topicleri](runtime/mqtt-topics.md)
-- [Tablet ve Teknisyen Kiosk Durumu](runtime/tablet_plan.md)
-- [MES Web](../mes_web/README.md)
-- [Baslaticilar](../Baslaticilar/README.md)
-- [Raspberry](../raspberry/README.md)
-- [Pick To Light](../picktolight/README.md)
-- [AI Guide](AI_GUIDE.md)
-
-## Docs Klasor Yapisi
-
-Bu klasordeki alt dizinler su amaclarla ayrilmistir:
-
-- **`architecture/`** - Sistem mimarisi ve genel bakis.
-- **`mesql/`** - MESQL shared schema, validation ve data exchange karar dokumanlari.
-- **`erp/`** - ERP/F-ERP entegrasyon ve label-first contract dokumanlari.
-- **`bombop/`** - BOM/BOP release, source payload ve readiness dokumanlari.
-- **`runtime/`** - MQTT, saha test, hardware, kiosk/tablet ve runbook dokumanlari.
-- **`agent_memory/`** — Ana mimari hafiza kaynagi. Yeni ajan veya gelistirici bu klasoru once okumalidur. Docker/PostgreSQL mimari kararlari, calisma sinirlarini ve sonraki adimlari ozetler.
-- **`postgres/`** — Aktif PostgreSQL gecis dokumanlari. Faz 4A plani ve veri grubu envanterleri buradadir.
-- **`db_pre_plan/`** — Veri tabani on analiz kaynakları (.xlsx, .docx). Tarihsel mimari kaynakcadir; silinmemelidir.
-- **`archive/`** — Eski/superseded dokümanlar. Aktif kaynak değildir; tarihsel referans amacli korunur.
-- **`FERP_XLS/`** — FERP sablon ve etiket dosyalari.
-- **`notebooklm/`** — NotebookLM defter indeksi.
-
-> Agent veya gelistirici icin on okuma sirasi:
-> 1. `agent_memory/README.md`
-> 2. `agent_memory/00_masterplan.md`
-> 3. `agent_memory/08_guardrails_and_do_not_touch.md`
-> 4. `agent_memory/09_antigravity_handoff.md`
+Runbooks do not grant permission to apply migrations, write source data,
+operate Docker, use a physical broker, or perform destructive recovery. Those
+actions require an explicit task and approval.

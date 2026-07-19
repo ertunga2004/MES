@@ -156,7 +156,7 @@ docker\mes\launchers\maintenance\backup_mes_db.cmd
 Backup hedefi:
 
 ```text
-C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups
+<portable-runtime-root>\data\db_backups
 ```
 
 Backup raporunda dosya yolu kaydedilmelidir. Backup alınmadan `UPDATE` yapılmamalıdır.

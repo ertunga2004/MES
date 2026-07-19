@@ -8,7 +8,7 @@
 
 ```powershell
 # Proje klasörüne git
-cd C:\Users\ertun\Documents\.CODE\.DOCKER\MES
+Set-Location -LiteralPath '<portable-runtime-root>'
 
 # Servisleri başlat (arka planda)
 docker compose up -d --build
@@ -37,7 +37,7 @@ curl http://localhost:8080/health
 ## 2. Smoke Test Çalıştırma
 
 ```powershell
-cd C:\Users\ertun\Documents\.CODE\.DOCKER\MES
+Set-Location -LiteralPath '<portable-runtime-root>'
 powershell -ExecutionPolicy Bypass -File tools/mvp_smoke_check.ps1
 ```
 
@@ -58,7 +58,7 @@ powershell -ExecutionPolicy Bypass -File tools/mvp_smoke_check.ps1
 
 ```powershell
 # Gerçek backup
-cd C:\Users\ertun\Documents\.CODE\.DOCKER\MES
+Set-Location -LiteralPath '<portable-runtime-root>'
 powershell -ExecutionPolicy Bypass -File tools/mvp_backup_runtime.ps1
 
 # Dry-run (dosya yazmadan test)

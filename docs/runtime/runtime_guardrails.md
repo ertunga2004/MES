@@ -1,6 +1,6 @@
 # Runtime Guardrails
 
-Bu dokuman MES runtime icin dokunulmamasi gereken sinirlari aktif dokumana konsolide eder. Kaynak notlar `docs/agent_memory/08_guardrails_and_do_not_touch.md`, `docs/agent_memory/06_runtime_data_flow.md`, `docs/AI_GUIDE.md` ve SQL checkpoint notlaridir.
+Bu dokuman MES runtime icin dokunulmamasi gereken sinirlari aktif dokumana konsolide eder. Kaynak notlar `docs/agent_memory/08_guardrails_and_do_not_touch.md`, `docs/agent_memory/06_runtime_data_flow.md`, arşivlenmiş `docs/archive/legacy_plans/ai_guide.md` ve SQL checkpoint notlaridir.
 
 Bu dokuman runtime kodu, Docker config veya DB migration degisikligi yapmaz.
 

@@ -16,6 +16,8 @@ this subtree when wording differs.
 - Do not introduce machine-specific absolute paths into canonical documents.
 - Preserve existing language and technical terminology within each document.
 - Do not rewrite historical evidence solely to modernize its wording or paths.
+- Follow the [archive policy](archive/README.md) before moving superseded
+  context. Historical execution evidence normally remains under `runbooks/`.
 
 Canonical references:
 

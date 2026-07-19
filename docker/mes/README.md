@@ -9,21 +9,21 @@ migration guide and it does not authorize MESQL push/pull.
 
 ```text
 Git repo root:
-C:\Users\ertun\Documents\.CODE\codex\MES
+<repo-root>
 
 Docker control root:
-C:\Users\ertun\Documents\.CODE\codex\MES\docker\mes
+<repo-root>\docker\mes
 
 Portable runtime/data root:
-C:\Users\ertun\Documents\.CODE\.DOCKER\MES
+<portable-runtime-root>
 ```
 
 Runtime data folders:
 
 ```text
-C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\logs
-C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\work_orders
-C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups
+<portable-runtime-root>\data\logs
+<portable-runtime-root>\data\work_orders
+<portable-runtime-root>\data\db_backups
 ```
 
 `docker/mes` is the control folder. It contains compose files, Dockerfiles,
@@ -51,7 +51,7 @@ push/pull without explicit approval.
 Portable `mes_web` image builds from the repo-root source:
 
 ```text
-C:\Users\ertun\Documents\.CODE\codex\MES\mes_web
+<repo-root>\mes_web
 ```
 
 Portable Docker build settings:
@@ -235,7 +235,7 @@ launchers\maintenance\backup_mes_db.cmd
 Backups are written under:
 
 ```text
-C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups
+<portable-runtime-root>\data\db_backups
 ```
 
 This backs up PostgreSQL only. It does not replace JSON, Excel, FERP, or other

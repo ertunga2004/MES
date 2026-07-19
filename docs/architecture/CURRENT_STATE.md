@@ -2046,3 +2046,61 @@ mutation was performed.
   started here. MQTT/automatic events, Kiosk/manual actions, product
   entry/exit tracking, operation-step execution, FERP/MESQL, and other next
   phases remain outside this task.
+
+## Verified Phase 6A Station Execution Integration
+
+Last verified: `2026-07-19`
+
+Phase 6A final commit:
+`ae023142058a0a5fa79c6b99e257097abbde8dd1`
+(`fix: complete phase 6a station integration`)
+
+Status: `VERIFIED`
+
+- Phase 6A connects Kiosk/manual commands and canonical MQTT events to one
+  config-driven station-execution application boundary. The verified policy
+  matrix includes manual/manual, implicit/manual, manual/implicit,
+  configured-source implicit/implicit, and source-less internal
+  implicit/implicit atomic transitions.
+- The persisted lifecycle UUID is the canonical operation-instance identity.
+  Dispatch also validates route-operation, station, current step, action,
+  channel, and configured event-source identity. Queue/lifecycle disagreement
+  fails closed.
+- External replay identity is channel- and publisher/source-aware. An exact
+  same-channel command replays without another state mutation; a cross-channel
+  same-ID command produces a deterministic conflict instead of being adopted
+  as replay.
+- Source-less internal implicit transitions use deterministic, restart-stable
+  identity and a single atomic transition. They do not infer an external
+  publisher or accept a caller-provided external event identity.
+- The canonical MQTT adapter uses a stable client identity, persistent session,
+  generation-aware connect/SUBACK/message/disconnect callbacks, bounded queue
+  admission, and manual ACK only after a terminal worker/transaction result.
+  Timeout, shutdown, transient failure, and retired generation paths do not
+  ACK.
+- Startup failure follows exactly-once claim and generation retirement, then
+  performs worker join and client/network cleanup outside the lifecycle lock.
+  Concurrent stop waits outside that lock for cleanup completion and reports
+  incomplete cleanup as failure. Final tests found no worker, client, pending
+  MID, failure-owner, listener, or temporary-resource leak.
+- Kiosk actions are derived generically from the current persisted operation
+  step and configured mode/source; Phase 6A does not hard-code one station or
+  one fixed action sequence.
+- Final focused MQTT regression was `65`, `OK`. Final combined Phase 6A
+  regression was `933`, `OK`, with `py_compile` and diff checks passing.
+- The Phase 6A-F3 disposable PostgreSQL clone acceptance remained valid for
+  the F4/F5 transport-only closures. Those final closures did not target the
+  production `mes` database and did not rerun a physical broker test.
+- The Phase 6A implementation commit covered the exact reviewed 14-file scope.
+  Its tree was clean after commit, and no push was performed at closure time.
+
+Phase 6A did not implement MESQL integration, inventory movement/balance,
+generalized virtual-plant runtime, agent analytics, FERP production rollout,
+or a new source rollout. It did not start Phase 6B. These remain deferred until
+an explicit design and task authorizes them.
+
+Evidence:
+[Phase 6A station integration acceptance](../runbooks/phase_6a_station_integration_acceptance_evidence_20260719.md).
+The next-phase boundary is
+[Phase 6B Entry](PHASE_6B_ENTRY.md), whose implementation status is
+`NOT_STARTED`.

@@ -1,61 +1,117 @@
-# MES
+# Configurable MES Execution Core
 
-Bu repo, mini konveyor hattinin kontrol, izleme, OEE, operator kiosk ve workbook tabanli audit akisini ayni kod tabaninda toplar. Aktif uygulama omurgasi `mes_web/` altindaki FastAPI + WebSocket + Excel runtime katmanidir.
+Bu repository, farklı üretim sistemlerine uyarlanabilen yerel bir üretim
+yürütme çekirdeğini geliştirir. Mevcut konveyör, sensörler ve robot kol bu
+mimarinin fiziksel doğrulama platformu ve reference plant'idir; projenin ürün
+sınırı yalnız bu hatta özgü değildir.
 
-## Bugunku Sistem Ozeti
+## Proje amacı
 
-- fiziksel karar ve hareket otoritesi `mega.cpp`
-- seri <-> MQTT bridge `esp32.cpp`
-- dashboard, operator kiosk, teknisyen kiosk, OEE runtime ve workbook yazimi `mes_web/`
-- vision observer `raspberry/` altinda pasif capraz kontrol
-- `picktolight/` ayri bir modul olarak yasiyor
-- birincil kalici veri siniri CSV degil, tarihli workbook + runtime state
+MES; iş emri lifecycle'ı, rota/operasyon yürütme, istasyon kuyruğu,
+config-driven station execution, operatör kiosk'u, MQTT/IoT adaptörleri, audit
+ve OEE görünürlüğünü kontrollü sözleşmelerle bir araya getirir. Uzun vadeli
+sanal üretim kaynağı, dijital tesis ve agent destekli karar altyapısı roadmap
+kapsamındadır; bugün uygulanmış capability olarak kabul edilmez.
 
-## Hizli Baslangic
+## Güncel doğrulanmış yetenekler
 
-Launcher ile:
+- FastAPI tabanlı dashboard, operatör kiosk'u ve teknisyen ekranı.
+- Yerel PostgreSQL üzerinde work-order route release, deterministic lifecycle
+  kimlikleri, station queue ve runtime completion bridge.
+- Kiosk ve canonical MQTT ingress için ortak, config-driven station-execution
+  application boundary.
+- Manual/manual, implicit/manual, manual/implicit, configured-source
+  implicit/implicit ve source-less internal implicit/implicit transition
+  kombinasyonları.
+- Lifecycle/route/step/action kimliği, idempotent replay ve deterministic
+  conflict davranışı.
+- Canonical MQTT yolu için persistent session, generation-aware callback'ler
+  ve terminal transaction sonucundan sonra manual ACK.
+- Workbook/OEE/runtime yolları retained compatibility ve audit sınırı olarak
+  korunur.
+
+Ayrıntılı ve tarihli doğrulama için
+[Current State](docs/architecture/CURRENT_STATE.md) belgesini kullanın.
+
+## Sistem sınırları
+
+- `MES`, bu repository'de aktif geliştirilen yerel production-execution
+  sistemidir.
+- `MESQL`, ayrı merkezi entegrasyon/veri çekirdeği çalışmasıdır ve açıkça
+  scope'a alınmadıkça frozen/deferred kabul edilir.
+- Fiziksel hareket ve emniyet otoritesi firmware/control katmanındadır; MES Web
+  üretim bağlamı, kayıt, orchestration ve kullanıcı etkileşimini yönetir.
+- Fiziksel ve sanal event kaynakları explicit adapter/contract üzerinden sisteme
+  girmelidir.
+- Feature-flagged bir capability, flag açıkça etkinleştirilmeden varsayılan
+  production davranışı değildir.
+
+## Repository haritası
+
+- `mes_web/`: FastAPI uygulaması, runtime, MQTT ve DB integration kodu.
+- `tests/`: offline unit/API ve deterministic concurrency testleri.
+- `db/`: MES migration ve seed artefaktları.
+- `docker/mes/`: kontrollü Docker/PostgreSQL runtime ve launcher'lar.
+- `Baslaticilar/`: Windows uygulama launcher'ları.
+- `CPP/`, `raspberry/`, `picktolight/`: fiziksel/edge/reference bileşenler.
+- `docs/architecture/`: canonical state, phase boundary ve tasarım belgeleri.
+- `docs/runbooks/`: apply/smoke planları ve immutable execution evidence.
+
+## Hızlı başlangıç
+
+Güvenli local varsayılan olarak proje-local Python ortamıyla loopback üzerinde
+çalıştırın:
 
 ```powershell
-cd C:\Users\acer\Documents\.CODE\codex\MES
-Baslaticilar\MES Web.cmd
+python -m venv .venv
+& '.\.venv\Scripts\python.exe' -m pip install -r .\mes_web\requirements.txt
+$env:MES_WEB_HOST = '127.0.0.1'
+$env:MES_WEB_PORT = '8080'
+& '.\.venv\Scripts\python.exe' -m mes_web
 ```
 
-Manuel:
+Windows launcher seçeneği:
 
 ```powershell
-cd C:\Users\acer\Documents\.CODE\codex\MES
-python -m pip install -r mes_web\requirements.txt
-$env:MES_WEB_HOST = "0.0.0.0"
-$env:MES_WEB_PORT = "8080"
-python -m mes_web
+& '.\Baslaticilar\MES Web.cmd'
 ```
 
-Ana adresler:
+Bu launcher doğrulanmış mevcut davranışında `MES_WEB_HOST=0.0.0.0` kullanır ve
+dashboard/Kiosk yüzeyini aynı ağdan erişilebilir yapar. Repository'de genel bir
+authentication katmanı yoktur; launcher yalnız trusted local network üzerinde
+ve write feature flag'leri kontrol edildikten sonra kullanılmalıdır. Yalnız bu
+PC'den erişim için yukarıdaki `127.0.0.1` manuel komutunu tercih edin.
 
-- dashboard: `http://127.0.0.1:8080`
-- kiosk ornegi: `http://127.0.0.1:8080/kiosk/kiosk-test-1`
-- teknisyen ekrani: `http://127.0.0.1:8080/technician/tech-1`
-- ayni agdaki cihazdan: `http://<PC_IP>:8080/kiosk/kiosk-test-1`
+Offline test keşfi:
 
-`Baslaticilar\MES Web.cmd`, server hazir oldugunda dashboard, kiosk ve teknisyen ekranlarini varsayilan tarayicida otomatik acar; linkler CMD ekraninda da yazilir.
+```powershell
+& '.\.venv\Scripts\python.exe' -m unittest discover -s tests -p 'test_mes_web_*.py'
+```
 
-## Onemli Operasyon Notlari
+Launcher ayrıntıları için [Baslaticilar](Baslaticilar/README.md), uygulama
+arayüzleri için [MES Web](mes_web/README.md), Docker seçenekleri için
+[Docker MES](docker/mes/README.md) belgelerine bakın.
 
-- kiosk browser tabanlidir; MQTT'ye dogrudan baglanmaz
-- dahili sure hesaplari ms-first tutulur
-- `openingChecklistDurationMs` OEE/availability disidir
-- `closingChecklistDurationMs` planned stop / planned maintenance olarak sayilir
-- `manualFaultDurationMs` unplanned stop olarak sayilir
-- hurda urun depoya dusmez
-- `Broker Offline` goruluyorsa once launcher'in kullandigi Python ortaminda `paho-mqtt` kurulu mu kontrol edilmelidir
-- MQTT client id varsayilan olarak benzersiz uretilir; ayni id ile iki MES Web acilmasi broker baglantisini titretir
+## Güvenlik notları
 
-## Dokuman Haritasi
+- Production `mes` DB write, migration apply, physical broker testi ve source
+  rollout ayrı açık görev/onay gerektirir.
+- `.env`, secret, dump, backup ve runtime output commit edilmez.
+- Database doğrulamasında mümkün olduğunda disposable clone kullanılır.
+- Historical FAIL evidence silinmez; sonraki PASS yalnız kendi kapsamını açıkça
+  supersede eder.
+- Push yalnız açık kullanıcı talimatıyla yapılır.
 
-- [Genel Mimari](README/architecture.md)
-- [Veri Modeli](README/data-model.md)
-- [MQTT Topicleri](README/mqtt-topics.md)
-- [Tablet ve Teknisyen Kiosk Durumu](README/tablet_plan.md)
-- [MES Web](mes_web/README.md)
-- [Baslaticilar](Baslaticilar/README.md)
-- [AI Guide](README/AI_GUIDE.md)
+## Dokümantasyon haritası
+
+- [Current verified state](docs/architecture/CURRENT_STATE.md)
+- [Phase 6A acceptance evidence](docs/runbooks/phase_6a_station_integration_acceptance_evidence_20260719.md)
+- [Phase 6B entry boundary](docs/architecture/PHASE_6B_ENTRY.md)
+- [Documentation index](docs/INDEX.md)
+- [Repository agent instructions](AGENTS.md)
+
+## Güncel faz
+
+Phase 6A station integration, commit `ae023142058a0a5fa79c6b99e257097abbde8dd1`
+ile doğrulanmıştır. Phase 6B implementation `NOT_STARTED`; başlamadan önce
+[Phase 6B Entry](docs/architecture/PHASE_6B_ENTRY.md) gate'i karşılanmalıdır.

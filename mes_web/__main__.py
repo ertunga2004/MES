@@ -29,6 +29,18 @@ WORK_ORDER_ROUTE_RELEASE_SERVER_FIELDS = frozenset({
     "mode",
     "operation_bindings",
 })
+WORK_ORDER_ROUTE_RELEASE_LOG_FIELDS = (
+    "event",
+    "work_order_id",
+    "release_id",
+    "route_code",
+    "route_version",
+    "released_by",
+    "released",
+    "error_code",
+    "duration_ms",
+)
+WORK_ORDER_ROUTE_RELEASE_LOG_HANDLER_MARKER = "mes_web_work_order_route_release_json_v1"
 logger = logging.getLogger(__name__)
 ALLOWED_LOCATION_TYPES = frozenset({
     "raw_material",
@@ -57,6 +69,90 @@ def _configure_event_loop_policy() -> None:
     current_policy = asyncio.get_event_loop_policy()
     if not isinstance(current_policy, selector_policy_cls):
         asyncio.set_event_loop_policy(selector_policy_cls())
+
+
+class _WorkOrderRouteReleaseJsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            field: getattr(record, field, None)
+            for field in WORK_ORDER_ROUTE_RELEASE_LOG_FIELDS
+        }
+        return json.dumps(
+            payload,
+            ensure_ascii=True,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+
+
+def _work_order_route_release_exception_diagnostic(error: BaseException) -> dict[str, Any]:
+    exception_chain: list[str] = []
+    sqlstate: str | None = None
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen and len(exception_chain) < 8:
+        seen.add(id(current))
+        exception_chain.append(
+            _route_release_log_text(type(current).__name__, max_length=128)
+            or "Exception"
+        )
+        if sqlstate is None:
+            candidate = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
+            if (
+                isinstance(candidate, str)
+                and len(candidate) == 5
+                and candidate.isascii()
+                and candidate.isalnum()
+                and candidate.upper() == candidate
+            ):
+                sqlstate = candidate
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
+    return {
+        "diagnostic": "work_order_route_release_internal_error",
+        "exception_chain": exception_chain,
+        "sqlstate": sqlstate,
+    }
+
+
+class _WorkOrderRouteReleaseJsonHandler(logging.StreamHandler):
+    def emit(self, record: logging.LogRecord) -> None:
+        super().emit(record)
+        if not record.exc_info or record.exc_info[1] is None:
+            return
+        try:
+            diagnostic = _work_order_route_release_exception_diagnostic(
+                record.exc_info[1]
+            )
+            self.stream.write(
+                json.dumps(
+                    diagnostic,
+                    ensure_ascii=True,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                )
+                + self.terminator
+            )
+            self.flush()
+        except Exception:
+            return
+
+
+def _configure_work_order_route_release_logging() -> None:
+    logger.disabled = False
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if any(
+        getattr(handler, "name", None) == WORK_ORDER_ROUTE_RELEASE_LOG_HANDLER_MARKER
+        for handler in logger.handlers
+    ):
+        return
+    handler = _WorkOrderRouteReleaseJsonHandler(sys.stderr)
+    handler.name = WORK_ORDER_ROUTE_RELEASE_LOG_HANDLER_MARKER
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(_WorkOrderRouteReleaseJsonFormatter())
+    logger.addHandler(handler)
 
 
 def _station_location_read_model_enabled() -> bool:
@@ -198,9 +294,19 @@ def _normalize_work_order_route_release_http_request(
     }
 
 
-def _route_release_log_text(value: Any, *, max_length: int = 256) -> str:
-    text = str(value or "")
-    sanitized = "".join(character if character >= " " and character != "\x7f" else "�" for character in text)
+def _route_release_log_text(value: Any, *, max_length: int = 256) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    sanitized = "".join(
+        character
+        if ord(character) >= 32
+        and not 127 <= ord(character) <= 159
+        and not 0xD800 <= ord(character) <= 0xDFFF
+        and character not in {"\u2028", "\u2029"}
+        else "\ufffd"
+        for character in text
+    )
     return sanitized[:max_length]
 
 
@@ -669,6 +775,7 @@ def register_station_execution_config_read_routes(app: Any, app_config: Any) -> 
 
 def main() -> None:
     _configure_event_loop_policy()
+    _configure_work_order_route_release_logging()
     try:
         import uvicorn
         from .app import app, config

@@ -2,8 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import http.client
+import io
 import json
+import logging
 import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -168,6 +176,8 @@ class WorkOrderRouteReleaseApiTests(unittest.TestCase):
         if secret is not None:
             self.assertNotIn(secret, repr(extra))
         for field in ("work_order_id", "release_id", "route_code", "released_by"):
+            if extra[field] is None:
+                continue
             for control_character in ("\n", "\r", "\t"):
                 self.assertNotIn(control_character, extra[field])
         return extra
@@ -261,10 +271,10 @@ class WorkOrderRouteReleaseApiTests(unittest.TestCase):
             secret=secret,
         )
         self.assertEqual(extra["work_order_id"], "WO-API-001")
-        self.assertEqual(extra["release_id"], "")
-        self.assertEqual(extra["route_code"], "")
+        self.assertIsNone(extra["release_id"])
+        self.assertIsNone(extra["route_code"])
         self.assertIsNone(extra["route_version"])
-        self.assertEqual(extra["released_by"], "")
+        self.assertIsNone(extra["released_by"])
 
     def test_disabled_endpoint_does_not_access_headers_body_or_stream(self) -> None:
         secret = "EXPLODING-DISABLED-BODY-SECRET"
@@ -885,6 +895,16 @@ class WorkOrderRouteReleaseApiTests(unittest.TestCase):
             secret=secret,
         )
 
+    def test_replay_logs_released_false(self) -> None:
+        with patch.object(main_module.logger, "info") as logged:
+            response, _ = self._post(result=self._helper_result(released=False))
+        self.assertEqual(response.status_code, 200)
+        self._assert_structured_log(
+            logged,
+            error_code=None,
+            released=False,
+        )
+
     def test_user_control_characters_are_sanitized_in_structured_log(self) -> None:
         request = {**self.VALID_REQUEST, "release_id": "REL\nID"}
         with patch.object(main_module.logger, "info") as logged:
@@ -958,6 +978,314 @@ class WorkOrderRouteReleaseApiTests(unittest.TestCase):
         initialize.assert_not_called()
         finish.assert_not_called()
         bridge.assert_not_called()
+
+
+class WorkOrderRouteReleaseRealProcessLoggingTests(unittest.TestCase):
+    STRUCTURED_LOG_FIELDS = {
+        "event",
+        "work_order_id",
+        "release_id",
+        "route_code",
+        "route_version",
+        "released_by",
+        "released",
+        "error_code",
+        "duration_ms",
+    }
+
+    @staticmethod
+    def _reserve_loopback_port() -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            return listener.getsockname()[1]
+
+    @staticmethod
+    def _wait_for_health(process: subprocess.Popen[str], port: int) -> None:
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise AssertionError(f"mes_web exited during startup: {process.returncode}")
+            try:
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
+                connection.request("GET", "/health", headers={"Connection": "close"})
+                response = connection.getresponse()
+                body = json.loads(response.read().decode("utf-8"))
+                connection.close()
+                if response.status == 200 and body.get("status") == "ok":
+                    return
+            except (OSError, TimeoutError, ValueError):
+                pass
+            time.sleep(0.1)
+        raise AssertionError("mes_web health timeout")
+
+    @staticmethod
+    def _stop_process_tree(process: subprocess.Popen[str]) -> str:
+        if process.poll() is None:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=10,
+                )
+            else:
+                process.terminate()
+        try:
+            return process.communicate(timeout=15)[0]
+        except subprocess.TimeoutExpired:
+            process.kill()
+            return process.communicate(timeout=10)[0]
+
+    def _run_real_process_request(
+        self,
+        *,
+        flag: str,
+        order_id: str,
+        body: bytes,
+    ) -> tuple[int, dict, str, int, bool]:
+        port = self._reserve_loopback_port()
+        process: subprocess.Popen[str] | None = None
+        output = ""
+        temp_path_text = ""
+        with tempfile.TemporaryDirectory(prefix="phase5hd2f1_route_release_") as temp_path:
+            temp_path_text = temp_path
+            work_orders_dir = Path(temp_path) / "work_orders"
+            work_orders_dir.mkdir()
+            environment = os.environ.copy()
+            environment.update({
+                "MES_WEB_HOST": "127.0.0.1",
+                "MES_WEB_PORT": str(port),
+                "MES_WEB_DB_WORK_ORDER_ROUTE_RELEASE_ENABLED": flag,
+                "MES_WEB_DB_ENABLED": "false",
+                "MES_WEB_DB_HOST": "127.0.0.1",
+                "MES_WEB_DB_PORT": "1",
+                "MES_WEB_DB_NAME": "phase5hd2f1_no_database",
+                "MES_WEB_DB_USER": "phase5hd2f1",
+                "MES_WEB_DB_PASSWORD": "",
+                "MES_WEB_DB_MIRROR_WORK_ORDERS": "false",
+                "MES_WEB_DB_FAIL_OPEN": "false",
+                "MES_WEB_DB_LOG_FAILURES": "false",
+                "MES_WEB_DB_HOOK_PRODUCTION_COMPLETIONS": "false",
+                "MES_WEB_DB_HOOK_VISION_EVENTS": "false",
+                "MES_WEB_DB_HOOK_OEE_SNAPSHOTS": "false",
+                "MES_WEB_DB_HOOK_DOWNTIME_EVENTS": "false",
+                "MES_WEB_DB_HOOK_MAINTENANCE_RECORDS": "false",
+                "MES_WEB_DB_HOOK_QUALITY_OVERRIDES": "false",
+                "MES_WEB_DB_HOOK_STATION_EVENTS": "false",
+                "MES_WEB_DB_HOOK_WORK_ORDER_TRANSITIONS": "false",
+                "MES_WEB_DB_SHADOW_READ_WORK_ORDERS": "false",
+                "MES_WEB_DB_READ_WORK_ORDERS": "false",
+                "MES_WEB_DB_SHADOW_READ_DASHBOARD": "false",
+                "MES_WEB_DB_READ_DASHBOARD": "false",
+                "MES_WEB_EXCEL_ENABLED": "false",
+                "MES_WEB_PUBLISH_ENABLED": "false",
+                "MES_WEB_MANUAL_COMMAND_ENABLED": "false",
+                "MES_WEB_VISION_INGEST_ENABLED": "false",
+                "MES_WEB_MQTT_HOST": "127.0.0.1",
+                "MES_WEB_MQTT_PORT": "9",
+                "MES_WEB_MQTT_CLIENT_ID": f"phase5hd2f1-{port}",
+                "MES_WEB_OEE_RUNTIME_STATE_PATH": str(Path(temp_path) / "oee.json"),
+                "MES_WEB_WORK_ORDERS_DIR": str(work_orders_dir),
+                "MES_WEB_FERP_IMPORT_DIR": str(work_orders_dir),
+                "MES_WEB_FERP_EXPORT_PENDING_DIR": str(Path(temp_path) / "ferp_pending"),
+                "MES_WEB_FERP_EXPORT_EXAMPLES_DIR": str(Path(temp_path) / "ferp_examples"),
+                "MES_WEB_FERP_XLS_DIR": str(Path(temp_path) / "ferp_xls"),
+                "MES_WEB_EXCEL_WORKBOOK_PATH": str(Path(temp_path) / "disabled.xlsx"),
+                "PYTHONUNBUFFERED": "1",
+            })
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+            process = subprocess.Popen(
+                [sys.executable, "-m", "mes_web"],
+                cwd=Path(__file__).resolve().parents[1],
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=creationflags,
+                start_new_session=sys.platform != "win32",
+            )
+            try:
+                self._wait_for_health(process, port)
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                connection.request(
+                    "POST",
+                    f"/api/v2/work-orders/{order_id}/route-release",
+                    body=body,
+                    headers={"Content-Type": "application/json", "Connection": "close"},
+                )
+                response = connection.getresponse()
+                response_body = json.loads(response.read().decode("utf-8"))
+                status = response.status
+                connection.close()
+            finally:
+                output = self._stop_process_tree(process)
+
+            deadline = time.monotonic() + 5.0
+            listener_absent = False
+            while time.monotonic() < deadline:
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                        pass
+                except OSError:
+                    listener_absent = True
+                    break
+                time.sleep(0.05)
+            self.assertTrue(listener_absent)
+            self.assertIsNotNone(process.poll())
+        return status, response_body, output, port, not Path(temp_path_text).exists()
+
+    def _structured_events(self, output: str) -> list[dict]:
+        events: list[dict] = []
+        for line in output.splitlines():
+            try:
+                candidate = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(candidate, dict) and candidate.get("event") == "work_order_route_release_request":
+                events.append(candidate)
+        return events
+
+    def test_logging_configuration_is_idempotent_and_machine_readable(self) -> None:
+        logger = main_module.logger
+        original = (logger.level, logger.disabled, logger.propagate, list(logger.handlers))
+        try:
+            logger.handlers.clear()
+            main_module._configure_work_order_route_release_logging()
+            main_module._configure_work_order_route_release_logging()
+            marked = [
+                handler
+                for handler in logger.handlers
+                if handler.name == main_module.WORK_ORDER_ROUTE_RELEASE_LOG_HANDLER_MARKER
+            ]
+            self.assertEqual(len(marked), 1)
+            record = logging.LogRecord(logger.name, logging.INFO, __file__, 1, "ignored", (), None)
+            for key, value in {
+                "event": "work_order_route_release_request",
+                "work_order_id": "WO-Ü",
+                "release_id": None,
+                "route_code": None,
+                "route_version": None,
+                "released_by": None,
+                "released": None,
+                "error_code": "WORK_ORDER_ROUTE_RELEASE_DISABLED",
+                "duration_ms": 0.25,
+            }.items():
+                setattr(record, key, value)
+            rendered = json.loads(marked[0].formatter.format(record))
+            self.assertEqual(list(rendered), list(main_module.WORK_ORDER_ROUTE_RELEASE_LOG_FIELDS))
+            self.assertEqual(rendered["work_order_id"], "WO-Ü")
+            self.assertEqual(main_module._route_release_log_text("A\ud800B"), "A\ufffdB")
+        finally:
+            logger.handlers[:] = original[3]
+            logger.setLevel(original[0])
+            logger.disabled = original[1]
+            logger.propagate = original[2]
+
+    def test_exception_diagnostic_is_safe_bounded_and_not_a_duplicate_event(self) -> None:
+        class _SqlStateError(RuntimeError):
+            sqlstate = "23505"
+
+        inner = _SqlStateError("INNER_SECRET")
+        outer = RuntimeError("OUTER_SECRET")
+        outer.__cause__ = inner
+        stream = io.StringIO()
+        handler = main_module._WorkOrderRouteReleaseJsonHandler(stream)
+        handler.setFormatter(main_module._WorkOrderRouteReleaseJsonFormatter())
+        record = logging.LogRecord(
+            main_module.logger.name,
+            logging.ERROR,
+            __file__,
+            1,
+            "work_order_route_release_request",
+            (),
+            (type(outer), outer, None),
+        )
+        for key, value in {
+            "event": "work_order_route_release_request",
+            "work_order_id": "WO-001",
+            "release_id": "REL-001",
+            "route_code": "ROUTE_BOX_PACKAGING_V2",
+            "route_version": 2,
+            "released_by": "ACTOR",
+            "released": None,
+            "error_code": "INTERNAL_ERROR",
+            "duration_ms": 1.0,
+        }.items():
+            setattr(record, key, value)
+        handler.emit(record)
+        lines = [json.loads(line) for line in stream.getvalue().splitlines()]
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0]["event"], "work_order_route_release_request")
+        self.assertNotIn("event", lines[1])
+        self.assertEqual(
+            lines[1],
+            {
+                "diagnostic": "work_order_route_release_internal_error",
+                "exception_chain": ["RuntimeError", "_SqlStateError"],
+                "sqlstate": "23505",
+            },
+        )
+        self.assertNotIn("INNER_SECRET", stream.getvalue())
+        self.assertNotIn("OUTER_SECRET", stream.getvalue())
+
+    def test_real_process_disabled_request_emits_one_structured_event(self) -> None:
+        secret = "D2F1_DISABLED_BODY_MUST_NOT_APPEAR"
+        status, response, output, _, temp_removed = self._run_real_process_request(
+            flag="false",
+            order_id="D2F1-LOG-WO",
+            body=json.dumps({"metadata": {"secret": secret}}).encode("utf-8"),
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(response, {"detail": "WORK_ORDER_ROUTE_RELEASE_DISABLED"})
+        events = self._structured_events(output)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(set(events[0]), self.STRUCTURED_LOG_FIELDS)
+        self.assertEqual(events[0]["work_order_id"], "D2F1-LOG-WO")
+        self.assertIsNone(events[0]["release_id"])
+        self.assertIsNone(events[0]["route_code"])
+        self.assertIsNone(events[0]["route_version"])
+        self.assertIsNone(events[0]["released_by"])
+        self.assertIsNone(events[0]["released"])
+        self.assertEqual(events[0]["error_code"], "WORK_ORDER_ROUTE_RELEASE_DISABLED")
+        self.assertGreaterEqual(events[0]["duration_ms"], 0)
+        self.assertNotIn(secret, output)
+        self.assertTrue(temp_removed)
+
+    def test_real_process_enabled_db_disabled_emits_one_sanitized_event(self) -> None:
+        secret_key = "secret_probe"
+        secret_value = "MUST_NOT_APPEAR_IN_LOG"
+        request = {
+            "release_id": "D2F1-LOG-RELEASE",
+            "route_code": "ROUTE_BOX_PACKAGING_V2",
+            "route_version": 2,
+            "released_by": "D2F1_LOCAL_PLANNER",
+            "metadata": {secret_key: secret_value},
+        }
+        status, response, output, _, temp_removed = self._run_real_process_request(
+            flag="true",
+            order_id="D2F1-LOG-WO",
+            body=json.dumps(request, separators=(",", ":")).encode("utf-8"),
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(response, {"detail": "DATABASE_DISABLED"})
+        events = self._structured_events(output)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(set(events[0]), self.STRUCTURED_LOG_FIELDS)
+        self.assertEqual(events[0]["work_order_id"], "D2F1-LOG-WO")
+        self.assertEqual(events[0]["release_id"], "D2F1-LOG-RELEASE")
+        self.assertEqual(events[0]["route_code"], "ROUTE_BOX_PACKAGING_V2")
+        self.assertEqual(events[0]["route_version"], 2)
+        self.assertEqual(events[0]["released_by"], "D2F1_LOCAL_PLANNER")
+        self.assertIsNone(events[0]["released"])
+        self.assertEqual(events[0]["error_code"], "DATABASE_DISABLED")
+        self.assertGreaterEqual(events[0]["duration_ms"], 0)
+        self.assertNotIn(secret_key, output)
+        self.assertNotIn(secret_value, output)
+        self.assertNotIn("MES_WEB_DB_PASSWORD", output)
+        self.assertTrue(temp_removed)
 
 
 if __name__ == "__main__":

@@ -1,15 +1,35 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 import sys
+import time
 from typing import Any
+
+from starlette.requests import Request
 
 from .db import mesql_v2
 
 
 STATION_LOCATION_READ_MODEL_FEATURE_FLAG = "MES_WEB_DB_STATION_LOCATION_READ_MODEL_ENABLED"
 STATION_EXECUTION_CONFIG_READ_MODEL_FEATURE_FLAG = "MES_WEB_DB_STATION_EXECUTION_CONFIG_READ_MODEL_ENABLED"
+WORK_ORDER_ROUTE_RELEASE_FEATURE_FLAG = "MES_WEB_DB_WORK_ORDER_ROUTE_RELEASE_ENABLED"
+WORK_ORDER_ROUTE_RELEASE_MAX_BODY_BYTES = 65_536
+WORK_ORDER_ROUTE_RELEASE_ALLOWED_FIELDS = frozenset({
+    "release_id",
+    "route_code",
+    "route_version",
+    "released_by",
+    "metadata",
+})
+WORK_ORDER_ROUTE_RELEASE_SERVER_FIELDS = frozenset({
+    "release_source",
+    "mode",
+    "operation_bindings",
+})
+logger = logging.getLogger(__name__)
 ALLOWED_LOCATION_TYPES = frozenset({
     "raw_material",
     "wip",
@@ -47,6 +67,260 @@ def _station_location_read_model_enabled() -> bool:
 def _station_execution_config_read_model_enabled() -> bool:
     raw = os.getenv(STATION_EXECUTION_CONFIG_READ_MODEL_FEATURE_FLAG, "")
     return raw.strip().lower() in {"true", "1", "yes", "on"}
+
+
+def _work_order_route_release_enabled() -> bool:
+    raw = os.getenv(WORK_ORDER_ROUTE_RELEASE_FEATURE_FLAG, "")
+    return raw.strip().lower() in {"true", "1", "yes", "on"}
+
+
+def _route_release_http_error(status_code: int, detail: str, *, cause: BaseException | None = None) -> None:
+    from fastapi import HTTPException
+
+    error = HTTPException(status_code=status_code, detail=detail)
+    if cause is None:
+        raise error
+    raise error from cause
+
+
+async def _read_work_order_route_release_body(request: Any) -> bytes:
+    declared_length = request.headers.get("content-length")
+    if declared_length is not None:
+        if declared_length.isascii() and declared_length.isdigit():
+            normalized_digits = declared_length.lstrip("0") or "0"
+            if len(normalized_digits) > len(str(WORK_ORDER_ROUTE_RELEASE_MAX_BODY_BYTES)):
+                _route_release_http_error(413, "WORK_ORDER_ROUTE_RELEASE_REQUEST_TOO_LARGE")
+            parsed_length = int(normalized_digits, 10)
+        else:
+            parsed_length = None
+        if parsed_length is not None and parsed_length >= 0 and parsed_length > WORK_ORDER_ROUTE_RELEASE_MAX_BODY_BYTES:
+            _route_release_http_error(413, "WORK_ORDER_ROUTE_RELEASE_REQUEST_TOO_LARGE")
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > WORK_ORDER_ROUTE_RELEASE_MAX_BODY_BYTES:
+            _route_release_http_error(413, "WORK_ORDER_ROUTE_RELEASE_REQUEST_TOO_LARGE")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+class _DuplicateRouteReleaseJsonKeyError(ValueError):
+    pass
+
+
+def _route_release_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateRouteReleaseJsonKeyError(key)
+        result[key] = value
+    return result
+
+
+def _reject_route_release_json_constant(value: str) -> None:
+    raise ValueError(value)
+
+
+def _parse_work_order_route_release_json(raw_body: bytes) -> dict[str, Any]:
+    try:
+        decoded = raw_body.decode("utf-8", errors="strict")
+        payload = json.loads(
+            decoded,
+            object_pairs_hook=_route_release_json_object,
+            parse_constant=_reject_route_release_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        _route_release_http_error(
+            400,
+            "WORK_ORDER_ROUTE_RELEASE_REQUEST_INVALID",
+            cause=exc,
+        )
+    if not isinstance(payload, dict):
+        _route_release_http_error(400, "WORK_ORDER_ROUTE_RELEASE_REQUEST_INVALID")
+    return payload
+
+
+def _required_route_release_text(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        _route_release_http_error(400, f"{field_name}_INVALID")
+    normalized = value.strip()
+    if not normalized:
+        _route_release_http_error(400, f"{field_name}_REQUIRED")
+    return normalized
+
+
+def _normalize_work_order_route_release_http_request(
+    work_order_id: Any,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if any(field in payload for field in WORK_ORDER_ROUTE_RELEASE_SERVER_FIELDS):
+        _route_release_http_error(
+            400,
+            "WORK_ORDER_ROUTE_RELEASE_SERVER_FIELD_NOT_ALLOWED",
+        )
+    if any(field not in WORK_ORDER_ROUTE_RELEASE_ALLOWED_FIELDS for field in payload):
+        _route_release_http_error(400, "WORK_ORDER_ROUTE_RELEASE_UNKNOWN_FIELD")
+
+    normalized_work_order_id = _required_route_release_text(
+        work_order_id,
+        field_name="WORK_ORDER_ID",
+    )
+    normalized_release_id = _required_route_release_text(
+        payload.get("release_id"),
+        field_name="RELEASE_ID",
+    )
+    normalized_route_code = _required_route_release_text(
+        payload.get("route_code"),
+        field_name="ROUTE_CODE",
+    ).upper()
+    route_version = payload.get("route_version")
+    if route_version is None or route_version == "":
+        _route_release_http_error(400, "ROUTE_VERSION_REQUIRED")
+    if isinstance(route_version, bool) or not isinstance(route_version, int) or route_version <= 0:
+        _route_release_http_error(400, "ROUTE_VERSION_INVALID")
+    normalized_released_by = _required_route_release_text(
+        payload.get("released_by"),
+        field_name="RELEASED_BY",
+    )
+    metadata = payload.get("metadata", {})
+    if not isinstance(metadata, dict):
+        _route_release_http_error(400, "RELEASE_METADATA_INVALID")
+
+    return {
+        "work_order_id": normalized_work_order_id,
+        "release_id": normalized_release_id,
+        "route_code": normalized_route_code,
+        "route_version": route_version,
+        "released_by": normalized_released_by,
+        "metadata": metadata,
+    }
+
+
+def _route_release_log_text(value: Any, *, max_length: int = 256) -> str:
+    text = str(value or "")
+    sanitized = "".join(character if character >= " " and character != "\x7f" else "�" for character in text)
+    return sanitized[:max_length]
+
+
+def _route_release_log_extra(
+    values: dict[str, Any],
+    *,
+    released: bool | None,
+    error_code: str | None,
+    started_at: float,
+) -> dict[str, Any]:
+    return {
+        "event": "work_order_route_release_request",
+        "work_order_id": _route_release_log_text(values.get("work_order_id")),
+        "release_id": _route_release_log_text(values.get("release_id")),
+        "route_code": _route_release_log_text(values.get("route_code")),
+        "route_version": values.get("route_version") if isinstance(values.get("route_version"), int) else None,
+        "released_by": _route_release_log_text(values.get("released_by")),
+        "released": released,
+        "error_code": error_code,
+        "duration_ms": round((time.perf_counter() - started_at) * 1000.0, 3),
+    }
+
+
+def register_work_order_route_release_routes(app: Any, app_config: Any) -> None:
+    from fastapi import HTTPException
+
+    @app.post("/api/v2/work-orders/{work_order_id}/route-release")
+    async def api_v2_work_order_route_release(
+        work_order_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        log_values: dict[str, Any] = {"work_order_id": work_order_id}
+        if not _work_order_route_release_enabled():
+            logger.info(
+                "work_order_route_release_request",
+                extra=_route_release_log_extra(
+                    log_values,
+                    released=None,
+                    error_code="WORK_ORDER_ROUTE_RELEASE_DISABLED",
+                    started_at=started_at,
+                ),
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="WORK_ORDER_ROUTE_RELEASE_DISABLED",
+            )
+
+        try:
+            raw_body = await _read_work_order_route_release_body(request)
+            payload = _parse_work_order_route_release_json(raw_body)
+            normalized = _normalize_work_order_route_release_http_request(
+                work_order_id,
+                payload,
+            )
+            log_values = normalized
+            result = mesql_v2.release_work_order_to_route(
+                app_config,
+                release_id=normalized["release_id"],
+                work_order_id=normalized["work_order_id"],
+                route_code=normalized["route_code"],
+                route_version=normalized["route_version"],
+                release_source="local_planning",
+                released_by=normalized["released_by"],
+                mode="route_generated",
+                operation_bindings=None,
+                metadata=normalized["metadata"],
+            )
+            response = {
+                "ok": True,
+                "released": result["released"],
+                "release": result["release"],
+                "work_order": result["work_order"],
+                "operations": result["operations"],
+                "bindings": result["bindings"],
+                "initial_queue": result["initial_queue"],
+            }
+            logger.info(
+                "work_order_route_release_request",
+                extra=_route_release_log_extra(
+                    log_values,
+                    released=bool(result["released"]),
+                    error_code=None,
+                    started_at=started_at,
+                ),
+            )
+            return response
+        except mesql_v2.MesqlV2Error as exc:
+            logger.info(
+                "work_order_route_release_request",
+                extra=_route_release_log_extra(
+                    log_values,
+                    released=None,
+                    error_code=exc.detail,
+                    started_at=started_at,
+                ),
+            )
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except HTTPException as exc:
+            logger.info(
+                "work_order_route_release_request",
+                extra=_route_release_log_extra(
+                    log_values,
+                    released=None,
+                    error_code=str(exc.detail),
+                    started_at=started_at,
+                ),
+            )
+            raise
+        except Exception as exc:
+            logger.exception(
+                "work_order_route_release_request",
+                extra=_route_release_log_extra(
+                    log_values,
+                    released=None,
+                    error_code="INTERNAL_ERROR",
+                    started_at=started_at,
+                ),
+            )
+            raise HTTPException(status_code=500, detail="INTERNAL_ERROR") from exc
 
 
 def _normalize_code(value: str) -> str:
@@ -403,6 +677,7 @@ def main() -> None:
 
     register_station_location_read_routes(app, config)
     register_station_execution_config_read_routes(app, config)
+    register_work_order_route_release_routes(app, config)
     uvicorn.run(app, host=config.host, port=config.port, reload=False)
 
 

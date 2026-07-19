@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-17
+Last updated: 2026-07-19
 
 ## Local MES Execution and Portable Runtime Baseline
 
@@ -1887,3 +1887,48 @@ mutation was performed.
   - `docs/architecture/canonical_v2_controlled_release_entrypoint_design.md`;
   - `docs/architecture/canonical_v2_controlled_release_api_contract.md`;
   - `docs/runbooks/canonical_v2_controlled_release_api_smoke_plan.md`.
+
+## Canonical V2 Controlled Route-Release HTTP Clone Smoke Failure
+
+- Phase 5H-D1 implementation baseline:
+  `9544d9272968b69144c1786ef08836af64454cde`
+  (`feat: add controlled work-order route release api`), exact five-file scope.
+- Phase 5H-D2 restored the retained PostgreSQL 16.14 plain dump into exact
+  disposable clone `mes_phase5hd2_api_smoke_20260719-125509`. The clone had
+  `40` base tables, `35` sequences, exact Canonical V2 route `1`, operations
+  `2`, and OP10/OP20 steps `3/1`. All DB/HTTP/helper traffic targeted only the
+  clone; source `mes` was never queried or targeted.
+- A guarded real `python -m mes_web` process bound only to `127.0.0.1` and
+  verified `current_database()` before startup. Missing/false feature flag,
+  exact 65,536/65,537-byte boundaries, invalid/duplicate/depth JSON, field
+  policy, missing identity/route/version, first release, immediate/progressed
+  replay, OP10/OP20 completion bridge, three concurrency scenarios, and nine
+  deterministic conflicts all passed.
+- First release persisted deterministic lifecycle UUIDs
+  `214a6ad9-5a23-54ac-b1c2-06e1ff899a1a` and
+  `54889f2c-b147-5681-adc9-eadbbb6aef57`, complete immutable bindings, OP10
+  initial queue, and operation-set digest
+  `6e4f840395f5cdb189d9962ac36e7e64a09cc62eb50cc58a4242323fe1c36091`.
+  Immediate and fully progressed HTTP replay both returned `released=false`
+  with exact 40-table/35-sequence zero-write snapshots.
+- Runtime completion produced exact `2` states, `4` steps, `6` configured
+  operation events, two completed lifecycle rows/queues, and a completed work
+  order. No work-order audit, approval, production-flow/completion,
+  item-station/vision, FERP/integration inbox/outbox, package, item, location,
+  or station-location side effect occurred.
+- Final Phase 5H-D2 acceptance failed because the normal real process log had
+  `149` route-release access lines but `0`
+  `work_order_route_release_request` application-event lines. Metadata/body,
+  credentials, and complete DB rows were absent, but Uvicorn access logs do not
+  satisfy the required sanitized structured event contract. Production source
+  and configuration were not changed to repair the failure.
+- Cleanup is complete: every task PID/listener is absent, clone sessions were
+  `0`, the exact clone and container/host temp paths are absent, retained dump
+  size/SHA-256 is unchanged, `mes_postgres` remains the same running/healthy
+  container, and existing HTTP health remains `status=ok`.
+- Post-cleanup regression passed: API `107`, MESQL V2 `632`, combined `775`,
+  plus `py_compile`. Phase 5H-D3 was not started and remains prohibited until
+  a focused logging fix/review and separately approved D2 recovery pass.
+- Status: `FAIL / PHASE_5H_D2_STRUCTURED_LOG_EVENT_NOT_EMITTED`.
+- Immutable failure evidence:
+  `docs/runbooks/canonical_v2_controlled_release_api_disposable_http_smoke_evidence_20260719.md`.

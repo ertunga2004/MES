@@ -1992,3 +1992,57 @@ mutation was performed.
 - Phase 5H-D3 remains `NOT STARTED` and requires separate explicit approval.
   Source release/replay, FERP/MESQL, implementation, migration/seed, compose,
   and push boundaries remain untouched.
+
+## Verified Canonical V2 Controlled Route-Release Source HTTP Smoke
+
+- Phase 5H-D3 ran on `2026-07-19` from baseline
+  `15485d44f665c963a3aa255894c93404db0b0730`
+  (`docs: record controlled route release api clone smoke recovery`). The D1
+  implementation, immutable D2 failure record, and focused D2 recovery record
+  remain unchanged.
+- Exact source identity was the existing `mes_postgres` container ID
+  `c5e10132d9ce26bbbaecf0ca9c5fe95020d1c0450e2f55f53c318a89ba7afa27`,
+  database/user `mes/mes`, PostgreSQL `16.14`, host port `5433`, and unchanged
+  mounts. It was already running/healthy; no lifecycle or volume command ran.
+- All quiescence gates found zero other source sessions and no active writer.
+  Before HTTP, a byte-safe plain backup was retained at
+  `C:\Users\ertun\Documents\.CODE\.DOCKER\MES\data\db_backups\mes_before_phase5hd3_source_http_replay_20260719-145108.sql`.
+  Its size/SHA-256 is `2911692` /
+  `e43334eef0859ac0cebeec6fb694e1aa48d8261ad3db4abd8f20182fa471592e`;
+  no restore was executed.
+- The authoritative source preflight verified `40` base tables, `35`
+  sequences, exact completed retained work order
+  `PHASE5HC-SOURCE-SMOKE-20260715-181940`, exact release
+  `PHASE5HC-SOURCE-RELEASE-20260715-181940`, lifecycle UUIDs
+  `52fb8cd4-005e-51f2-9557-a6ff31ce5063` and
+  `d78c3f30-9e49-51a3-ad58-a13e45f3705f`, two immutable bindings, completed
+  queues PK `6853/6854`, runtime `2`, steps `4`, events `6`, and no
+  fixture-scoped audit/outbox/package/inventory side effects.
+- A separate normal `.venv\Scripts\python.exe -m mes_web` process bound only
+  to `127.0.0.1:59030`, guarded configured/current database `mes`, returned
+  `200/status=ok`, and received exactly one route-release POST. The exact
+  retained request returned `200`, `ok=true`, `released=false`, completed work
+  order, exact OP10/OP20 operations and bindings, and initial queue PK `6853`.
+  An independent authoritative read helper returned the same snapshot.
+- The process emitted exactly one parseable nine-key
+  `work_order_route_release_request` event with `released=false`, no error, and
+  nonnegative duration. No metadata/body, credential, connection string,
+  complete response, database row, or stack-trace content appeared in logs.
+- Pre/post aggregate snapshot SHA-256 was identically
+  `ff95b446eac495e9aaacdcfc6559c7a92e0884b7da921fc1d4eff3e35d6106e1`.
+  All `40/40` table counts/digests, `35/35` sequence states, complete retained
+  fixture, V1/V2 config, and protected audit/outbox/package/inventory state
+  were exact. Source write delta and extra side effects were `0`.
+- Cleanup is complete: task process/listener/temp paths and source sessions are
+  absent, container backup temp is absent, retained host backup is exact, the
+  fixture is unchanged, and the same PostgreSQL container remains
+  running/healthy. Regression passed API `112`, MESQL V2 `632`, combined
+  `780`, `py_compile`, and diff checks.
+- D3 result: `PASS / VERIFIED_SOURCE_PROGRESSED_REPLAY_ZERO_WRITE`. Phase
+  5H-D1/D2/D3 controlled route-release API chain is complete.
+- Evidence:
+  `docs/runbooks/canonical_v2_controlled_release_api_source_http_smoke_evidence_20260719.md`.
+- Station execution integration is the next checkpoint, but it was not
+  started here. MQTT/automatic events, Kiosk/manual actions, product
+  entry/exit tracking, operation-step execution, FERP/MESQL, and other next
+  phases remain outside this task.

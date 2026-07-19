@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import socket
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,19 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_bounded_positive_float(
+    name: str,
+    default: float,
+    *,
+    maximum: float,
+) -> float:
+    raw = os.getenv(name)
+    value = default if raw is None else float(raw)
+    if not math.isfinite(value) or value <= 0 or value > maximum:
+        raise ValueError(f"{name} must be finite and in the range (0, {maximum}]")
+    return value
 
 
 def _safe_mqtt_client_token(value: str) -> str:
@@ -106,6 +120,11 @@ class AppConfig:
     db_shadow_read_dashboard: bool = False
     db_read_dashboard: bool = False
     db_strict_timestamp_guard: bool = False
+    db_station_execution_commands_enabled: bool = False
+    mqtt_station_execution_adapter_enabled: bool = False
+    mqtt_station_execution_client_id: str = "mes-web-station-execution"
+    mqtt_station_execution_enqueue_timeout_seconds: float = 5.0
+    kiosk_dynamic_actions_enabled: bool = False
     mesql_api_base_url: str = "http://ferptop:8090"
     mesql_stations: tuple[str, ...] = ("ASSEMBLY_01", "PACKAGING_01")
     mesql_pull_timeout_sec: float = 10.0
@@ -285,6 +304,27 @@ class AppConfig:
             db_shadow_read_dashboard=_env_bool("MES_WEB_DB_SHADOW_READ_DASHBOARD", False),
             db_read_dashboard=_env_bool("MES_WEB_DB_READ_DASHBOARD", False),
             db_strict_timestamp_guard=_env_bool("MES_WEB_DB_STRICT_TIMESTAMP_GUARD", False),
+            db_station_execution_commands_enabled=_env_bool(
+                "MES_WEB_DB_STATION_EXECUTION_COMMANDS_ENABLED",
+                False,
+            ),
+            mqtt_station_execution_adapter_enabled=_env_bool(
+                "MES_WEB_MQTT_STATION_EXECUTION_ADAPTER_ENABLED",
+                False,
+            ),
+            mqtt_station_execution_client_id=(
+                os.getenv("MES_WEB_MQTT_STATION_EXECUTION_CLIENT_ID")
+                or "mes-web-station-execution"
+            ).strip(),
+            mqtt_station_execution_enqueue_timeout_seconds=_env_bounded_positive_float(
+                "MES_WEB_MQTT_STATION_EXECUTION_ENQUEUE_TIMEOUT_SECONDS",
+                5.0,
+                maximum=60.0,
+            ),
+            kiosk_dynamic_actions_enabled=_env_bool(
+                "MES_WEB_KIOSK_DYNAMIC_ACTIONS_ENABLED",
+                False,
+            ),
             mesql_api_base_url=os.getenv("MESQL_API_BASE_URL", "http://ferptop:8090"),
             mesql_stations=tuple(
                 station.strip().upper()

@@ -45,6 +45,13 @@ WORK_ORDER_RELEASE_QUEUE_CONSTRAINTS = {
     "uq_mes_station_queue_station_order",
     "uq_mes_station_queue_station_operation",
 }
+STATION_EXECUTION_INTERNAL_EVENT_SOURCE = "RUNTIME_ENGINE"
+STATION_EXECUTION_INTERNAL_TRANSITION_NAMESPACE_LABEL = (
+    "urn:mes:station-execution:internal-transition:v1"
+)
+STATION_EXECUTION_INTERNAL_TRANSITION_NAMESPACE = uuid.UUID(
+    "adf5ed43-5c98-5f78-b1c3-e79bb226ee81"
+)
 
 SET_WORK_ORDER_RELEASE_TRANSACTION_ISOLATION_SQL = (
     "SET TRANSACTION ISOLATION LEVEL READ COMMITTED"
@@ -1391,6 +1398,23 @@ WHERE work_order_operation_id = %(work_order_operation_id)s::uuid
 LIMIT 1
 """
 
+SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_FOR_UPDATE_SQL = """
+SELECT
+    binding_pk,
+    binding_id,
+    work_order_operation_id,
+    route_operation_id,
+    binding_source,
+    bound_by,
+    bound_at,
+    metadata,
+    created_at
+FROM mes.work_order_operation_route_bindings
+WHERE work_order_operation_id = %(work_order_operation_id)s::uuid
+LIMIT 1
+FOR UPDATE
+"""
+
 SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_BY_ID_SQL = """
 SELECT
     binding_pk,
@@ -1533,6 +1557,18 @@ WHERE work_order_operation_id = %(work_order_operation_id)s
 LIMIT 1
 """
 
+SELECT_RUNTIME_WORK_ORDER_OPERATION_FOR_UPDATE_SQL = """
+SELECT
+    work_order_operation_id,
+    order_id,
+    operation_code,
+    station_code
+FROM mes.work_order_operations
+WHERE work_order_operation_id = %(work_order_operation_id)s
+LIMIT 1
+FOR UPDATE
+"""
+
 SELECT_EXECUTION_STATE_SQL = """
 SELECT
     execution_state_id,
@@ -1658,6 +1694,83 @@ FROM mes.work_order_operation_steps
 WHERE work_order_operation_id = %(work_order_operation_id)s
 ORDER BY step_no ASC
 FOR UPDATE
+"""
+
+SELECT_STATION_EXECUTION_CONTEXT_SQL = """
+SELECT
+    queue.station_queue_pk,
+    queue.station_code,
+    queue.queue_rank,
+    queue.order_id,
+    queue.status AS queue_status,
+    queue.source AS queue_source,
+    queue.payload AS queue_payload,
+    queue.metadata AS queue_metadata,
+    operation.work_order_operation_id,
+    operation.operation_no,
+    operation.operation_code,
+    operation.operation_name,
+    operation.sequence_no,
+    operation.status AS operation_status,
+    operation.started_at AS operation_started_at,
+    operation.completed_at AS operation_completed_at,
+    binding.binding_id,
+    binding.route_operation_id,
+    state.execution_status,
+    state.current_step_code,
+    state.started_at AS execution_started_at,
+    state.closed_at AS execution_closed_at,
+    state.created_at AS execution_initialized_at,
+    state.updated_at AS execution_updated_at
+FROM mes.station_queue queue
+JOIN mes.work_order_operations operation
+  ON operation.work_order_operation_id = queue.work_order_operation_id
+LEFT JOIN mes.work_order_operation_route_bindings binding
+  ON binding.work_order_operation_id = operation.work_order_operation_id
+LEFT JOIN mes.work_order_operation_execution_state state
+  ON state.work_order_operation_id = operation.work_order_operation_id
+WHERE queue.station_code = %(station_code)s
+  AND queue.source IN ('work_order_release', 'runtime_completion_bridge')
+ORDER BY queue.queue_rank ASC, queue.station_queue_pk ASC
+"""
+
+SELECT_STATION_EXECUTION_CONTEXT_FOR_UPDATE_SQL = """
+SELECT
+    queue.station_queue_pk,
+    queue.station_code,
+    queue.queue_rank,
+    queue.order_id,
+    queue.status AS queue_status,
+    queue.source AS queue_source,
+    queue.payload AS queue_payload,
+    queue.metadata AS queue_metadata,
+    operation.work_order_operation_id,
+    operation.operation_no,
+    operation.operation_code,
+    operation.operation_name,
+    operation.sequence_no,
+    operation.status AS operation_status,
+    operation.started_at AS operation_started_at,
+    operation.completed_at AS operation_completed_at,
+    binding.binding_id,
+    binding.route_operation_id,
+    state.execution_status,
+    state.current_step_code,
+    state.started_at AS execution_started_at,
+    state.closed_at AS execution_closed_at,
+    state.created_at AS execution_initialized_at,
+    state.updated_at AS execution_updated_at
+FROM mes.station_queue queue
+JOIN mes.work_order_operations operation
+  ON operation.work_order_operation_id = queue.work_order_operation_id
+LEFT JOIN mes.work_order_operation_route_bindings binding
+  ON binding.work_order_operation_id = operation.work_order_operation_id
+LEFT JOIN mes.work_order_operation_execution_state state
+  ON state.work_order_operation_id = operation.work_order_operation_id
+WHERE queue.station_code = %(station_code)s
+  AND queue.source IN ('work_order_release', 'runtime_completion_bridge')
+ORDER BY queue.queue_rank ASC, queue.station_queue_pk ASC
+FOR UPDATE OF queue, operation
 """
 
 SELECT_COMPLETION_BRIDGE_APPLICABILITY_CURSOR_SQL = """
@@ -1979,6 +2092,69 @@ WHERE station_code = %(station_code)s
   AND event_source = %(event_source)s
   AND external_event_id = %(external_event_id)s
 LIMIT 1
+"""
+
+SELECT_OPERATION_EVENTS_BY_STATION_EXTERNAL_ID_SQL = """
+SELECT
+    event_id,
+    event_time,
+    received_at,
+    station_code,
+    work_order_id,
+    work_order_operation_id,
+    work_order_operation_step_id,
+    operation_code,
+    step_code,
+    event_source,
+    event_type,
+    external_event_id,
+    idempotency_key,
+    payload,
+    accepted,
+    rejection_reason,
+    created_at
+FROM mes.operation_events
+WHERE station_code = %(station_code)s
+  AND external_event_id = %(external_event_id)s
+ORDER BY event_id ASC
+"""
+
+LOCK_STATION_EXECUTION_EVENT_IDENTITY_SQL = """
+SELECT pg_advisory_xact_lock(
+    hashtextextended(
+        'mes:station_execution:event_identity:'
+        || %(station_code)s
+        || ':'
+        || %(external_event_id)s,
+        0
+    )
+)
+"""
+
+SELECT_INTERNAL_STATION_EXECUTION_EVENTS_SQL = """
+SELECT
+    event_id,
+    event_time,
+    received_at,
+    station_code,
+    work_order_id,
+    work_order_operation_id,
+    work_order_operation_step_id,
+    operation_code,
+    step_code,
+    event_source,
+    event_type,
+    external_event_id,
+    idempotency_key,
+    payload,
+    accepted,
+    rejection_reason,
+    created_at
+FROM mes.operation_events
+WHERE work_order_operation_id = %(work_order_operation_id)s::uuid
+  AND event_source = %(event_source)s
+  AND payload ->> 'command_source' = 'internal'
+ORDER BY event_pk ASC
 """
 
 INSERT_OPERATION_EVENT_SQL = """
@@ -2967,9 +3143,15 @@ def _work_order_release_evidence_row(row: Any) -> JsonObject:
 def _get_work_order_operation_route_binding_with_cursor(
     cursor: Any,
     work_order_operation_id: str,
+    *,
+    for_update: bool = False,
 ) -> JsonObject | None:
     cursor.execute(
-        SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL,
+        (
+            SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_FOR_UPDATE_SQL
+            if for_update
+            else SELECT_WORK_ORDER_OPERATION_ROUTE_BINDING_SQL
+        ),
         {"work_order_operation_id": work_order_operation_id},
     )
     row = cursor.fetchone()
@@ -4420,6 +4602,35 @@ def _runtime_operation_context_row(row: Any) -> JsonObject:
     })
 
 
+def _station_execution_context_row(row: Any) -> JsonObject:
+    return _json_safe({
+        "station_queue_pk": _field(row, 0, "station_queue_pk"),
+        "station_code": _upper(_field(row, 1, "station_code")),
+        "queue_rank": _safe_int(_field(row, 2, "queue_rank"), 0),
+        "work_order_id": _text(_field(row, 3, "order_id")),
+        "queue_status": _lower(_field(row, 4, "queue_status")),
+        "queue_source": _lower(_field(row, 5, "queue_source")),
+        "queue_payload": _field(row, 6, "queue_payload") or {},
+        "queue_metadata": _field(row, 7, "queue_metadata") or {},
+        "work_order_operation_id": _text(_field(row, 8, "work_order_operation_id")),
+        "operation_no": _safe_int(_field(row, 9, "operation_no"), 0),
+        "operation_code": _upper(_field(row, 10, "operation_code")),
+        "operation_name": _field(row, 11, "operation_name"),
+        "sequence_no": _safe_int(_field(row, 12, "sequence_no"), 0),
+        "operation_status": _lower(_field(row, 13, "operation_status")),
+        "operation_started_at": _field(row, 14, "operation_started_at"),
+        "operation_completed_at": _field(row, 15, "operation_completed_at"),
+        "binding_id": _nullable_text(_field(row, 16, "binding_id")),
+        "route_operation_id": _nullable_upper(_field(row, 17, "route_operation_id")),
+        "execution_status": _nullable_text(_field(row, 18, "execution_status")),
+        "current_step_code": _nullable_upper(_field(row, 19, "current_step_code")),
+        "execution_started_at": _field(row, 20, "execution_started_at"),
+        "execution_closed_at": _field(row, 21, "execution_closed_at"),
+        "execution_initialized_at": _field(row, 22, "execution_initialized_at"),
+        "execution_updated_at": _field(row, 23, "execution_updated_at"),
+    })
+
+
 def _operation_event_row(row: Any) -> JsonObject:
     return _json_safe({
         "event_id": _text(_field(row, 0, "event_id")),
@@ -5483,9 +5694,10 @@ def resolve_station_location(
     return _joined_location_row(row) if row else None
 
 
-def get_station_location_context(config: AppConfig, station_code: str) -> JsonObject:
-    normalized_station_code = _upper(station_code)
-    bindings = list_station_location_bindings(config, normalized_station_code, active_only=True)
+def _build_station_location_context(
+    normalized_station_code: str,
+    bindings: list[JsonObject],
+) -> JsonObject:
     locations_by_role: dict[str, list[JsonObject]] = {}
     locations_by_code: dict[str, JsonObject] = {}
     inactive_or_missing_locations: list[JsonObject] = []
@@ -5536,6 +5748,12 @@ def get_station_location_context(config: AppConfig, station_code: str) -> JsonOb
         "missing_roles": missing_roles,
         "inactive_or_missing_locations": inactive_or_missing_locations,
     })
+
+
+def get_station_location_context(config: AppConfig, station_code: str) -> JsonObject:
+    normalized_station_code = _upper(station_code)
+    bindings = list_station_location_bindings(config, normalized_station_code, active_only=True)
+    return _build_station_location_context(normalized_station_code, bindings)
 
 
 def list_items(config: AppConfig, active_only: bool = True) -> list[JsonObject]:
@@ -6141,6 +6359,180 @@ def get_station_execution_config(config: AppConfig, station_code: str) -> JsonOb
     })
 
 
+def _station_execution_step_views(
+    operation_config: JsonObject | None,
+    runtime_steps: list[JsonObject],
+) -> list[JsonObject]:
+    runtime_by_code = {
+        _upper(step.get("step_code")): step
+        for step in runtime_steps
+        if _upper(step.get("step_code"))
+    }
+    result: list[JsonObject] = []
+    for configured in (operation_config or {}).get("steps", []):
+        step_code = _upper(configured.get("step_code"))
+        runtime = runtime_by_code.get(step_code)
+        result.append(_json_safe({
+            **dict(configured),
+            "work_order_operation_step_id": (
+                runtime.get("work_order_operation_step_id") if runtime else None
+            ),
+            "status": _lower(runtime.get("status")) if runtime else "pending",
+            "started_at": runtime.get("started_at") if runtime else None,
+            "completed_at": runtime.get("completed_at") if runtime else None,
+            "runtime_updated_at": runtime.get("updated_at") if runtime else None,
+        }))
+    return result
+
+
+def _station_execution_context_snapshot_cursor(
+    cursor: Any,
+    station_code: str,
+    *,
+    for_update: bool = False,
+) -> JsonObject:
+    rows = _select_station_execution_context_rows_cursor(
+        cursor,
+        station_code,
+        for_update=for_update,
+    )
+    classified = _classify_station_execution_context_rows(rows)
+    active = classified["active_operation"]
+    next_queued = classified["next_queued_operation"]
+    last_closed = classified["last_closed_operation"]
+    selected = active or next_queued or last_closed
+
+    runtime_state = None
+    runtime_steps: list[JsonObject] = []
+    operation_config = None
+    if selected is not None:
+        route_operation_id = _upper(selected.get("route_operation_id"))
+        if route_operation_id:
+            operation_config = _get_route_operation_config_with_cursor(
+                cursor,
+                route_operation_id,
+            )
+            if operation_config is None:
+                raise MesqlV2Error("ROUTE_OPERATION_NOT_FOUND", status_code=404)
+            _assert_route_operation_config_valid(operation_config)
+        operation_id = _text(selected.get("work_order_operation_id"))
+        if _text(selected.get("execution_status")):
+            cursor.execute(
+                SELECT_EXECUTION_STATE_SQL,
+                {"work_order_operation_id": operation_id},
+            )
+            state_row = cursor.fetchone()
+            runtime_state = _execution_state_row(state_row) if state_row else None
+            cursor.execute(
+                SELECT_EXECUTION_STEPS_SQL,
+                {"work_order_operation_id": operation_id},
+            )
+            runtime_steps = [_execution_step_row(row) for row in cursor.fetchall()]
+
+    steps = _station_execution_step_views(operation_config, runtime_steps)
+    current_step = next(
+        (step for step in steps if _lower(step.get("status")) in {"pending", "active"}),
+        None,
+    )
+    can_start = bool(
+        current_step
+        and _lower(current_step.get("status")) == "pending"
+        and _lower(current_step.get("start_mode")) == "manual_start"
+    )
+    can_finish = bool(
+        current_step
+        and (
+            _lower(current_step.get("status")) == "active"
+            or (
+                _lower(current_step.get("status")) == "pending"
+                and _lower(current_step.get("start_mode")) == "implicit_start"
+            )
+        )
+        and _lower(current_step.get("finish_mode")) == "manual_finish"
+    )
+    automatic_sources: list[JsonObject] = []
+    if current_step is not None and operation_config is not None:
+        allowed_codes: set[str] = set()
+        if _lower(current_step.get("start_mode")) == "auto_start":
+            source = _upper(current_step.get("start_event_source_code"))
+            if source:
+                allowed_codes.add(source)
+        if _lower(current_step.get("finish_mode")) == "auto_finish":
+            source = _upper(current_step.get("finish_event_source_code"))
+            if source:
+                allowed_codes.add(source)
+        automatic_sources = [
+            source
+            for source in operation_config.get("event_sources", [])
+            if _upper(source.get("source_code")) in allowed_codes
+        ]
+
+    cursor.execute(
+        SELECT_STATION_LOCATION_BINDINGS_SQL,
+        {"station_code": station_code, "active_only": True, "role": None},
+    )
+    location_context = _build_station_location_context(
+        station_code,
+        [_station_location_binding_row(row) for row in cursor.fetchall()],
+    )
+    exited = bool(
+        last_closed is not None
+        and selected is last_closed
+        and _lower(last_closed.get("queue_status")) == "completed"
+        and _lower(last_closed.get("operation_status")) == "completed"
+    )
+    return _json_safe({
+        "station": {"station_code": station_code},
+        "location_context": location_context,
+        "active_operation": active,
+        "next_queued_operation": next_queued,
+        "last_closed_operation": last_closed,
+        "execution_state": runtime_state,
+        "steps": steps,
+        "current_step": current_step,
+        "allowed_manual_actions": {
+            "work_order_operation_id": selected.get("work_order_operation_id") if selected else None,
+            "step_code": current_step.get("step_code") if current_step else None,
+            "can_start": can_start,
+            "can_finish": can_finish,
+        },
+        "automatic_event_sources": automatic_sources,
+        "station_entry_state": (
+            "exited"
+            if exited
+            else "entered"
+            if runtime_state is not None
+            else "queued"
+            if next_queued is not None
+            else "empty"
+        ),
+        "entered_at": (
+            selected.get("execution_initialized_at")
+            if selected is not None and runtime_state is not None
+            else None
+        ),
+        "exited_at": last_closed.get("execution_closed_at") if exited else None,
+    })
+
+
+def get_station_execution_context(
+    config: AppConfig,
+    station_code: str,
+) -> JsonObject:
+    normalized_station_code = _upper(station_code)
+    if not normalized_station_code:
+        raise MesqlV2Error("STATION_CODE_REQUIRED", status_code=400)
+    with database_connection(config) as connection:
+        if connection is None:
+            raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+        with _transaction(connection):
+            with connection.cursor() as cursor:
+                return _station_execution_context_snapshot_cursor(
+                    cursor,
+                    normalized_station_code,
+                )
+
+
 def get_execution_state(config: AppConfig, work_order_operation_id: str) -> JsonObject | None:
     normalized_operation_id = _text(work_order_operation_id)
     if not normalized_operation_id:
@@ -6193,9 +6585,409 @@ def _assert_route_operation_config_valid(route_operation_config: JsonObject) -> 
         raise MesqlV2Error("ROUTE_OPERATION_CONFIG_INVALID", status_code=409)
 
 
+_STATION_EXECUTION_LIVE_QUEUE_STATUSES = {"queued", "active", "pending_approval"}
+_STATION_EXECUTION_LIVE_STATUSES = {
+    "ready",
+    "active",
+    "evidence_completed",
+    "pending_final_approval",
+}
+
+
+def _get_route_operation_config_with_cursor(
+    cursor: Any,
+    route_operation_id: str,
+) -> JsonObject | None:
+    cursor.execute(
+        SELECT_ROUTE_OPERATION_BY_ID_SQL,
+        {"route_operation_id": route_operation_id},
+    )
+    route_row = cursor.fetchone()
+    if not route_row:
+        return None
+    route_operation = _route_operation_row(route_row)
+    station_code = _upper(route_operation.get("station_code"))
+
+    cursor.execute(
+        SELECT_OPERATION_STEPS_SQL,
+        {"route_operation_id": route_operation_id, "active_only": True},
+    )
+    steps = [_operation_step_row(row) for row in cursor.fetchall()]
+    cursor.execute(
+        SELECT_STATION_EVENT_SOURCES_SQL,
+        {"station_code": station_code, "active_only": True},
+    )
+    event_sources = [_station_event_source_row(row) for row in cursor.fetchall()]
+
+    input_item_code = _upper(route_operation.get("input_item_code"))
+    output_item_code = _upper(route_operation.get("output_item_code"))
+    input_item = None
+    output_item = None
+    if input_item_code:
+        cursor.execute(SELECT_ITEM_BY_CODE_SQL, {"item_code": input_item_code})
+        input_row = cursor.fetchone()
+        input_item = _item_row(input_row) if input_row else None
+    if output_item_code:
+        cursor.execute(SELECT_ITEM_BY_CODE_SQL, {"item_code": output_item_code})
+        output_row = cursor.fetchone()
+        output_item = _item_row(output_row) if output_row else None
+
+    validation = _config_validation()
+    if input_item is None:
+        validation["missing_items"].append(
+            _config_warning(
+                "MISSING_INPUT_ITEM",
+                route_operation_id=route_operation_id,
+                field="input_item_code",
+                item_code=input_item_code,
+            )
+        )
+    if output_item is None:
+        validation["missing_items"].append(
+            _config_warning(
+                "MISSING_OUTPUT_ITEM",
+                route_operation_id=route_operation_id,
+                field="output_item_code",
+                item_code=output_item_code,
+            )
+        )
+    cursor.execute(SELECT_STATION_EXISTS_SQL, {"station_code": station_code})
+    if cursor.fetchone() is None:
+        validation["missing_station"].append(
+            _config_warning(
+                "MISSING_STATION",
+                route_operation_id=route_operation_id,
+                station_code=station_code,
+            )
+        )
+    source_codes = {_upper(source.get("source_code")) for source in event_sources}
+    for step in steps:
+        step_code = _upper(step.get("step_code"))
+        for field in ("start_event_source_code", "finish_event_source_code"):
+            source_code = _upper(step.get(field))
+            if source_code and source_code not in source_codes:
+                warning = _config_warning(
+                    "MISSING_EVENT_SOURCE",
+                    route_operation_id=route_operation_id,
+                    step_code=step_code,
+                    field=field,
+                    source_code=source_code,
+                )
+                validation["missing_event_sources"].append(warning)
+                validation["invalid_step_source_refs"].append(warning)
+        if _lower(step.get("start_mode")) == "auto_start" and not _upper(
+            step.get("start_event_source_code")
+        ):
+            validation["invalid_auto_mode_refs"].append(
+                _config_warning(
+                    "AUTO_START_REQUIRES_SOURCE",
+                    route_operation_id=route_operation_id,
+                    step_code=step_code,
+                    field="start_event_source_code",
+                )
+            )
+        if _lower(step.get("finish_mode")) == "auto_finish" and not _upper(
+            step.get("finish_event_source_code")
+        ):
+            validation["invalid_auto_mode_refs"].append(
+                _config_warning(
+                    "AUTO_FINISH_REQUIRES_SOURCE",
+                    route_operation_id=route_operation_id,
+                    step_code=step_code,
+                    field="finish_event_source_code",
+                )
+            )
+    return _json_safe({
+        "route_operation": route_operation,
+        "input_item": input_item,
+        "output_item": output_item,
+        "steps": steps,
+        "event_sources": event_sources,
+        "validation": validation,
+    })
+
+
+def _select_station_execution_context_rows_cursor(
+    cursor: Any,
+    station_code: str,
+    *,
+    for_update: bool,
+) -> list[JsonObject]:
+    cursor.execute(
+        SELECT_STATION_EXECUTION_CONTEXT_FOR_UPDATE_SQL
+        if for_update
+        else SELECT_STATION_EXECUTION_CONTEXT_SQL,
+        {"station_code": station_code},
+    )
+    return [_station_execution_context_row(row) for row in cursor.fetchall()]
+
+
+def _classify_station_execution_context_rows(
+    rows: list[JsonObject],
+) -> JsonObject:
+    live_rows = [
+        row
+        for row in rows
+        if _lower(row.get("queue_status")) in _STATION_EXECUTION_LIVE_QUEUE_STATUSES
+        and _lower(row.get("operation_status")) in {"queued", "active"}
+    ]
+    active_rows = [
+        row
+        for row in live_rows
+        if _lower(row.get("execution_status")) in _STATION_EXECUTION_LIVE_STATUSES
+    ]
+    if len(active_rows) > 1:
+        raise MesqlV2Error("STATION_EXECUTION_CONTEXT_AMBIGUOUS", status_code=409)
+
+    active = active_rows[0] if active_rows else None
+    queued_rows = [row for row in live_rows if not _text(row.get("execution_status"))]
+    if queued_rows:
+        minimum_rank = min(_safe_int(row.get("queue_rank"), 0) for row in queued_rows)
+        minimum_rows = [
+            row
+            for row in queued_rows
+            if _safe_int(row.get("queue_rank"), 0) == minimum_rank
+        ]
+        if len(minimum_rows) > 1:
+            raise MesqlV2Error("STATION_EXECUTION_CONTEXT_AMBIGUOUS", status_code=409)
+        next_queued = minimum_rows[0]
+    else:
+        next_queued = None
+
+    closed_rows = [
+        row
+        for row in rows
+        if _lower(row.get("execution_status")) == "closed"
+        and _lower(row.get("queue_status")) == "completed"
+        and _lower(row.get("operation_status")) == "completed"
+    ]
+    last_closed = (
+        max(
+            closed_rows,
+            key=lambda row: (
+                _text(row.get("execution_closed_at")),
+                _safe_int(row.get("station_queue_pk"), 0),
+            ),
+        )
+        if closed_rows
+        else None
+    )
+    for row in [value for value in (active, next_queued) if value is not None]:
+        if not _text(row.get("binding_id")) or not _text(row.get("route_operation_id")):
+            raise MesqlV2Error(
+                "WORK_ORDER_OPERATION_ROUTE_BINDING_REQUIRED",
+                status_code=409,
+            )
+    return {
+        "active_operation": active,
+        "next_queued_operation": next_queued,
+        "last_closed_operation": last_closed,
+    }
+
+
+def _station_execution_command_target(
+    rows: list[JsonObject],
+    context: JsonObject,
+    *,
+    work_order_operation_id: str,
+    allow_closed_identity: bool,
+) -> JsonObject | None:
+    if allow_closed_identity:
+        matches = [
+            row
+            for row in rows
+            if _text(row.get("work_order_operation_id"))
+            == work_order_operation_id
+        ]
+        if len(matches) > 1:
+            raise MesqlV2Error(
+                "STATION_EXECUTION_CONTEXT_AMBIGUOUS",
+                status_code=409,
+            )
+        return matches[0] if matches else None
+    return context["active_operation"] or context["next_queued_operation"]
+
+
 def _runtime_record_id(prefix: str, *parts: Any) -> str:
     normalized_parts = [_text(part) for part in parts if _text(part)]
     return "_".join([prefix, *normalized_parts])
+
+
+def _derive_internal_station_execution_event_identity(
+    *,
+    work_order_operation_id: Any,
+    route_operation_id: Any,
+    step_code: Any,
+    transition_phase: Any,
+    action_identity: Any,
+    predecessor_identity: Any,
+    release_id: Any,
+) -> str:
+    canonical_parts = (
+        _required_canonical_uuid_text(
+            work_order_operation_id,
+            field_name="STATION_EXECUTION_OPERATION_ID",
+        ),
+        _required_case_preserving_text(
+            route_operation_id,
+            field_name="ROUTE_OPERATION_ID",
+        ),
+        _required_case_preserving_text(step_code, field_name="STEP_CODE"),
+        _required_case_preserving_text(
+            transition_phase,
+            field_name="TRANSITION_PHASE",
+        ),
+        _required_case_preserving_text(
+            action_identity,
+            field_name="ACTION_IDENTITY",
+        ),
+        _required_case_preserving_text(
+            predecessor_identity,
+            field_name="PREDECESSOR_IDENTITY",
+        ),
+        _required_case_preserving_text(release_id, field_name="RELEASE_ID"),
+    )
+    return str(
+        uuid.uuid5(
+            STATION_EXECUTION_INTERNAL_TRANSITION_NAMESPACE,
+            "\n".join(canonical_parts),
+        )
+    )
+
+
+def _initialize_execution_state_cursor(
+    cursor: Any,
+    *,
+    work_order_operation_id: str,
+    route_operation_id: str,
+    station_code: str,
+    actor_id: str | None,
+    route_operation_config: JsonObject,
+) -> JsonObject:
+    route_operation = route_operation_config["route_operation"]
+    cursor.execute(
+        SELECT_RUNTIME_WORK_ORDER_OPERATION_FOR_UPDATE_SQL,
+        {"work_order_operation_id": work_order_operation_id},
+    )
+    operation_context_row = cursor.fetchone()
+    if not operation_context_row:
+        raise MesqlV2Error("WORK_ORDER_OPERATION_NOT_FOUND", status_code=404)
+    operation_context = _runtime_operation_context_row(operation_context_row)
+    if _upper(operation_context.get("station_code")) != station_code:
+        raise MesqlV2Error("WORK_ORDER_OPERATION_STATION_MISMATCH", status_code=409)
+
+    binding = _get_work_order_operation_route_binding_with_cursor(
+        cursor,
+        work_order_operation_id,
+        for_update=True,
+    )
+    if binding is None:
+        raise MesqlV2Error(
+            "WORK_ORDER_OPERATION_ROUTE_BINDING_REQUIRED",
+            status_code=409,
+        )
+    if _text(binding.get("route_operation_id")) != route_operation_id:
+        raise MesqlV2Error(
+            "WORK_ORDER_OPERATION_ROUTE_BINDING_MISMATCH",
+            status_code=409,
+        )
+
+    cursor.execute(
+        SELECT_EXECUTION_STATE_FOR_UPDATE_SQL,
+        {"work_order_operation_id": work_order_operation_id},
+    )
+    existing_state = cursor.fetchone()
+    initialized = existing_state is None
+    response_route_operation_id = route_operation_id
+
+    if existing_state is not None:
+        mapped_existing_state = _execution_state_row(existing_state)
+        existing_metadata = mapped_existing_state.get("metadata") or {}
+        stored_route_operation_id = (
+            _text(existing_metadata.get("route_operation_id"))
+            if isinstance(existing_metadata, dict)
+            else ""
+        )
+        if stored_route_operation_id != route_operation_id:
+            raise MesqlV2Error(
+                "EXECUTION_STATE_ROUTE_OPERATION_MISMATCH",
+                status_code=409,
+            )
+        response_route_operation_id = stored_route_operation_id
+    else:
+        state_metadata = {
+            "source": "runtime_engine_v0_phase1",
+            "route_operation_id": route_operation_id,
+        }
+        if actor_id:
+            state_metadata["actor_id"] = actor_id
+        cursor.execute(
+            INSERT_EXECUTION_STATE_SQL,
+            {
+                "execution_state_id": _runtime_record_id(
+                    "EXEC_STATE", work_order_operation_id
+                ),
+                "work_order_operation_id": work_order_operation_id,
+                "work_order_id": operation_context["work_order_id"],
+                "station_code": station_code,
+                "operation_code": _upper(route_operation.get("operation_code")),
+                "execution_status": "ready",
+                "operation_completion_policy": _lower(
+                    route_operation.get("operation_completion_policy")
+                ),
+                "current_step_code": None,
+                "metadata": _jsonb(state_metadata),
+            },
+        )
+        for step in route_operation_config.get("steps", []):
+            step_code = _upper(step.get("step_code"))
+            if not step_code:
+                continue
+            cursor.execute(
+                INSERT_EXECUTION_STEP_SQL,
+                {
+                    "work_order_operation_step_id": _runtime_record_id(
+                        "EXEC_STEP", work_order_operation_id, step_code
+                    ),
+                    "work_order_operation_id": work_order_operation_id,
+                    "work_order_id": operation_context["work_order_id"],
+                    "operation_code": _upper(route_operation.get("operation_code")),
+                    "step_code": step_code,
+                    "step_no": _safe_int(step.get("step_no"), 0),
+                    "station_code": station_code,
+                    "status": "pending",
+                    "required_for_completion": bool(step.get("required_for_completion")),
+                    "records_duration": bool(step.get("records_duration")),
+                    "approval_required_after_finish": bool(
+                        step.get("approval_required_after_finish")
+                    ),
+                    "metadata": _jsonb({
+                        "source": "runtime_engine_v0_phase1",
+                        "route_operation_id": route_operation_id,
+                        "operation_step_metadata": step.get("metadata") or {},
+                    }),
+                },
+            )
+
+    cursor.execute(
+        SELECT_EXECUTION_STATE_SQL,
+        {"work_order_operation_id": work_order_operation_id},
+    )
+    state_row = cursor.fetchone()
+    cursor.execute(
+        SELECT_EXECUTION_STEPS_SQL,
+        {"work_order_operation_id": work_order_operation_id},
+    )
+    step_rows = cursor.fetchall()
+    return _json_safe({
+        "status": "ok",
+        "work_order_operation_id": work_order_operation_id,
+        "route_operation_id": response_route_operation_id,
+        "station_code": station_code,
+        "initialized": initialized,
+        "execution_state": _execution_state_row(state_row) if state_row else None,
+        "steps": [_execution_step_row(row) for row in step_rows],
+    })
 
 
 def initialize_execution_state(
@@ -6414,12 +7206,82 @@ def _get_operation_event_by_external_event_with_cursor(
     return _operation_event_row(row) if row else None
 
 
+def _get_operation_event_for_command_replay_cursor(
+    cursor: Any,
+    *,
+    station_code: str,
+    event_source: str | None,
+    external_event_id: str,
+) -> JsonObject | None:
+    cursor.execute(
+        SELECT_OPERATION_EVENTS_BY_STATION_EXTERNAL_ID_SQL,
+        {
+            "station_code": station_code,
+            "external_event_id": external_event_id,
+        },
+    )
+    rows = [_operation_event_row(row) for row in cursor.fetchall()]
+    if event_source:
+        matching_source = [
+            row
+            for row in rows
+            if _upper(row.get("event_source")) == _upper(event_source)
+        ]
+        if len(matching_source) == 1 and len(rows) == 1:
+            return matching_source[0]
+        if rows:
+            # Publisher identity is channel/source scoped. Reusing an
+            # external ID through a different ingress can never establish an
+            # exact replay, even when every lifecycle field happens to match.
+            raise MesqlV2Error(
+                "STATION_EXECUTION_EXTERNAL_EVENT_ID_CONFLICT",
+                status_code=409,
+            )
+        return None
+    if len(rows) > 1:
+        raise MesqlV2Error(
+            "STATION_EXECUTION_EXTERNAL_EVENT_ID_CONFLICT",
+            status_code=409,
+        )
+    return rows[0] if rows else None
+
+
+def _lock_station_execution_event_identity_cursor(
+    cursor: Any,
+    *,
+    station_code: str,
+    external_event_id: str,
+) -> None:
+    """Serialize the cross-channel external identity before authoritative readback."""
+    cursor.execute(
+        LOCK_STATION_EXECUTION_EVENT_IDENTITY_SQL,
+        {
+            "station_code": station_code,
+            "external_event_id": external_event_id,
+        },
+    )
+
+
+def _list_internal_station_execution_events_cursor(
+    cursor: Any,
+    work_order_operation_id: str,
+) -> list[JsonObject]:
+    cursor.execute(
+        SELECT_INTERNAL_STATION_EXECUTION_EVENTS_SQL,
+        {
+            "work_order_operation_id": work_order_operation_id,
+            "event_source": STATION_EXECUTION_INTERNAL_EVENT_SOURCE,
+        },
+    )
+    return [_operation_event_row(row) for row in cursor.fetchall()]
+
+
 def _record_operation_event_with_cursor(
     cursor: Any,
     *,
     work_order_operation_id: str,
     station_code: str,
-    event_source: str,
+    event_source: str | None,
     event_type: str,
     external_event_id: str | None = None,
     idempotency_key: str | None = None,
@@ -7459,6 +8321,1778 @@ def finish_execution_step(
     except _CompletionBridgeQueueViolation as violation:
         _recover_runtime_completion_bridge_queue_violation(config, violation)
         raise AssertionError("queue recovery must raise")
+
+
+def _station_execution_event_matches_command(
+    event: JsonObject,
+    *,
+    work_order_operation_id: str | None,
+    step_code: str | None,
+    action: str | None,
+    station_code: str,
+    event_source: str,
+    command_source: str | None = None,
+) -> bool:
+    expected_type = f"step_{action}" if action else None
+    event_payload = event.get("payload")
+    persisted_command_source = (
+        _lower(event_payload.get("command_source"))
+        if isinstance(event_payload, dict)
+        else ""
+    )
+    return (
+        _upper(event.get("station_code")) == station_code
+        and (not event_source or _upper(event.get("event_source")) == event_source)
+        and (
+            not command_source
+            or persisted_command_source == _lower(command_source)
+        )
+        and (
+            not work_order_operation_id
+            or _text(event.get("work_order_operation_id")) == work_order_operation_id
+        )
+        and (not step_code or _upper(event.get("step_code")) == step_code)
+        and (not expected_type or _lower(event.get("event_type")) == expected_type)
+    )
+
+
+def _configured_station_execution_trigger_source(
+    configured_step: JsonObject,
+    *,
+    action: str,
+) -> str:
+    start_mode = _lower(configured_step.get("start_mode"))
+    finish_mode = _lower(configured_step.get("finish_mode"))
+    start_source = _upper(configured_step.get("start_event_source_code"))
+    finish_source = _upper(configured_step.get("finish_event_source_code"))
+    if start_mode == "implicit_start" and finish_mode == "implicit_finish":
+        return start_source or finish_source
+    return start_source if action == "start" else finish_source
+
+
+def _plan_station_execution_transition(
+    configured_step: JsonObject,
+    *,
+    runtime_status: str,
+    command_source: str,
+    event_source: str,
+    requested_action: str | None,
+) -> JsonObject:
+    start_mode = _lower(configured_step.get("start_mode"))
+    finish_mode = _lower(configured_step.get("finish_mode"))
+    start_source = _upper(configured_step.get("start_event_source_code"))
+    finish_source = _upper(configured_step.get("finish_event_source_code"))
+
+    if command_source == "internal":
+        if (
+            runtime_status != "pending"
+            or start_mode != "implicit_start"
+            or finish_mode != "implicit_finish"
+            or start_source
+            or finish_source
+            or event_source != STATION_EXECUTION_INTERNAL_EVENT_SOURCE
+            or requested_action is not None
+        ):
+            raise MesqlV2Error(
+                "STATION_EXECUTION_INTERNAL_ACTION_REQUIRED",
+                status_code=409,
+            )
+        return {
+            "action": "finish",
+            "implicit_started": True,
+            "implicit_finished": True,
+            "internal_transition": True,
+        }
+
+    if runtime_status == "active":
+        if finish_mode == "implicit_finish":
+            raise MesqlV2Error(
+                "STATION_EXECUTION_POLICY_INCONSISTENT",
+                status_code=409,
+            )
+        resolved_action = "finish"
+    elif runtime_status == "pending":
+        if start_mode == "implicit_start" and finish_mode == "implicit_finish":
+            if not (start_source or finish_source):
+                raise MesqlV2Error(
+                    "STATION_EXECUTION_INTERNAL_ACTION_REQUIRED",
+                    status_code=409,
+                )
+            resolved_action = "start"
+        elif start_mode == "implicit_start":
+            resolved_action = "finish"
+        elif finish_mode == "implicit_finish":
+            resolved_action = "start"
+        elif (
+            command_source == "mqtt"
+            and finish_mode == "auto_finish"
+            and finish_source == event_source
+            and start_source != event_source
+        ):
+            resolved_action = "finish"
+        elif start_mode in {"manual_start", "auto_start"}:
+            resolved_action = "start"
+        else:
+            raise MesqlV2Error(
+                "STATION_EXECUTION_ACTION_NOT_ALLOWED",
+                status_code=409,
+            )
+    else:
+        raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=409)
+
+    if requested_action is not None and requested_action != resolved_action:
+        # The configured modes and persisted phase own the transition.
+        # requested_action can confirm that decision but can never select it.
+        raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=409)
+    trigger_mode = start_mode if resolved_action == "start" else finish_mode
+    configured_source = _configured_station_execution_trigger_source(
+        configured_step,
+        action=resolved_action,
+    )
+    allowed_prefix = "manual_" if command_source == "kiosk" else "auto_"
+    if not (
+        trigger_mode.startswith(allowed_prefix)
+        or trigger_mode.startswith("implicit_")
+    ):
+        error_code = (
+            "STATION_EXECUTION_AUTOMATIC_ACTION_REQUIRED"
+            if command_source == "kiosk"
+            else "STATION_EXECUTION_MANUAL_ACTION_REQUIRED"
+        )
+        raise MesqlV2Error(error_code, status_code=409)
+    if not configured_source or configured_source != event_source:
+        raise MesqlV2Error(
+            "STATION_EXECUTION_EVENT_SOURCE_NOT_ALLOWED",
+            status_code=409,
+        )
+    return {
+        "action": resolved_action,
+        "implicit_started": (
+            runtime_status == "pending"
+            and (
+                resolved_action == "finish"
+                or (
+                    start_mode == "implicit_start"
+                    and finish_mode == "implicit_finish"
+                )
+            )
+        ),
+        "implicit_finished": (
+            runtime_status == "pending"
+            and resolved_action == "start"
+            and finish_mode == "implicit_finish"
+        ),
+    }
+
+
+def _resolve_station_execution_transition(
+    configured_step: JsonObject,
+    *,
+    runtime_status: str,
+    command_source: str,
+    event_source: str,
+    requested_action: str | None,
+) -> str:
+    return _plan_station_execution_transition(
+        configured_step,
+        runtime_status=runtime_status,
+        command_source=command_source,
+        event_source=event_source,
+        requested_action=requested_action,
+    )["action"]
+
+
+def _station_execution_replay_result_cursor(
+    cursor: Any,
+    event: JsonObject,
+    *,
+    station_code: str,
+) -> JsonObject:
+    resolved_operation_id = _text(event.get("work_order_operation_id"))
+    resolved_step_code = _upper(event.get("step_code"))
+    resolved_action = _lower(event.get("event_type")).removeprefix("step_")
+    cursor.execute(
+        SELECT_EXECUTION_STATE_SQL,
+        {"work_order_operation_id": resolved_operation_id},
+    )
+    state_row = cursor.fetchone()
+    cursor.execute(
+        SELECT_EXECUTION_STEPS_SQL,
+        {"work_order_operation_id": resolved_operation_id},
+    )
+    replay_step = next(
+        (
+            mapped
+            for mapped in (_execution_step_row(row) for row in cursor.fetchall())
+            if _upper(mapped.get("step_code")) == resolved_step_code
+        ),
+        None,
+    )
+    event_payload = event.get("payload") or {}
+    if not isinstance(event_payload, dict):
+        event_payload = {}
+    completion_bridge = None
+    mapped_state = _execution_state_row(state_row) if state_row else None
+    if mapped_state and mapped_state.get("execution_status") == "closed":
+        applicability = _select_completion_bridge_applicability_cursor(
+            cursor,
+            resolved_operation_id,
+        )
+        if _is_completion_bridge_applicable(applicability):
+            if (
+                _lower((applicability or {}).get("status")) != "completed"
+                or _json_safe((applicability or {}).get("completed_at"))
+                != _json_safe(mapped_state.get("closed_at"))
+            ):
+                raise MesqlV2Error(
+                    "RUNTIME_COMPLETION_BRIDGE_OPERATION_STATE_CONFLICT",
+                    status_code=409,
+                )
+            readiness = _get_completion_bridge_schema_readiness_cursor(cursor)
+            _validate_completion_bridge_schema_readiness(readiness)
+            locked_context = _prepare_runtime_completion_bridge_cursor(
+                cursor,
+                applicability=applicability,
+            )
+            mapped_state = locked_context["execution_state"]
+            completion_bridge = _apply_runtime_completion_bridge_cursor(
+                cursor,
+                work_order_operation_id=resolved_operation_id,
+                locked_context=locked_context,
+                runtime_state=mapped_state,
+            )
+    return _json_safe({
+        "status": "ok",
+        "work_order_operation_id": resolved_operation_id,
+        "station_code": station_code,
+        "step_code": resolved_step_code,
+        "action": resolved_action,
+        "event_source": _upper(event.get("event_source")),
+        "action_applied": False,
+        "event_inserted": False,
+        "implicit_started": event_payload.get("implicit_started") is True,
+        "implicit_finished": event_payload.get("implicit_finished") is True,
+        "event": event,
+        "execution_state": mapped_state,
+        "step": replay_step,
+        "completion_bridge": completion_bridge,
+    })
+
+
+def _validated_station_execution_replay_cursor(
+    cursor: Any,
+    event: JsonObject,
+    *,
+    work_order_operation_id: str,
+    step_code: str | None,
+    action: str | None,
+    station_code: str,
+    event_source: str | None,
+    command_source: str,
+) -> tuple[JsonObject, str]:
+    if not _station_execution_event_matches_command(
+        event,
+        work_order_operation_id=work_order_operation_id,
+        step_code=step_code,
+        action=action,
+        station_code=station_code,
+        event_source=event_source,
+        command_source=command_source,
+    ):
+        raise MesqlV2Error(
+            "STATION_EXECUTION_EXTERNAL_EVENT_ID_CONFLICT",
+            status_code=409,
+        )
+    resolved_event_source = event_source or _upper(event.get("event_source"))
+    if not resolved_event_source:
+        raise MesqlV2Error(
+            "STATION_EXECUTION_EXTERNAL_EVENT_ID_CONFLICT",
+            status_code=409,
+        )
+    replay = _station_execution_replay_result_cursor(
+        cursor,
+        event,
+        station_code=station_code,
+    )
+    replay["station_context"] = _station_execution_context_snapshot_cursor(
+        cursor,
+        station_code,
+    )
+    return replay, resolved_event_source
+
+
+def _station_execution_completion_station_codes_cursor(
+    cursor: Any,
+    *,
+    work_order_id: str,
+    work_order_operation_id: str,
+) -> list[str]:
+    cursor.execute(
+        SELECT_WORK_ORDER_RELEASE_OPERATIONS_SQL,
+        {"work_order_id": work_order_id},
+    )
+    operations = [
+        _work_order_release_operation_row(row) for row in cursor.fetchall()
+    ]
+    current_index = next(
+        (
+            index
+            for index, operation in enumerate(operations)
+            if _text(operation.get("work_order_operation_id"))
+            == work_order_operation_id
+        ),
+        None,
+    )
+    if current_index is None:
+        raise MesqlV2Error(
+            "RUNTIME_COMPLETION_BRIDGE_IDENTITY_CONFLICT",
+            status_code=409,
+        )
+    current = operations[current_index]
+    successor = (
+        operations[current_index + 1]
+        if current_index + 1 < len(operations)
+        else None
+    )
+    return _normalize_completion_bridge_station_lock_set(
+        current.get("station_code"),
+        successor.get("station_code") if successor else None,
+    )
+
+
+def _internal_station_execution_identity_context(
+    *,
+    bridge_context: JsonObject,
+    binding: JsonObject,
+    work_order_operation_id: str,
+    route_operation_id: str,
+    step_code: str,
+) -> JsonObject:
+    release = bridge_context.get("release") or {}
+    release_id = _text(release.get("release_id"))
+    binding_metadata = binding.get("metadata") or {}
+    if (
+        not release_id
+        or not isinstance(binding_metadata, dict)
+        or _text(binding_metadata.get("release_id")) != release_id
+    ):
+        raise MesqlV2Error(
+            "STATION_EXECUTION_INTERNAL_IDENTITY_CONFLICT",
+            status_code=409,
+        )
+    operations = bridge_context.get("lifecycle_operations") or []
+    current_index = next(
+        (
+            index
+            for index, operation in enumerate(operations)
+            if _text(operation.get("work_order_operation_id"))
+            == work_order_operation_id
+        ),
+        None,
+    )
+    if current_index is None:
+        raise MesqlV2Error(
+            "STATION_EXECUTION_INTERNAL_IDENTITY_CONFLICT",
+            status_code=409,
+        )
+    predecessor_identity = (
+        f"release:{release_id}"
+        if current_index == 0
+        else "operation:"
+        + _required_canonical_uuid_text(
+            operations[current_index - 1].get("work_order_operation_id"),
+            field_name="PREDECESSOR_OPERATION_ID",
+        )
+    )
+    identities = {}
+    for phase, action_identity in (
+        ("start", "step_start"),
+        ("finish", "step_finish"),
+    ):
+        event_identity = _derive_internal_station_execution_event_identity(
+            work_order_operation_id=work_order_operation_id,
+            route_operation_id=route_operation_id,
+            step_code=step_code,
+            transition_phase=phase,
+            action_identity=action_identity,
+            predecessor_identity=predecessor_identity,
+            release_id=release_id,
+        )
+        identities[phase] = {
+            "event_identity": event_identity,
+            "idempotency_key": f"INTERNAL:{event_identity}",
+        }
+    return {
+        "release_id": release_id,
+        "predecessor_identity": predecessor_identity,
+        "events": identities,
+    }
+
+
+def _internal_station_execution_event_matches(
+    event: JsonObject,
+    *,
+    work_order_operation_id: str,
+    route_operation_id: str,
+    station_code: str,
+    step_code: str,
+    phase: str,
+    identity_context: JsonObject,
+) -> bool:
+    expected = identity_context["events"][phase]
+    payload = event.get("payload") or {}
+    return (
+        isinstance(payload, dict)
+        and _text(event.get("work_order_operation_id"))
+        == work_order_operation_id
+        and _upper(event.get("station_code")) == station_code
+        and _upper(event.get("step_code")) == step_code
+        and _upper(event.get("event_source"))
+        == STATION_EXECUTION_INTERNAL_EVENT_SOURCE
+        and _lower(event.get("event_type")) == f"step_{phase}"
+        and _text(event.get("idempotency_key"))
+        == expected["idempotency_key"]
+        and not _text(event.get("external_event_id"))
+        and _lower(payload.get("command_source")) == "internal"
+        and _lower(payload.get("transition_phase")) == phase
+        and _lower(payload.get("action")) == phase
+        and _text(payload.get("internal_event_identity"))
+        == expected["event_identity"]
+        and _text(payload.get("predecessor_identity"))
+        == identity_context["predecessor_identity"]
+        and _text(payload.get("release_id")) == identity_context["release_id"]
+        and _upper(payload.get("route_operation_id")) == route_operation_id
+        and payload.get("implicit_started") is True
+        and payload.get("implicit_finished") is True
+    )
+
+
+def _record_internal_station_execution_phase_event_cursor(
+    cursor: Any,
+    *,
+    phase: str,
+    work_order_operation_id: str,
+    route_operation_id: str,
+    station_code: str,
+    step_code: str,
+    execution_state: JsonObject,
+    execution_step: JsonObject,
+    identity_context: JsonObject,
+    actor_id: str | None,
+) -> JsonObject:
+    identity = identity_context["events"][phase]
+    return _record_operation_event_with_cursor(
+        cursor,
+        work_order_operation_id=work_order_operation_id,
+        work_order_id=_nullable_text(execution_state.get("work_order_id")),
+        work_order_operation_step_id=_nullable_text(
+            execution_step.get("work_order_operation_step_id")
+        ),
+        operation_code=_nullable_upper(execution_state.get("operation_code")),
+        step_code=step_code,
+        station_code=station_code,
+        event_source=STATION_EXECUTION_INTERNAL_EVENT_SOURCE,
+        event_type=f"step_{phase}",
+        external_event_id=None,
+        idempotency_key=identity["idempotency_key"],
+        actor_id=actor_id,
+        payload={
+            "command_source": "internal",
+            "transition_phase": phase,
+            "action": phase,
+            "step_code": step_code,
+            "route_operation_id": route_operation_id,
+            "release_id": identity_context["release_id"],
+            "predecessor_identity": identity_context["predecessor_identity"],
+            "internal_event_identity": identity["event_identity"],
+            "implicit_started": True,
+            "implicit_finished": True,
+        },
+    )
+
+
+def _internal_station_execution_replay_result_cursor(
+    cursor: Any,
+    *,
+    start_event: JsonObject,
+    finish_event: JsonObject,
+    station_code: str,
+    identity_context: JsonObject,
+) -> JsonObject:
+    replay = _station_execution_replay_result_cursor(
+        cursor,
+        finish_event,
+        station_code=station_code,
+    )
+    replay.update(
+        {
+            "action": "internal_transition",
+            "event_source": STATION_EXECUTION_INTERNAL_EVENT_SOURCE,
+            "action_applied": False,
+            "event_inserted": False,
+            "implicit_started": True,
+            "implicit_finished": True,
+            "event": finish_event,
+            "events": [start_event, finish_event],
+            "internal_identity": identity_context,
+        }
+    )
+    return _json_safe(replay)
+
+
+def _internal_station_execution_action_cursor(
+    cursor: Any,
+    *,
+    work_order_operation_id: str,
+    route_operation_id: str,
+    station_code: str,
+    step_code: str,
+    operation_step: JsonObject,
+    execution_state: JsonObject,
+    execution_steps: list[JsonObject],
+    binding: JsonObject,
+    bridge_context: JsonObject | None,
+    actor_id: str | None,
+) -> JsonObject:
+    if (
+        _lower(operation_step.get("start_mode")) != "implicit_start"
+        or _lower(operation_step.get("finish_mode")) != "implicit_finish"
+        or _upper(operation_step.get("start_event_source_code"))
+        or _upper(operation_step.get("finish_event_source_code"))
+        or bridge_context is None
+    ):
+        raise MesqlV2Error(
+            "STATION_EXECUTION_INTERNAL_ACTION_REQUIRED",
+            status_code=409,
+        )
+    identity_context = _internal_station_execution_identity_context(
+        bridge_context=bridge_context,
+        binding=binding,
+        work_order_operation_id=work_order_operation_id,
+        route_operation_id=route_operation_id,
+        step_code=step_code,
+    )
+    start_event = _get_operation_event_by_idempotency_key_with_cursor(
+        cursor,
+        identity_context["events"]["start"]["idempotency_key"],
+    )
+    finish_event = _get_operation_event_by_idempotency_key_with_cursor(
+        cursor,
+        identity_context["events"]["finish"]["idempotency_key"],
+    )
+    if start_event is not None or finish_event is not None:
+        if not (
+            start_event is not None
+            and finish_event is not None
+            and _internal_station_execution_event_matches(
+                start_event,
+                work_order_operation_id=work_order_operation_id,
+                route_operation_id=route_operation_id,
+                station_code=station_code,
+                step_code=step_code,
+                phase="start",
+                identity_context=identity_context,
+            )
+            and _internal_station_execution_event_matches(
+                finish_event,
+                work_order_operation_id=work_order_operation_id,
+                route_operation_id=route_operation_id,
+                station_code=station_code,
+                step_code=step_code,
+                phase="finish",
+                identity_context=identity_context,
+            )
+        ):
+            raise MesqlV2Error(
+                "STATION_EXECUTION_INTERNAL_IDENTITY_CONFLICT",
+                status_code=409,
+            )
+        return _internal_station_execution_replay_result_cursor(
+            cursor,
+            start_event=start_event,
+            finish_event=finish_event,
+            station_code=station_code,
+            identity_context=identity_context,
+        )
+
+    current_step = _first_actionable_execution_step(execution_steps)
+    if current_step is None or _upper(current_step.get("step_code")) != step_code:
+        raise MesqlV2Error("STATION_EXECUTION_STEP_NOT_CURRENT", status_code=409)
+    if (
+        _lower(execution_state.get("execution_status")) not in {"ready", "active"}
+        or _lower(current_step.get("status")) != "pending"
+    ):
+        raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=409)
+
+    start_event = _record_internal_station_execution_phase_event_cursor(
+        cursor,
+        phase="start",
+        work_order_operation_id=work_order_operation_id,
+        route_operation_id=route_operation_id,
+        station_code=station_code,
+        step_code=step_code,
+        execution_state=execution_state,
+        execution_step=current_step,
+        identity_context=identity_context,
+        actor_id=actor_id,
+    )
+    cursor.execute(
+        UPDATE_EXECUTION_STATE_STEP_STARTED_SQL,
+        {
+            "work_order_operation_id": work_order_operation_id,
+            "current_step_code": step_code,
+            "last_event_id": start_event.get("event_id"),
+        },
+    )
+    cursor.execute(
+        UPDATE_EXECUTION_STEP_STARTED_SQL,
+        {
+            "work_order_operation_id": work_order_operation_id,
+            "step_code": step_code,
+            "started_by_event_id": start_event.get("event_id"),
+        },
+    )
+    finish_event = _record_internal_station_execution_phase_event_cursor(
+        cursor,
+        phase="finish",
+        work_order_operation_id=work_order_operation_id,
+        route_operation_id=route_operation_id,
+        station_code=station_code,
+        step_code=step_code,
+        execution_state=execution_state,
+        execution_step=current_step,
+        identity_context=identity_context,
+        actor_id=actor_id,
+    )
+    cursor.execute(
+        UPDATE_EXECUTION_STEP_FINISHED_SQL,
+        {
+            "work_order_operation_id": work_order_operation_id,
+            "step_code": step_code,
+            "event_time": finish_event.get("event_time"),
+            "event_id": finish_event.get("event_id"),
+        },
+    )
+    completed_step_row = cursor.fetchone()
+    if not completed_step_row:
+        raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=409)
+    completed_step = _execution_step_row(completed_step_row)
+    resolved_steps = [
+        completed_step if _upper(step.get("step_code")) == step_code else step
+        for step in execution_steps
+    ]
+    required_steps_completed = _required_steps_completed(resolved_steps)
+    completion_policy = _lower(execution_state.get("operation_completion_policy"))
+    policy_transition = _resolve_completion_policy_transition(
+        operation_completion_policy=completion_policy,
+        required_steps_completed=required_steps_completed,
+    )
+    completion_policy_applied = bool(policy_transition["policy_applied"])
+    next_step = (
+        None
+        if completion_policy_applied
+        else _first_actionable_execution_step(resolved_steps)
+    )
+    cursor.execute(
+        UPDATE_EXECUTION_STATE_STEP_FINISHED_SQL,
+        {
+            "work_order_operation_id": work_order_operation_id,
+            "current_step_code": (
+                _nullable_upper(next_step.get("step_code")) if next_step else None
+            ),
+            "last_event_id": finish_event.get("event_id"),
+            "event_time": finish_event.get("event_time"),
+            "execution_status": _lower(policy_transition["execution_status"]),
+            "completion_policy_applied": completion_policy_applied,
+            "set_pending_final_approval_at": bool(
+                policy_transition["set_pending_final_approval_at"]
+            ),
+            "set_closed_at": bool(policy_transition["set_closed_at"]),
+        },
+    )
+    cursor.execute(
+        SELECT_EXECUTION_STATE_SQL,
+        {"work_order_operation_id": work_order_operation_id},
+    )
+    completed_state_row = cursor.fetchone()
+    if not completed_state_row:
+        raise MesqlV2Error("EXECUTION_STATE_NOT_FOUND", status_code=404)
+    completed_state = _execution_state_row(completed_state_row)
+    completion_bridge = None
+    if (
+        completed_state.get("execution_status") == "closed"
+        and completed_state.get("closed_at") is not None
+    ):
+        completion_bridge = _apply_runtime_completion_bridge_cursor(
+            cursor,
+            work_order_operation_id=work_order_operation_id,
+            locked_context=bridge_context,
+            runtime_state=completed_state,
+        )
+    return _json_safe(
+        {
+            "status": "ok",
+            "work_order_operation_id": work_order_operation_id,
+            "station_code": station_code,
+            "step_code": step_code,
+            "action": "internal_transition",
+            "event_source": STATION_EXECUTION_INTERNAL_EVENT_SOURCE,
+            "action_applied": True,
+            "event_inserted": True,
+            "implicit_started": True,
+            "implicit_finished": True,
+            "event": finish_event,
+            "events": [start_event, finish_event],
+            "internal_identity": identity_context,
+            "execution_state": completed_state,
+            "step": completed_step,
+            "next_step": next_step,
+            "completion_policy_applied": completion_policy_applied,
+            "completion_policy": completion_policy,
+            "required_steps_completed": required_steps_completed,
+            "completion_bridge": completion_bridge,
+        }
+    )
+
+
+def _station_execution_action_cursor(
+    cursor: Any,
+    *,
+    work_order_operation_id: str,
+    route_operation_id: str,
+    station_code: str,
+    step_code: str,
+    action: str,
+    command_source: str,
+    event_source: str,
+    external_event_id: str,
+    actor_id: str | None,
+    payload: JsonObject,
+    transition_plan: JsonObject | None = None,
+    locked_binding: JsonObject | None = None,
+    prelocked_bridge_context: JsonObject | None = None,
+) -> JsonObject:
+    operation_step = _get_operation_step_with_cursor(
+        cursor,
+        route_operation_id,
+        step_code,
+    )
+    if operation_step is None:
+        raise MesqlV2Error("STATION_EXECUTION_STEP_NOT_FOUND", status_code=404)
+    configured_source = _configured_station_execution_trigger_source(
+        operation_step,
+        action=action,
+    )
+    if command_source == "internal":
+        if (
+            event_source != STATION_EXECUTION_INTERNAL_EVENT_SOURCE
+            or configured_source
+        ):
+            raise MesqlV2Error(
+                "STATION_EXECUTION_INTERNAL_ACTION_REQUIRED",
+                status_code=409,
+            )
+    else:
+        source = _resolve_station_event_source_with_cursor(
+            cursor,
+            station_code,
+            event_source,
+        )
+        if source is None or source.get("active") is not True:
+            raise MesqlV2Error(
+                "STATION_EXECUTION_EVENT_SOURCE_NOT_ALLOWED",
+                status_code=409,
+            )
+        expected_channel = "kiosk" if command_source == "kiosk" else "mqtt"
+        if _lower(source.get("event_channel")) != expected_channel:
+            raise MesqlV2Error(
+                "STATION_EXECUTION_EVENT_SOURCE_NOT_ALLOWED",
+                status_code=409,
+            )
+        if configured_source != event_source:
+            raise MesqlV2Error(
+                "STATION_EXECUTION_EVENT_SOURCE_NOT_ALLOWED",
+                status_code=409,
+            )
+
+    binding = locked_binding
+    if binding is None and prelocked_bridge_context is not None:
+        binding = next(
+            (
+                item
+                for item in prelocked_bridge_context.get("bindings", [])
+                if _text(item.get("work_order_operation_id"))
+                == work_order_operation_id
+            ),
+            None,
+        )
+    if binding is None:
+        binding = _get_work_order_operation_route_binding_with_cursor(
+            cursor,
+            work_order_operation_id,
+            for_update=True,
+        )
+    if binding is None:
+        raise MesqlV2Error(
+            "WORK_ORDER_OPERATION_ROUTE_BINDING_REQUIRED",
+            status_code=409,
+        )
+    if _upper(binding.get("route_operation_id")) != route_operation_id:
+        raise MesqlV2Error(
+            "WORK_ORDER_OPERATION_ROUTE_BINDING_MISMATCH",
+            status_code=409,
+        )
+
+    idempotency_key = _build_operation_event_idempotency_key(
+        station_code,
+        event_source,
+        external_event_id,
+    )
+    implicit_finish = action == "start" and _lower(
+        operation_step.get("finish_mode")
+    ) == "implicit_finish"
+    bridge_context = prelocked_bridge_context
+    if bridge_context is not None:
+        execution_state = bridge_context["execution_state"]
+        execution_steps = bridge_context["runtime_steps"]
+    elif action == "finish" or implicit_finish:
+        applicability = _select_completion_bridge_applicability_cursor(
+            cursor,
+            work_order_operation_id,
+        )
+        if _is_completion_bridge_applicable(applicability):
+            readiness = _get_completion_bridge_schema_readiness_cursor(cursor)
+            _validate_completion_bridge_schema_readiness(readiness)
+            bridge_context = _prepare_runtime_completion_bridge_cursor(
+                cursor,
+                applicability=applicability,
+            )
+            execution_state = bridge_context["execution_state"]
+            execution_steps = bridge_context["runtime_steps"]
+        else:
+            cursor.execute(
+                SELECT_EXECUTION_STATE_FOR_UPDATE_SQL,
+                {"work_order_operation_id": work_order_operation_id},
+            )
+            state_row = cursor.fetchone()
+            if not state_row:
+                raise MesqlV2Error("EXECUTION_STATE_NOT_FOUND", status_code=404)
+            execution_state = _execution_state_row(state_row)
+            cursor.execute(
+                SELECT_EXECUTION_STEPS_FOR_UPDATE_SQL,
+                {"work_order_operation_id": work_order_operation_id},
+            )
+            execution_steps = [_execution_step_row(row) for row in cursor.fetchall()]
+    else:
+        cursor.execute(
+            SELECT_EXECUTION_STATE_FOR_UPDATE_SQL,
+            {"work_order_operation_id": work_order_operation_id},
+        )
+        state_row = cursor.fetchone()
+        if not state_row:
+            raise MesqlV2Error("EXECUTION_STATE_NOT_FOUND", status_code=404)
+        execution_state = _execution_state_row(state_row)
+        cursor.execute(
+            SELECT_EXECUTION_STEPS_FOR_UPDATE_SQL,
+            {"work_order_operation_id": work_order_operation_id},
+        )
+        execution_steps = [_execution_step_row(row) for row in cursor.fetchall()]
+
+    if _upper(execution_state.get("station_code")) != station_code:
+        raise MesqlV2Error(
+            "STATION_EXECUTION_OPERATION_STATION_MISMATCH",
+            status_code=409,
+        )
+    state_metadata = execution_state.get("metadata") or {}
+    if (
+        not isinstance(state_metadata, dict)
+        or _upper(state_metadata.get("route_operation_id")) != route_operation_id
+    ):
+        raise MesqlV2Error("EXECUTION_STATE_ROUTE_OPERATION_MISMATCH", status_code=409)
+    if command_source == "internal":
+        return _internal_station_execution_action_cursor(
+            cursor,
+            work_order_operation_id=work_order_operation_id,
+            route_operation_id=route_operation_id,
+            station_code=station_code,
+            step_code=step_code,
+            operation_step=operation_step,
+            execution_state=execution_state,
+            execution_steps=execution_steps,
+            binding=binding,
+            bridge_context=bridge_context,
+            actor_id=actor_id,
+        )
+    existing_event = _get_operation_event_by_idempotency_key_with_cursor(
+        cursor,
+        idempotency_key,
+    )
+    if existing_event is None:
+        existing_event = _get_operation_event_by_external_event_with_cursor(
+            cursor,
+            station_code,
+            event_source,
+            external_event_id,
+        )
+    if existing_event is not None:
+        if not _station_execution_event_matches_command(
+            existing_event,
+            work_order_operation_id=work_order_operation_id,
+            step_code=step_code,
+            action=action,
+            station_code=station_code,
+            event_source=event_source,
+            command_source=command_source,
+        ):
+            raise MesqlV2Error(
+                "STATION_EXECUTION_EXTERNAL_EVENT_ID_CONFLICT",
+                status_code=409,
+            )
+        return _station_execution_replay_result_cursor(
+            cursor,
+            existing_event,
+            station_code=station_code,
+        )
+
+    current_step = _first_actionable_execution_step(execution_steps)
+    if current_step is None or _upper(current_step.get("step_code")) != step_code:
+        raise MesqlV2Error("STATION_EXECUTION_STEP_NOT_CURRENT", status_code=409)
+    execution_step = current_step
+    plan = transition_plan or _plan_station_execution_transition(
+        operation_step,
+        runtime_status=_lower(execution_step.get("status")),
+        command_source=command_source,
+        event_source=event_source,
+        requested_action=action,
+    )
+    if plan.get("action") != action:
+        raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=409)
+    implicit_started = plan.get("implicit_started") is True
+    implicit_finish = plan.get("implicit_finished") is True
+    event_payload = dict(payload)
+    event_payload["action"] = action
+    event_payload["step_code"] = step_code
+    event_payload["command_source"] = command_source
+    event_payload["implicit_started"] = implicit_started
+    event_payload["implicit_finished"] = implicit_finish
+
+    if action == "start" and not implicit_finish:
+        if _lower(execution_state.get("execution_status")) not in {"ready", "active"}:
+            raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=409)
+        if _lower(execution_step.get("status")) != "pending":
+            raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=409)
+        inserted_event = _record_operation_event_with_cursor(
+            cursor,
+            work_order_operation_id=work_order_operation_id,
+            work_order_id=_nullable_text(execution_state.get("work_order_id")),
+            work_order_operation_step_id=_nullable_text(
+                execution_step.get("work_order_operation_step_id")
+            ),
+            operation_code=_nullable_upper(execution_state.get("operation_code")),
+            step_code=step_code,
+            station_code=station_code,
+            event_source=event_source,
+            event_type="step_start",
+            external_event_id=external_event_id,
+            idempotency_key=idempotency_key,
+            actor_id=actor_id,
+            payload=event_payload,
+        )
+        cursor.execute(
+            UPDATE_EXECUTION_STATE_STEP_STARTED_SQL,
+            {
+                "work_order_operation_id": work_order_operation_id,
+                "current_step_code": step_code,
+                "last_event_id": inserted_event.get("event_id"),
+            },
+        )
+        cursor.execute(
+            UPDATE_EXECUTION_STEP_STARTED_SQL,
+            {
+                "work_order_operation_id": work_order_operation_id,
+                "step_code": step_code,
+                "started_by_event_id": inserted_event.get("event_id"),
+            },
+        )
+        cursor.execute(
+            SELECT_EXECUTION_STATE_SQL,
+            {"work_order_operation_id": work_order_operation_id},
+        )
+        execution_state = _execution_state_row(cursor.fetchone())
+        cursor.execute(
+            SELECT_EXECUTION_STEP_FOR_UPDATE_SQL,
+            {"work_order_operation_id": work_order_operation_id, "step_code": step_code},
+        )
+        execution_step = _execution_step_row(cursor.fetchone())
+        return _json_safe({
+            "status": "ok",
+            "work_order_operation_id": work_order_operation_id,
+            "station_code": station_code,
+            "step_code": step_code,
+            "action": action,
+            "event_source": event_source,
+            "action_applied": True,
+            "event_inserted": True,
+            "implicit_started": False,
+            "implicit_finished": False,
+            "event": inserted_event,
+            "execution_state": execution_state,
+            "step": execution_step,
+            "completion_bridge": None,
+        })
+
+    if _lower(execution_state.get("execution_status")) not in {"ready", "active"}:
+        raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=409)
+    step_status = _lower(execution_step.get("status"))
+    if step_status not in {"pending", "active"}:
+        raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=409)
+    finish_mode = _lower(operation_step.get("finish_mode"))
+    start_mode = _lower(operation_step.get("start_mode"))
+    if step_status == "pending" and (start_mode, finish_mode) not in {
+        ("auto_start", "auto_finish"),
+        ("implicit_start", "auto_finish"),
+        ("implicit_start", "manual_finish"),
+        ("auto_start", "implicit_finish"),
+        ("manual_start", "implicit_finish"),
+        ("implicit_start", "implicit_finish"),
+    }:
+        raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=409)
+    if implicit_finish and step_status != "pending":
+        raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=409)
+
+    inserted_event = _record_operation_event_with_cursor(
+        cursor,
+        work_order_operation_id=work_order_operation_id,
+        work_order_id=_nullable_text(execution_state.get("work_order_id")),
+        work_order_operation_step_id=_nullable_text(
+            execution_step.get("work_order_operation_step_id")
+        ),
+        operation_code=_nullable_upper(execution_state.get("operation_code")),
+        step_code=step_code,
+        station_code=station_code,
+        event_source=event_source,
+        event_type="step_start" if implicit_finish else "step_finish",
+        external_event_id=external_event_id,
+        idempotency_key=idempotency_key,
+        actor_id=actor_id,
+        payload=event_payload,
+    )
+    event_time = inserted_event.get("event_time")
+    event_id = inserted_event.get("event_id")
+    cursor.execute(
+        UPDATE_EXECUTION_STEP_FINISHED_SQL,
+        {
+            "work_order_operation_id": work_order_operation_id,
+            "step_code": step_code,
+            "event_time": event_time,
+            "event_id": event_id,
+        },
+    )
+    completed_step = _execution_step_row(cursor.fetchone())
+    resolved_steps = [
+        completed_step if _upper(step.get("step_code")) == step_code else step
+        for step in execution_steps
+    ]
+    required_steps_completed = _required_steps_completed(resolved_steps)
+    completion_policy = _lower(execution_state.get("operation_completion_policy"))
+    policy_transition = _resolve_completion_policy_transition(
+        operation_completion_policy=completion_policy,
+        required_steps_completed=required_steps_completed,
+    )
+    completion_policy_applied = bool(policy_transition["policy_applied"])
+    next_step = None if completion_policy_applied else _first_actionable_execution_step(resolved_steps)
+    cursor.execute(
+        UPDATE_EXECUTION_STATE_STEP_FINISHED_SQL,
+        {
+            "work_order_operation_id": work_order_operation_id,
+            "current_step_code": _nullable_upper(next_step.get("step_code")) if next_step else None,
+            "last_event_id": event_id,
+            "event_time": event_time,
+            "execution_status": _lower(policy_transition["execution_status"]),
+            "completion_policy_applied": completion_policy_applied,
+            "set_pending_final_approval_at": bool(
+                policy_transition["set_pending_final_approval_at"]
+            ),
+            "set_closed_at": bool(policy_transition["set_closed_at"]),
+        },
+    )
+    cursor.execute(
+        SELECT_EXECUTION_STATE_SQL,
+        {"work_order_operation_id": work_order_operation_id},
+    )
+    execution_state = _execution_state_row(cursor.fetchone())
+    completion_bridge = None
+    if (
+        bridge_context is not None
+        and execution_state.get("execution_status") == "closed"
+        and execution_state.get("closed_at") is not None
+    ):
+        completion_bridge = _apply_runtime_completion_bridge_cursor(
+            cursor,
+            work_order_operation_id=work_order_operation_id,
+            locked_context=bridge_context,
+            runtime_state=execution_state,
+        )
+    return _json_safe({
+        "status": "ok",
+        "work_order_operation_id": work_order_operation_id,
+        "station_code": station_code,
+        "step_code": step_code,
+        "action": action,
+        "event_source": event_source,
+        "action_applied": True,
+        "event_inserted": True,
+        "implicit_started": implicit_started,
+        "implicit_finished": implicit_finish,
+        "event": inserted_event,
+        "execution_state": execution_state,
+        "step": completed_step,
+        "next_step": next_step,
+        "completion_policy_applied": completion_policy_applied,
+        "completion_policy": completion_policy,
+        "required_steps_completed": required_steps_completed,
+        "completion_bridge": completion_bridge,
+    })
+
+
+def _dispatch_station_execution_action(
+    config: AppConfig,
+    *,
+    station_code: str,
+    command_source: str,
+    event_source: str,
+    external_event_id: str,
+    work_order_operation_id: str | None = None,
+    step_code: str | None = None,
+    action: str | None = None,
+    actor_id: str | None = None,
+    payload: JsonObject | None = None,
+) -> JsonObject:
+    normalized_station_code = _upper(station_code)
+    normalized_command_source = _lower(command_source)
+    normalized_event_source = _upper(event_source)
+    normalized_external_event_id = _text(external_event_id)
+    normalized_operation_id = _nullable_text(work_order_operation_id)
+    normalized_step_code = _nullable_upper(step_code)
+    normalized_action = _lower(action) or None
+    normalized_actor_id = _nullable_text(actor_id)
+    if not normalized_station_code:
+        raise MesqlV2Error("STATION_CODE_REQUIRED", status_code=400)
+    if normalized_command_source not in {"kiosk", "mqtt", "internal"}:
+        raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=400)
+    if not isinstance(work_order_operation_id, str) or not work_order_operation_id.strip():
+        raise MesqlV2Error(
+            "STATION_EXECUTION_OPERATION_ID_REQUIRED",
+            status_code=400,
+        )
+    if normalized_command_source == "mqtt":
+        if not isinstance(external_event_id, str) or not external_event_id.strip():
+            raise MesqlV2Error(
+                "STATION_EXECUTION_EXTERNAL_EVENT_ID_REQUIRED",
+                status_code=400,
+            )
+    if normalized_operation_id:
+        normalized_operation_id = _required_canonical_uuid_text(
+            work_order_operation_id,
+            field_name="STATION_EXECUTION_OPERATION_ID",
+        )
+    if normalized_command_source == "mqtt" and not normalized_event_source:
+        raise MesqlV2Error("STATION_EXECUTION_EVENT_SOURCE_NOT_ALLOWED", status_code=400)
+    if normalized_command_source == "internal":
+        if (
+            normalized_event_source != STATION_EXECUTION_INTERNAL_EVENT_SOURCE
+            or normalized_external_event_id
+            or normalized_step_code is not None
+            or normalized_action is not None
+        ):
+            raise MesqlV2Error(
+                "STATION_EXECUTION_ACTION_NOT_ALLOWED",
+                status_code=400,
+            )
+    elif not normalized_external_event_id:
+        raise MesqlV2Error(
+            "STATION_EXECUTION_EXTERNAL_EVENT_ID_REQUIRED",
+            status_code=400,
+        )
+    if normalized_action is not None and normalized_action not in {"start", "finish"}:
+        raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=400)
+
+    try:
+        with database_connection(config) as connection:
+            if connection is None:
+                raise MesqlV2Error("DATABASE_DISABLED", status_code=503)
+            with _transaction(connection):
+                with connection.cursor() as cursor:
+                    existing = (
+                        None
+                        if normalized_command_source == "internal"
+                        else _get_operation_event_for_command_replay_cursor(
+                            cursor,
+                            station_code=normalized_station_code,
+                            event_source=normalized_event_source or None,
+                            external_event_id=normalized_external_event_id,
+                        )
+                    )
+                    if existing is not None:
+                        result, normalized_event_source = (
+                            _validated_station_execution_replay_cursor(
+                                cursor,
+                                existing,
+                                work_order_operation_id=normalized_operation_id,
+                                step_code=normalized_step_code,
+                                action=normalized_action,
+                                station_code=normalized_station_code,
+                                event_source=normalized_event_source or None,
+                                command_source=normalized_command_source,
+                            )
+                        )
+                    else:
+                        cursor.execute(
+                            SELECT_RUNTIME_WORK_ORDER_OPERATION_SQL,
+                            {"work_order_operation_id": normalized_operation_id},
+                        )
+                        lifecycle_row = cursor.fetchone()
+                        if not lifecycle_row:
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_OPERATION_NOT_FOUND",
+                                status_code=404,
+                            )
+                        lifecycle = _runtime_operation_context_row(lifecycle_row)
+                        if _upper(lifecycle.get("station_code")) != normalized_station_code:
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_OPERATION_STATION_MISMATCH",
+                                status_code=409,
+                            )
+                        if normalized_command_source != "internal":
+                            _lock_station_execution_event_identity_cursor(
+                                cursor,
+                                station_code=normalized_station_code,
+                                external_event_id=normalized_external_event_id,
+                            )
+                            serialized_existing = (
+                                _get_operation_event_for_command_replay_cursor(
+                                    cursor,
+                                    station_code=normalized_station_code,
+                                    event_source=normalized_event_source or None,
+                                    external_event_id=normalized_external_event_id,
+                                )
+                            )
+                            if serialized_existing is not None:
+                                replay, normalized_event_source = (
+                                    _validated_station_execution_replay_cursor(
+                                        cursor,
+                                        serialized_existing,
+                                        work_order_operation_id=normalized_operation_id,
+                                        step_code=normalized_step_code,
+                                        action=normalized_action,
+                                        station_code=normalized_station_code,
+                                        event_source=normalized_event_source or None,
+                                        command_source=normalized_command_source,
+                                    )
+                                )
+                                return _json_safe(replay)
+                        initial_rows = _select_station_execution_context_rows_cursor(
+                            cursor,
+                            normalized_station_code,
+                            for_update=False,
+                        )
+                        initial_context = _classify_station_execution_context_rows(initial_rows)
+                        target = _station_execution_command_target(
+                            initial_rows,
+                            initial_context,
+                            work_order_operation_id=normalized_operation_id,
+                            allow_closed_identity=(
+                                normalized_command_source == "internal"
+                            ),
+                        )
+                        if target is None:
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_OPERATION_NOT_FOUND",
+                                status_code=404,
+                            )
+                        if _text(target.get("work_order_operation_id")) != normalized_operation_id:
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_OPERATION_NOT_FOUND",
+                                status_code=409,
+                            )
+                        resolved_operation_id = normalized_operation_id
+                        work_order = _select_completion_bridge_work_order_for_update_cursor(
+                            cursor,
+                            _text(lifecycle.get("work_order_id")),
+                        )
+                        if work_order is None:
+                            raise MesqlV2Error("WORK_ORDER_NOT_FOUND", status_code=404)
+                        if (
+                            _text(target.get("work_order_id"))
+                            != _text(lifecycle.get("work_order_id"))
+                            or _upper(target.get("station_code"))
+                            != _upper(lifecycle.get("station_code"))
+                        ):
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_QUEUE_OPERATION_IDENTITY_CONFLICT",
+                                status_code=409,
+                            )
+                        prelock_route_operation_id = _upper(
+                            target.get("route_operation_id")
+                        )
+                        prelock_operation_config = _get_route_operation_config_with_cursor(
+                            cursor,
+                            prelock_route_operation_id,
+                        )
+                        if prelock_operation_config is None:
+                            raise MesqlV2Error(
+                                "ROUTE_OPERATION_NOT_FOUND",
+                                status_code=404,
+                            )
+                        _assert_route_operation_config_valid(prelock_operation_config)
+                        cursor.execute(
+                            SELECT_EXECUTION_STEPS_SQL,
+                            {"work_order_operation_id": resolved_operation_id},
+                        )
+                        prelock_runtime_steps = [
+                            _execution_step_row(row) for row in cursor.fetchall()
+                        ]
+                        internal_existing_events = (
+                            _list_internal_station_execution_events_cursor(
+                                cursor,
+                                resolved_operation_id,
+                            )
+                            if normalized_command_source == "internal"
+                            else []
+                        )
+                        internal_event_step_codes = {
+                            _upper(event.get("step_code"))
+                            for event in internal_existing_events
+                            if _upper(event.get("step_code"))
+                        }
+                        if (
+                            len(internal_existing_events) > 2
+                            or len(internal_event_step_codes) > 1
+                        ):
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_INTERNAL_IDENTITY_CONFLICT",
+                                status_code=409,
+                            )
+                        prelock_runtime_step = _first_actionable_execution_step(
+                            prelock_runtime_steps
+                        )
+                        prelock_step_code = (
+                            next(iter(internal_event_step_codes), "")
+                            or normalized_step_code
+                            or _upper((prelock_runtime_step or {}).get("step_code"))
+                            or _upper(target.get("current_step_code"))
+                            or _upper(
+                                (prelock_operation_config.get("steps") or [{}])[0].get(
+                                    "step_code"
+                                )
+                            )
+                        )
+                        prelock_configured_step = next(
+                            (
+                                step
+                                for step in prelock_operation_config.get("steps", [])
+                                if _upper(step.get("step_code")) == prelock_step_code
+                            ),
+                            None,
+                        )
+                        if prelock_configured_step is None:
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_STEP_NOT_FOUND",
+                                status_code=404,
+                        )
+                        if normalized_command_source == "kiosk":
+                            normalized_event_source = (
+                                _configured_station_execution_trigger_source(
+                                    prelock_configured_step,
+                                    action=normalized_action,
+                                )
+                            )
+                            if not normalized_event_source:
+                                raise MesqlV2Error(
+                                    "STATION_EXECUTION_EVENT_SOURCE_NOT_ALLOWED",
+                                    status_code=409,
+                                )
+                        prelock_transition_plan = _plan_station_execution_transition(
+                            prelock_configured_step,
+                            runtime_status=(
+                                "pending"
+                                if internal_existing_events
+                                else _lower(
+                                    (prelock_runtime_step or {}).get("status")
+                                )
+                                or "pending"
+                            ),
+                            command_source=normalized_command_source,
+                            event_source=normalized_event_source,
+                            requested_action=normalized_action,
+                        )
+                        prelocked_bridge_context = None
+                        completion_station_codes = None
+                        if (
+                            prelock_transition_plan["action"] == "finish"
+                            or prelock_transition_plan["implicit_finished"] is True
+                        ):
+                            applicability = _select_completion_bridge_applicability_cursor(
+                                cursor,
+                                resolved_operation_id,
+                            )
+                            if _is_completion_bridge_applicable(applicability):
+                                completion_station_codes = (
+                                    _station_execution_completion_station_codes_cursor(
+                                        cursor,
+                                        work_order_id=_text(
+                                            lifecycle.get("work_order_id")
+                                        ),
+                                        work_order_operation_id=resolved_operation_id,
+                                    )
+                                )
+                                if prelock_runtime_steps:
+                                    readiness = (
+                                        _get_completion_bridge_schema_readiness_cursor(
+                                            cursor
+                                        )
+                                    )
+                                    _validate_completion_bridge_schema_readiness(
+                                        readiness
+                                    )
+                                    prelocked_bridge_context = (
+                                        _prepare_runtime_completion_bridge_cursor(
+                                            cursor,
+                                            applicability=applicability,
+                                        )
+                                    )
+                                _lock_completion_bridge_station_scopes_cursor(
+                                    cursor,
+                                    completion_station_codes,
+                                )
+                        if prelocked_bridge_context is not None:
+                            locked_lifecycle = next(
+                                (
+                                    operation
+                                    for operation in prelocked_bridge_context.get(
+                                        "lifecycle_operations", []
+                                    )
+                                    if _text(operation.get("work_order_operation_id"))
+                                    == resolved_operation_id
+                                ),
+                                None,
+                            )
+                            if locked_lifecycle is None:
+                                raise MesqlV2Error(
+                                    "STATION_EXECUTION_OPERATION_IDENTITY_CONFLICT",
+                                    status_code=409,
+                                )
+                            locked_lifecycle = {
+                                "work_order_id": _text(locked_lifecycle.get("order_id")),
+                                "station_code": _upper(locked_lifecycle.get("station_code")),
+                            }
+                        else:
+                            cursor.execute(
+                                SELECT_RUNTIME_WORK_ORDER_OPERATION_FOR_UPDATE_SQL,
+                                {"work_order_operation_id": resolved_operation_id},
+                            )
+                            locked_lifecycle_row = cursor.fetchone()
+                            if not locked_lifecycle_row:
+                                raise MesqlV2Error(
+                                    "STATION_EXECUTION_OPERATION_NOT_FOUND",
+                                    status_code=404,
+                                )
+                            locked_lifecycle = _runtime_operation_context_row(
+                                locked_lifecycle_row
+                            )
+                        if (
+                            locked_lifecycle.get("work_order_id")
+                            != lifecycle.get("work_order_id")
+                            or locked_lifecycle.get("station_code")
+                            != lifecycle.get("station_code")
+                        ):
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_OPERATION_IDENTITY_CONFLICT",
+                                status_code=409,
+                            )
+                        locked_rows = _select_station_execution_context_rows_cursor(
+                            cursor,
+                            normalized_station_code,
+                            for_update=True,
+                        )
+                        locked_context = _classify_station_execution_context_rows(locked_rows)
+                        locked_target = _station_execution_command_target(
+                            locked_rows,
+                            locked_context,
+                            work_order_operation_id=resolved_operation_id,
+                            allow_closed_identity=(
+                                normalized_command_source == "internal"
+                            ),
+                        )
+                        if (
+                            locked_target is None
+                            or _text(locked_target.get("work_order_operation_id"))
+                            != resolved_operation_id
+                        ):
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_CONTEXT_AMBIGUOUS",
+                                status_code=409,
+                            )
+                        if (
+                            _text(locked_target.get("work_order_id"))
+                            != _text(locked_lifecycle.get("work_order_id"))
+                            or _upper(locked_target.get("station_code"))
+                            != _upper(locked_lifecycle.get("station_code"))
+                        ):
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_QUEUE_OPERATION_IDENTITY_CONFLICT",
+                                status_code=409,
+                            )
+                        locked_binding = None
+                        if prelocked_bridge_context is not None:
+                            locked_binding = next(
+                                (
+                                    item
+                                    for item in prelocked_bridge_context.get("bindings", [])
+                                    if _text(item.get("work_order_operation_id"))
+                                    == resolved_operation_id
+                                ),
+                                None,
+                            )
+                        if locked_binding is None:
+                            locked_binding = _get_work_order_operation_route_binding_with_cursor(
+                                cursor,
+                                resolved_operation_id,
+                                for_update=True,
+                            )
+                        if locked_binding is None:
+                            raise MesqlV2Error(
+                                "WORK_ORDER_OPERATION_ROUTE_BINDING_REQUIRED",
+                                status_code=409,
+                            )
+                        route_operation_id = _upper(
+                            locked_binding.get("route_operation_id")
+                        )
+                        if (
+                            not route_operation_id
+                            or _upper(locked_target.get("route_operation_id"))
+                            != route_operation_id
+                        ):
+                            raise MesqlV2Error(
+                                "WORK_ORDER_OPERATION_ROUTE_BINDING_MISMATCH",
+                                status_code=409,
+                            )
+                        operation_config = _get_route_operation_config_with_cursor(
+                            cursor,
+                            route_operation_id,
+                        )
+                        if operation_config is None:
+                            raise MesqlV2Error("ROUTE_OPERATION_NOT_FOUND", status_code=404)
+                        _assert_route_operation_config_valid(operation_config)
+                        if _upper(
+                            operation_config["route_operation"].get("station_code")
+                        ) != normalized_station_code:
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_OPERATION_STATION_MISMATCH",
+                                status_code=409,
+                            )
+                        if normalized_command_source == "kiosk":
+                            configured_step = next(
+                                (
+                                    step
+                                    for step in operation_config.get("steps", [])
+                                    if _upper(step.get("step_code"))
+                                    == normalized_step_code
+                                ),
+                                None,
+                            )
+                            if configured_step is None:
+                                raise MesqlV2Error(
+                                    "STATION_EXECUTION_STEP_NOT_FOUND",
+                                    status_code=404,
+                                )
+                            normalized_event_source = (
+                                _configured_station_execution_trigger_source(
+                                    configured_step,
+                                    action=normalized_action,
+                                )
+                            )
+                            if not normalized_event_source:
+                                raise MesqlV2Error(
+                                    "STATION_EXECUTION_EVENT_SOURCE_NOT_ALLOWED",
+                                    status_code=409,
+                                )
+                        post_lock_existing = (
+                            None
+                            if normalized_command_source == "internal"
+                            else _get_operation_event_for_command_replay_cursor(
+                                cursor,
+                                station_code=normalized_station_code,
+                                event_source=normalized_event_source,
+                                external_event_id=normalized_external_event_id,
+                            )
+                        )
+                        if post_lock_existing is not None:
+                            replay, normalized_event_source = (
+                                _validated_station_execution_replay_cursor(
+                                    cursor,
+                                    post_lock_existing,
+                                    work_order_operation_id=normalized_operation_id,
+                                    step_code=normalized_step_code,
+                                    action=normalized_action,
+                                    station_code=normalized_station_code,
+                                    event_source=normalized_event_source,
+                                    command_source=normalized_command_source,
+                                )
+                            )
+                            return _json_safe(replay)
+                        initialized = _initialize_execution_state_cursor(
+                            cursor,
+                            work_order_operation_id=resolved_operation_id,
+                            route_operation_id=route_operation_id,
+                            station_code=normalized_station_code,
+                            actor_id=normalized_actor_id,
+                            route_operation_config=operation_config,
+                        )
+                        runtime_steps = initialized["steps"]
+                        current_runtime_step = (
+                            next(
+                                (
+                                    step
+                                    for step in runtime_steps
+                                    if _upper(step.get("step_code"))
+                                    == prelock_step_code
+                                ),
+                                None,
+                            )
+                            if internal_existing_events
+                            else _first_actionable_execution_step(runtime_steps)
+                        )
+                        if (
+                            current_runtime_step is None
+                            and normalized_command_source == "internal"
+                        ):
+                            current_runtime_step = next(
+                                (
+                                    step
+                                    for step in runtime_steps
+                                    if _upper(step.get("step_code"))
+                                    == prelock_step_code
+                                ),
+                                None,
+                            )
+                        if current_runtime_step is None:
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_STEP_NOT_FOUND",
+                                status_code=404,
+                            )
+                        resolved_step_code = _upper(current_runtime_step.get("step_code"))
+                        if normalized_step_code and normalized_step_code != resolved_step_code:
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_STEP_NOT_CURRENT",
+                                status_code=409,
+                            )
+                        configured_step = next(
+                            (
+                                step
+                                for step in operation_config.get("steps", [])
+                                if _upper(step.get("step_code")) == resolved_step_code
+                            ),
+                            None,
+                        )
+                        if configured_step is None:
+                            raise MesqlV2Error(
+                                "STATION_EXECUTION_STEP_NOT_FOUND",
+                                status_code=404,
+                            )
+                        runtime_status = _lower(current_runtime_step.get("status"))
+                        transition_plan = (
+                            prelock_transition_plan
+                            if (
+                                normalized_command_source == "internal"
+                                and runtime_status == "completed"
+                            )
+                            else _plan_station_execution_transition(
+                                configured_step,
+                                runtime_status=runtime_status,
+                                command_source=normalized_command_source,
+                                event_source=normalized_event_source,
+                                requested_action=normalized_action,
+                            )
+                        )
+                        resolved_action = transition_plan["action"]
+                        result = _station_execution_action_cursor(
+                            cursor,
+                            work_order_operation_id=resolved_operation_id,
+                            route_operation_id=route_operation_id,
+                            station_code=normalized_station_code,
+                            step_code=resolved_step_code,
+                            action=resolved_action,
+                            command_source=normalized_command_source,
+                            event_source=normalized_event_source,
+                            external_event_id=normalized_external_event_id,
+                            actor_id=normalized_actor_id,
+                            payload=dict(payload or {}),
+                            transition_plan=transition_plan,
+                            locked_binding=locked_binding,
+                            prelocked_bridge_context=prelocked_bridge_context,
+                        )
+                        result["station_context"] = _station_execution_context_snapshot_cursor(
+                            cursor,
+                            normalized_station_code,
+                        )
+            commit = getattr(connection, "commit", None)
+            if callable(commit) and result.get("event_inserted") is True:
+                commit()
+        return _json_safe(result)
+    except _CompletionBridgeQueueViolation as violation:
+        _recover_runtime_completion_bridge_queue_violation(config, violation)
+        raise AssertionError("queue recovery must raise")
+
+
+def dispatch_station_execution_action(
+    config: AppConfig,
+    *,
+    station_code: str,
+    command_source: str,
+    event_source: str,
+    external_event_id: str,
+    work_order_operation_id: str | None = None,
+    step_code: str | None = None,
+    action: str | None = None,
+    actor_id: str | None = None,
+    payload: JsonObject | None = None,
+) -> JsonObject:
+    if _lower(command_source) == "internal":
+        raise MesqlV2Error("STATION_EXECUTION_ACTION_NOT_ALLOWED", status_code=400)
+    return _dispatch_station_execution_action(
+        config,
+        station_code=station_code,
+        command_source=command_source,
+        event_source=event_source,
+        external_event_id=external_event_id,
+        work_order_operation_id=work_order_operation_id,
+        step_code=step_code,
+        action=action,
+        actor_id=actor_id,
+        payload=payload,
+    )
+
+
+def dispatch_internal_station_execution_transition(
+    config: AppConfig,
+    *,
+    station_code: str,
+    work_order_operation_id: str,
+    actor_id: str | None = None,
+) -> JsonObject:
+    return _dispatch_station_execution_action(
+        config,
+        station_code=station_code,
+        command_source="internal",
+        event_source=STATION_EXECUTION_INTERNAL_EVENT_SOURCE,
+        external_event_id="",
+        work_order_operation_id=work_order_operation_id,
+        step_code=None,
+        action=None,
+        actor_id=actor_id,
+        payload=None,
+    )
 
 
 def _operation_row(row: Any) -> JsonObject:

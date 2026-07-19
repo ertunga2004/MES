@@ -158,7 +158,8 @@ class RuntimeService:
             self._watchdog_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._watchdog_task
-        self.mqtt_client.stop()
+        if self.mqtt_client.stop() is False:
+            raise RuntimeError("STATION_EXECUTION_MQTT_WORKER_STOP_TIMEOUT")
         self.excel_sink.stop()
 
     async def _watchdog_loop(self) -> None:

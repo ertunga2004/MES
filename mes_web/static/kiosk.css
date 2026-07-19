@@ -340,6 +340,53 @@ h1 {
   background: rgba(255, 255, 255, 0.7);
 }
 
+.station-execution-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(45, 128, 108, 0.22);
+  border-radius: 18px;
+  background: rgba(45, 128, 108, 0.06);
+}
+
+.station-execution-summary-grid,
+.station-execution-steps {
+  display: grid;
+  gap: 8px;
+}
+
+.station-execution-summary-grid > div,
+.station-execution-step {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.6fr) minmax(0, 1fr);
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.station-execution-summary-grid span,
+.station-execution-step span {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.station-execution-summary-grid strong,
+.station-execution-step strong {
+  overflow-wrap: anywhere;
+}
+
+.station-execution-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.station-execution-actions .execution-finish {
+  min-height: 58px;
+  border-radius: 16px;
+  font-size: 1.1rem;
+}
+
 .station-location-warning {
   color: var(--warn);
   background: #f7e9cb;

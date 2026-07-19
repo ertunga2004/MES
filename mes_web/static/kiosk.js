@@ -14,6 +14,14 @@ const state = {
     data: null,
     error: "",
   },
+  stationExecution: {
+    stationCode: "",
+    status: "idle",
+    data: null,
+    error: "",
+    lastResult: "",
+    pendingCommand: null,
+  },
 };
 
 const els = {
@@ -32,6 +40,12 @@ const els = {
   stationLocationTitle: document.getElementById("stationLocationTitle"),
   stationLocationStatus: document.getElementById("stationLocationStatus"),
   stationLocationRows: document.getElementById("stationLocationRows"),
+  stationExecutionTitle: document.getElementById("stationExecutionTitle"),
+  stationExecutionStatus: document.getElementById("stationExecutionStatus"),
+  stationExecutionSummary: document.getElementById("stationExecutionSummary"),
+  stationExecutionSteps: document.getElementById("stationExecutionSteps"),
+  stationExecutionActions: document.getElementById("stationExecutionActions"),
+  stationExecutionResult: document.getElementById("stationExecutionResult"),
   maintenancePanel: document.getElementById("maintenancePanel"),
   maintenanceTitle: document.getElementById("maintenanceTitle"),
   maintenanceProgress: document.getElementById("maintenanceProgress"),
@@ -382,6 +396,202 @@ function ensureStationLocationContext() {
   void loadStationLocationContext(stationCode);
 }
 
+function executionCommandId() {
+  if (window.crypto && typeof window.crypto.randomUUID === "function") {
+    return window.crypto.randomUUID();
+  }
+  return `kiosk-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function executionTarget(context) {
+  return (context || {}).active_operation || (context || {}).next_queued_operation || (context || {}).last_closed_operation || null;
+}
+
+function renderStationExecutionPanel() {
+  const stationCode = stationLocationStationCode();
+  const execution = state.stationExecution;
+  els.stationExecutionSummary.innerHTML = "";
+  els.stationExecutionSteps.innerHTML = "";
+  els.stationExecutionActions.innerHTML = "";
+  els.stationExecutionResult.textContent = execution.lastResult || "";
+  if (!stationCode) {
+    els.stationExecutionTitle.textContent = "İstasyon seçilmedi";
+    els.stationExecutionStatus.textContent = "-";
+    return;
+  }
+  if (execution.stationCode !== stationCode || ["idle", "loading"].includes(execution.status)) {
+    els.stationExecutionTitle.textContent = stationCode;
+    els.stationExecutionStatus.textContent = "Yükleniyor";
+    return;
+  }
+  if (execution.status === "disabled") {
+    els.stationExecutionTitle.textContent = stationCode;
+    els.stationExecutionStatus.textContent = "Pasif";
+    els.stationExecutionSummary.textContent = "Dinamik istasyon aksiyonları bu ortamda kapalı.";
+    return;
+  }
+  if (execution.status === "error") {
+    els.stationExecutionTitle.textContent = stationCode;
+    els.stationExecutionStatus.textContent = "Okunamadı";
+    els.stationExecutionSummary.textContent = safeText(execution.error, "İstasyon yürütme bağlamı okunamadı.");
+    return;
+  }
+
+  const context = execution.data || {};
+  const target = executionTarget(context);
+  els.stationExecutionStatus.textContent = safeText(context.station_entry_state, "empty");
+  if (!target) {
+    els.stationExecutionTitle.textContent = "İşlem bekleniyor";
+    els.stationExecutionSummary.textContent = "Bu istasyonda aktif veya sıradaki lifecycle operation yok.";
+    return;
+  }
+  els.stationExecutionTitle.textContent = `${safeText(target.work_order_id)} · ${safeText(target.operation_code)}`;
+  const summary = document.createElement("div");
+  summary.className = "station-execution-summary-grid";
+  for (const [label, value] of [
+    ["Lifecycle", target.work_order_operation_id],
+    ["Current step", (context.current_step || {}).step_code],
+    ["Entered", shortDateTime(context.entered_at)],
+    ["Exited", shortDateTime(context.exited_at)],
+  ]) {
+    const row = document.createElement("div");
+    const key = document.createElement("span");
+    const val = document.createElement("strong");
+    key.textContent = label;
+    val.textContent = safeText(value);
+    row.appendChild(key);
+    row.appendChild(val);
+    summary.appendChild(row);
+  }
+  els.stationExecutionSummary.appendChild(summary);
+
+  for (const step of Array.isArray(context.steps) ? context.steps : []) {
+    const row = document.createElement("div");
+    row.className = "station-execution-step";
+    const title = document.createElement("strong");
+    title.textContent = `${safeText(step.step_no)}. ${safeText(step.step_name || step.step_code)}`;
+    const badges = document.createElement("span");
+    badges.textContent = `start: ${safeText(step.start_mode)} · finish: ${safeText(step.finish_mode)} · ${safeText(step.status)}`;
+    row.appendChild(title);
+    row.appendChild(badges);
+    els.stationExecutionSteps.appendChild(row);
+  }
+
+  const allowed = context.allowed_manual_actions || {};
+  if (context.dynamic_actions_enabled === false) {
+    els.stationExecutionActions.textContent = "Manual aksiyonlar feature flag ile kapalı.";
+    return;
+  }
+  const action = allowed.can_start ? "start" : (allowed.can_finish ? "finish" : "");
+  if (!action) {
+    els.stationExecutionActions.textContent = "Current step otomatik event veya tamamlanma bekliyor.";
+    return;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = action === "start" ? "secondary-button" : "big-action execution-finish";
+  button.textContent = action === "start" ? "Manual Start" : "Manual Finish";
+  button.disabled = state.busy;
+  const immutableAction = {
+    stationCode,
+    workOrderOperationId: String(allowed.work_order_operation_id || ""),
+    stepCode: String(allowed.step_code || ""),
+    action,
+  };
+  button.addEventListener("click", () => handleStationExecutionAction(immutableAction));
+  els.stationExecutionActions.appendChild(button);
+}
+
+async function loadStationExecutionContext(stationCode) {
+  state.stationExecution = {
+    ...state.stationExecution,
+    stationCode,
+    status: "loading",
+    data: null,
+    error: "",
+  };
+  renderStationExecutionPanel();
+  try {
+    const payload = await fetchJson(`/api/v2/stations/${encodeURIComponent(stationCode)}/execution-context`);
+    if (stationLocationStationCode() !== stationCode) {
+      return;
+    }
+    state.stationExecution = {
+      ...state.stationExecution,
+      stationCode,
+      status: "loaded",
+      data: payload || {},
+      error: "",
+    };
+  } catch (error) {
+    if (stationLocationStationCode() !== stationCode) {
+      return;
+    }
+    const disabled = error.status === 503 && String(error.detail || error.message || "").includes("DISABLED");
+    state.stationExecution = {
+      ...state.stationExecution,
+      stationCode,
+      status: disabled ? "disabled" : "error",
+      data: null,
+      error: String(error.detail || error.message || error),
+    };
+  }
+  renderStationExecutionPanel();
+}
+
+function ensureStationExecutionContext() {
+  const stationCode = stationLocationStationCode();
+  if (!stationCode) {
+    state.stationExecution = {
+      ...state.stationExecution,
+      stationCode: "",
+      status: "idle",
+      data: null,
+    };
+    renderStationExecutionPanel();
+    return;
+  }
+  if (state.stationExecution.stationCode === stationCode && state.stationExecution.status !== "idle") {
+    return;
+  }
+  void loadStationExecutionContext(stationCode);
+}
+
+async function handleStationExecutionAction(target) {
+  await performAction(async () => {
+    const key = `${target.stationCode}|${target.workOrderOperationId}|${target.stepCode}|${target.action}`;
+    let command = state.stationExecution.pendingCommand;
+    if (!command || command.key !== key) {
+      command = { key, externalEventId: executionCommandId() };
+      state.stationExecution.pendingCommand = command;
+    }
+    try {
+      const actorPayload = currentActorPayload();
+      const result = await fetchJson(`/api/v2/stations/${encodeURIComponent(target.stationCode)}/execution-actions`, {
+        method: "POST",
+        body: JSON.stringify({
+          work_order_operation_id: target.workOrderOperationId,
+          step_code: target.stepCode,
+          action: target.action,
+          actor: actorPayload.operator_id || actorPayload.device_id,
+          external_event_id: command.externalEventId,
+          metadata: { device_id: actorPayload.device_id },
+        }),
+      });
+      state.stationExecution.pendingCommand = null;
+      state.stationExecution.lastResult = result.action_applied ? "Aksiyon uygulandı." : "Aksiyon daha önce uygulanmıştı.";
+    } catch (error) {
+      state.stationExecution.lastResult = String(error.detail || error.message || error);
+      if (error.status === 409) {
+        state.stationExecution.pendingCommand = null;
+      }
+      throw error;
+    } finally {
+      await loadStationExecutionContext(target.stationCode);
+    }
+  });
+}
+
 async function resolveModuleId() {
   const url = new URL(window.location.href);
   const queryModuleId = (url.searchParams.get("module_id") || "").trim();
@@ -426,6 +636,7 @@ async function loadBootstrap() {
   }
   render();
   ensureStationLocationContext();
+  ensureStationExecutionContext();
 }
 
 async function registerDevice() {
@@ -838,6 +1049,7 @@ function render() {
   renderLineStatus();
   renderPrimaryPanel();
   renderStationLocationCard();
+  renderStationExecutionPanel();
   renderFaultPanel();
   renderWorkOrders();
   renderRecentItems();
@@ -1118,6 +1330,7 @@ function connectSocket() {
     state.snapshot = payload.data || null;
     render();
     ensureStationLocationContext();
+    ensureStationExecutionContext();
   });
 }
 
@@ -1125,15 +1338,10 @@ async function init() {
   const parts = window.location.pathname.split("/").filter(Boolean);
   const lastPart = decodeURIComponent(parts[parts.length - 1] || "");
 
-  const knownStationCodes = new Set(["ASSEMBLY_01", "PACKAGING_01"]);
-  const stationDeviceMap = {
-    ASSEMBLY_01: "kiosk-assembly-01",
-    PACKAGING_01: "kiosk-packaging-01",
-  };
-
-  if (knownStationCodes.has(lastPart) || (parts.length >= 3 && parts[parts.length - 2] === "station")) {
-    state.stationCode = lastPart;
-    state.deviceId = stationDeviceMap[state.stationCode] || "kiosk-1";
+  if (parts.length >= 3 && parts[parts.length - 2] === "station") {
+    state.stationCode = String(lastPart || "").trim().toUpperCase();
+    const deviceToken = state.stationCode.toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+    state.deviceId = deviceToken ? `kiosk-${deviceToken}` : "kiosk-1";
   } else {
     state.deviceId = lastPart || "kiosk-1";
     state.stationCode = "";
@@ -1151,6 +1359,12 @@ async function init() {
     await registerDevice();
     await loadBootstrap();
     connectSocket();
+    window.setInterval(() => {
+      const stationCode = stationLocationStationCode();
+      if (stationCode && !state.busy && state.stationExecution.status !== "loading") {
+        void loadStationExecutionContext(stationCode);
+      }
+    }, 2000);
   } catch (error) {
     setConnectionState("Hata");
     window.alert(String(error.message || error));

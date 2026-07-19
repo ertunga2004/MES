@@ -11,6 +11,7 @@ from typing import Any
 from starlette.requests import Request
 
 from .db import mesql_v2
+from . import station_execution
 
 
 STATION_LOCATION_READ_MODEL_FEATURE_FLAG = "MES_WEB_DB_STATION_LOCATION_READ_MODEL_ENABLED"
@@ -42,6 +43,19 @@ WORK_ORDER_ROUTE_RELEASE_LOG_FIELDS = (
 )
 WORK_ORDER_ROUTE_RELEASE_LOG_HANDLER_MARKER = "mes_web_work_order_route_release_json_v1"
 logger = logging.getLogger(__name__)
+station_execution_logger = logging.getLogger("mes_web.station_execution.commands")
+STATION_EXECUTION_COMMAND_ALLOWED_FIELDS = frozenset({
+    "work_order_operation_id",
+    "step_code",
+    "action",
+    "actor",
+    "external_event_id",
+    "metadata",
+})
+STATION_EXECUTION_COMMAND_SERVER_FIELDS = frozenset({
+    "command_source",
+    "event_source",
+})
 ALLOWED_LOCATION_TYPES = frozenset({
     "raw_material",
     "wip",
@@ -153,6 +167,36 @@ def _configure_work_order_route_release_logging() -> None:
     handler.setLevel(logging.INFO)
     handler.setFormatter(_WorkOrderRouteReleaseJsonFormatter())
     logger.addHandler(handler)
+
+
+class _StationExecutionJsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            field: getattr(record, field, None)
+            for field in station_execution.STATION_EXECUTION_COMMAND_LOG_FIELDS
+        }
+        return json.dumps(
+            payload,
+            ensure_ascii=True,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+
+
+def _configure_station_execution_logging() -> None:
+    station_execution_logger.disabled = False
+    station_execution_logger.setLevel(logging.INFO)
+    station_execution_logger.propagate = False
+    if any(
+        getattr(handler, "name", None) == "mes_web_station_execution_json_v1"
+        for handler in station_execution_logger.handlers
+    ):
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.name = "mes_web_station_execution_json_v1"
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(_StationExecutionJsonFormatter())
+    station_execution_logger.addHandler(handler)
 
 
 def _station_location_read_model_enabled() -> bool:
@@ -773,18 +817,253 @@ def register_station_execution_config_read_routes(app: Any, app_config: Any) -> 
         return {"ok": True, "route_operation": route_operation}
 
 
+async def _read_station_execution_command_body(request: Any) -> bytes:
+    declared_length = request.headers.get("content-length")
+    if declared_length is not None:
+        if declared_length.isascii() and declared_length.isdigit():
+            normalized_digits = declared_length.lstrip("0") or "0"
+            if len(normalized_digits) > len(
+                str(station_execution.STATION_EXECUTION_MAX_BODY_BYTES)
+            ):
+                _route_release_http_error(
+                    413,
+                    "STATION_EXECUTION_REQUEST_TOO_LARGE",
+                )
+            if int(normalized_digits, 10) > station_execution.STATION_EXECUTION_MAX_BODY_BYTES:
+                _route_release_http_error(
+                    413,
+                    "STATION_EXECUTION_REQUEST_TOO_LARGE",
+                )
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > station_execution.STATION_EXECUTION_MAX_BODY_BYTES:
+            _route_release_http_error(413, "STATION_EXECUTION_REQUEST_TOO_LARGE")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _parse_station_execution_command_json(raw_body: bytes) -> dict[str, Any]:
+    try:
+        decoded = raw_body.decode("utf-8", errors="strict")
+        payload = json.loads(
+            decoded,
+            object_pairs_hook=_route_release_json_object,
+            parse_constant=_reject_route_release_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        _route_release_http_error(
+            400,
+            "STATION_EXECUTION_REQUEST_INVALID",
+            cause=exc,
+        )
+    if not isinstance(payload, dict):
+        _route_release_http_error(400, "STATION_EXECUTION_REQUEST_INVALID")
+    return payload
+
+
+def _normalize_station_execution_command_request(
+    station_code: Any,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if any(field in payload for field in STATION_EXECUTION_COMMAND_SERVER_FIELDS):
+        _route_release_http_error(
+            400,
+            "STATION_EXECUTION_SERVER_FIELD_NOT_ALLOWED",
+        )
+    if any(field not in STATION_EXECUTION_COMMAND_ALLOWED_FIELDS for field in payload):
+        _route_release_http_error(400, "STATION_EXECUTION_UNKNOWN_FIELD")
+    normalized_station = _required_route_release_text(
+        station_code,
+        field_name="STATION_CODE",
+    ).upper()
+    normalized_operation = _required_route_release_text(
+        payload.get("work_order_operation_id"),
+        field_name="WORK_ORDER_OPERATION_ID",
+    )
+    normalized_step = _required_route_release_text(
+        payload.get("step_code"),
+        field_name="STEP_CODE",
+    ).upper()
+    normalized_action = _required_route_release_text(
+        payload.get("action"),
+        field_name="ACTION",
+    ).lower()
+    if normalized_action not in {"start", "finish"}:
+        _route_release_http_error(400, "STATION_EXECUTION_ACTION_NOT_ALLOWED")
+    normalized_actor = _required_route_release_text(
+        payload.get("actor"),
+        field_name="ACTOR",
+    )
+    normalized_external_event_id = _required_route_release_text(
+        payload.get("external_event_id"),
+        field_name="STATION_EXECUTION_EXTERNAL_EVENT_ID",
+    )
+    metadata = payload.get("metadata", {})
+    if not isinstance(metadata, dict):
+        _route_release_http_error(400, "STATION_EXECUTION_METADATA_INVALID")
+    return {
+        "command_source": "kiosk",
+        "station_code": normalized_station,
+        "event_source": None,
+        "work_order_operation_id": normalized_operation,
+        "step_code": normalized_step,
+        "action": normalized_action,
+        "actor": normalized_actor,
+        "external_event_id": normalized_external_event_id,
+        "metadata": metadata,
+    }
+
+
+def register_station_execution_command_routes(app: Any, app_config: Any) -> None:
+    from fastapi import HTTPException
+
+    def require_core_enabled() -> None:
+        if not app_config.db_station_execution_commands_enabled:
+            raise HTTPException(
+                status_code=503,
+                detail="STATION_EXECUTION_COMMANDS_DISABLED",
+            )
+
+    @app.get("/api/v2/stations/{station_code}/execution-context")
+    async def api_v2_station_execution_context(station_code: str) -> dict[str, Any]:
+        require_core_enabled()
+        try:
+            context = station_execution.get_station_execution_context(
+                app_config,
+                station_code,
+            )
+        except mesql_v2.MesqlV2Error as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="INTERNAL_ERROR") from exc
+        return {
+            "ok": True,
+            "dynamic_actions_enabled": bool(
+                app_config.kiosk_dynamic_actions_enabled
+            ),
+            **context,
+        }
+
+    @app.post("/api/v2/stations/{station_code}/execution-actions")
+    async def api_v2_station_execution_action(
+        station_code: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        log_values: dict[str, Any] = {
+            "command_source": "kiosk",
+            "station_code": station_code,
+            "event_source": None,
+        }
+        if not app_config.db_station_execution_commands_enabled:
+            station_execution_logger.info(
+                "station_execution_command",
+                extra=station_execution.command_log_extra(
+                    log_values,
+                    result=None,
+                    error_code="STATION_EXECUTION_COMMANDS_DISABLED",
+                    started_at=started_at,
+                ),
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="STATION_EXECUTION_COMMANDS_DISABLED",
+            )
+        if not app_config.kiosk_dynamic_actions_enabled:
+            station_execution_logger.info(
+                "station_execution_command",
+                extra=station_execution.command_log_extra(
+                    log_values,
+                    result=None,
+                    error_code="KIOSK_DYNAMIC_ACTIONS_DISABLED",
+                    started_at=started_at,
+                ),
+            )
+            raise HTTPException(status_code=503, detail="KIOSK_DYNAMIC_ACTIONS_DISABLED")
+        try:
+            raw_body = await _read_station_execution_command_body(request)
+            payload = _parse_station_execution_command_json(raw_body)
+            normalized = _normalize_station_execution_command_request(
+                station_code,
+                payload,
+            )
+            log_values = normalized
+            result = station_execution.dispatch_station_execution_command(
+                app_config,
+                **normalized,
+            )
+            station_execution_logger.info(
+                "station_execution_command",
+                extra=station_execution.command_log_extra(
+                    log_values,
+                    result=result,
+                    error_code=None,
+                    started_at=started_at,
+                ),
+            )
+            return {
+                "ok": True,
+                "action_applied": result["action_applied"],
+                "event_inserted": result["event_inserted"],
+                "implicit_started": result["implicit_started"],
+                "implicit_finished": result["implicit_finished"],
+                "execution": result.get("execution_state"),
+                "step": result.get("step"),
+                "completion_bridge": result.get("completion_bridge"),
+                "station_context": result.get("station_context"),
+            }
+        except mesql_v2.MesqlV2Error as exc:
+            station_execution_logger.info(
+                "station_execution_command",
+                extra=station_execution.command_log_extra(
+                    log_values,
+                    result=None,
+                    error_code=exc.detail,
+                    started_at=started_at,
+                ),
+            )
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except HTTPException as exc:
+            station_execution_logger.info(
+                "station_execution_command",
+                extra=station_execution.command_log_extra(
+                    log_values,
+                    result=None,
+                    error_code=str(exc.detail),
+                    started_at=started_at,
+                ),
+            )
+            raise
+        except Exception as exc:
+            station_execution_logger.exception(
+                "station_execution_command",
+                extra=station_execution.command_log_extra(
+                    log_values,
+                    result=None,
+                    error_code="INTERNAL_ERROR",
+                    started_at=started_at,
+                ),
+            )
+            raise HTTPException(status_code=500, detail="INTERNAL_ERROR") from exc
+
+
 def main() -> None:
     _configure_event_loop_policy()
     _configure_work_order_route_release_logging()
+    _configure_station_execution_logging()
     try:
         import uvicorn
         from .app import app, config
     except ModuleNotFoundError as exc:
         raise SystemExit(f"Missing dependency: {exc.name}. Install mes_web/requirements.txt first.") from exc
 
-    register_station_location_read_routes(app, config)
-    register_station_execution_config_read_routes(app, config)
-    register_work_order_route_release_routes(app, config)
+    if hasattr(app, "get") and hasattr(app, "post"):
+        register_station_location_read_routes(app, config)
+        register_station_execution_config_read_routes(app, config)
+        register_work_order_route_release_routes(app, config)
+        register_station_execution_command_routes(app, config)
     uvicorn.run(app, host=config.host, port=config.port, reload=False)
 
 

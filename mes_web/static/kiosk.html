@@ -63,6 +63,26 @@
 
         <div id="activeOrderContents" class="content-badges"></div>
 
+        <div id="packagePanel" class="package-panel">
+          <div class="package-head">
+            <div>
+              <p class="section-label">Station 2 Packaging OEE</p>
+              <h3 id="packageStateText">Paketleme bekleniyor</h3>
+            </div>
+            <div id="packageWarningText" class="package-warning">-</div>
+          </div>
+          <p id="packageReminderText" class="muted">Bitmis urun, Paketleme Bitir + kalite secimi sonrasi kaydedilir.</p>
+          <div id="packageCounters" class="package-counters"></div>
+          <div id="packageRecipe" class="package-recipe"></div>
+          <div class="package-actions">
+            <button id="packageStartButton" class="secondary-button" type="button">Paketleme Baslat</button>
+            <button id="packageFinishButton" class="secondary-button" type="button">Paketleme Bitir</button>
+            <button id="packageGoodButton" class="quality-good-button" type="button">GOOD</button>
+            <button id="packageReworkButton" class="quality-rework-button" type="button">REWORK</button>
+            <button id="packageScrapButton" class="quality-scrap-button" type="button">SCRAP</button>
+          </div>
+        </div>
+
         <div id="maintenancePanel" class="maintenance-panel hidden">
           <div class="maintenance-head">
             <div>

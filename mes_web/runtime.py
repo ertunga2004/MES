@@ -107,7 +107,11 @@ class RuntimeService:
             candidates = sorted(self.config.work_orders_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
             if candidates:
                 with contextlib.suppress(ValueError, OSError):
-                    self.oee_manager.import_work_orders_from_file(candidates[0], replace_existing=True)
+                    self.oee_manager.import_work_orders_from_file(
+                        candidates[0],
+                        replace_existing=True,
+                        validate_ferp_labels=False,
+                    )
                     self.store.refresh_oee_runtime_state(self.config.module_id, force=True)
                     current_state = self.oee_manager.read_state()
         self.store.refresh_oee_runtime_state(self.config.module_id, force=True)

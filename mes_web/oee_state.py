@@ -96,6 +96,43 @@ def default_help_request_state() -> dict[str, Any]:
     }
 
 
+def default_station1_state() -> dict[str, Any]:
+    return {
+        "stationId": "station1",
+        "name": "Konveyor / Renk Dogrulama",
+        "status": "idle",
+        "detectedCount": 0,
+        "verifiedCount": 0,
+        "mismatchCount": 0,
+        "transferCount": 0,
+        "byColor": {"red": 0, "yellow": 0, "blue": 0, "unknown": 0},
+        "componentBuffer": {
+            "mode": "work_order_history_warning",
+            "sinceWorkOrderId": "",
+            "since": "",
+            "byColor": {"red": 0, "yellow": 0, "blue": 0, "unknown": 0},
+        },
+        "transferHistory": [],
+        "lastTransferAt": "",
+        "lastColor": "unknown",
+        "lastItemId": "",
+    }
+
+
+def default_station2_state() -> dict[str, Any]:
+    return {
+        "stationId": "station2",
+        "name": "Paketleme Istasyonu",
+        "status": "idle",
+        "activeCycleId": "",
+        "pendingQualityCycleId": "",
+        "runningNoByWorkOrder": {},
+        "cyclesById": {},
+        "cycleHistory": [],
+        "qualityCounts": {"GOOD": 0, "REWORK": 0, "SCRAP": 0},
+    }
+
+
 class WorkOrderTransitionReasonRequired(ValueError):
     def __init__(
         self,
@@ -116,7 +153,7 @@ class WorkOrderTransitionReasonRequired(ValueError):
 
 def default_runtime_state() -> dict[str, Any]:
     return {
-        "version": 5,
+        "version": 6,
         "shiftSelected": "SHIFT-A",
         "performanceMode": "TARGET",
         "targetQty": 14,
@@ -154,6 +191,8 @@ def default_runtime_state() -> dict[str, Any]:
         "itemsById": {},
         "queueOrder": [],
         "recentItemIds": [],
+        "station1": default_station1_state(),
+        "station2": default_station2_state(),
         "workOrders": default_work_order_state(),
         "maintenance": default_maintenance_state(),
         "helpRequest": default_help_request_state(),
@@ -725,6 +764,10 @@ def _normalize_order_color(value: Any, *fallbacks: Any) -> str:
     return ""
 
 
+def _normalize_station_color(value: Any, *fallbacks: Any) -> str:
+    return _normalize_order_color(value, *fallbacks) or "unknown"
+
+
 def _order_match_key(order: dict[str, Any]) -> str:
     requirements = order.get("requirements") if isinstance(order.get("requirements"), list) else []
     if len(requirements) == 1 and isinstance(requirements[0], dict):
@@ -908,6 +951,8 @@ def _normalize_work_order_requirement(
     product_code = _text_or_default(
         entry.get("product_code")
         or entry.get("productCode")
+        or entry.get("productId")
+        or entry.get("product_id")
         or entry.get("stock_code")
         or entry.get("stockCode")
         or entry.get("lblMTM00_CODE")
@@ -925,6 +970,8 @@ def _normalize_work_order_requirement(
     stock_name = _text_or_default(
         entry.get("stock_name")
         or entry.get("stockName")
+        or entry.get("productName")
+        or entry.get("product_name")
         or entry.get("stok_adi")
         or entry.get("stokAdÄ±")
         or entry.get("lblMTM00_NAME")
@@ -988,10 +1035,17 @@ def _normalize_work_order_requirement(
 def _normalize_work_order_requirements(entry: dict[str, Any], current: dict[str, Any]) -> list[dict[str, Any]]:
     raw_requirements = entry.get("requirements") or entry.get("components") or entry.get("lines")
     current_requirements = current.get("requirements") if isinstance(current.get("requirements"), list) else []
+    package_like_entry = (
+        isinstance(entry.get("materials"), list)
+        or isinstance(entry.get("operations"), list)
+        or str(entry.get("productId") or entry.get("product_id") or entry.get("productCode") or entry.get("product_code") or "").strip().upper().startswith("PKT-")
+    )
     if isinstance(raw_requirements, list) and raw_requirements:
         source_rows = raw_requirements
     elif current_requirements:
         source_rows = current_requirements
+    elif package_like_entry:
+        source_rows = []
     else:
         source_rows = [
             {
@@ -1040,6 +1094,121 @@ def _normalize_work_order_requirements(entry: dict[str, Any], current: dict[str,
     return requirements
 
 
+VALID_WORK_ORDER_MATERIAL_TYPES = {"box", "bead", "package", "label", "consumable"}
+
+
+def _normalize_work_order_materials(entry: dict[str, Any], current: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_materials = entry.get("materials")
+    current_materials = current.get("materials") if isinstance(current.get("materials"), list) else []
+    source_rows = raw_materials if isinstance(raw_materials, list) else current_materials
+    materials: list[dict[str, Any]] = []
+    for row in source_rows:
+        if not isinstance(row, dict):
+            continue
+        item_type = str(row.get("itemType") or row.get("item_type") or "").strip().lower()
+        material = {
+            "itemCode": _text_or_default(row.get("itemCode") or row.get("item_code")),
+            "itemName": _text_or_default(row.get("itemName") or row.get("item_name")),
+            "itemType": item_type,
+            "color": _normalize_station_color(row.get("color")) if row.get("color") not in (None, "") else "",
+            "qtyPerUnit": max(0.0, _numeric(row.get("qtyPerUnit") or row.get("qty_per_unit"))),
+        }
+        materials.append(material)
+    return materials
+
+
+def _normalize_work_order_operations(entry: dict[str, Any], current: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_operations = entry.get("operations")
+    current_operations = current.get("operations") if isinstance(current.get("operations"), list) else []
+    source_rows = raw_operations if isinstance(raw_operations, list) else current_operations
+    operations: list[dict[str, Any]] = []
+    for index, row in enumerate(source_rows, start=1):
+        if not isinstance(row, dict):
+            continue
+        standard_time_sec = max(
+            0.0,
+            _numeric(
+                _first_present(
+                    row.get("standardTimeSec"),
+                    row.get("standard_time_sec"),
+                    row.get("standardTimeMs"),
+                    row.get("standard_time_ms"),
+                )
+            ),
+        )
+        if row.get("standardTimeMs") not in (None, "") or row.get("standard_time_ms") not in (None, ""):
+            standard_time_sec = _seconds_from_ms(_duration_ms(_first_present(row.get("standardTimeMs"), row.get("standard_time_ms"))))
+        operations.append(
+            {
+                "opNo": max(0, round(_numeric(row.get("opNo") or row.get("op_no") or index))),
+                "stationId": _text_or_default(row.get("stationId") or row.get("station_id")).lower(),
+                "operationName": _text_or_default(row.get("operationName") or row.get("operation_name")),
+                "standardTimeSec": standard_time_sec,
+                "source": _text_or_default(row.get("source"), "manual"),
+            }
+        )
+    return operations
+
+
+def _station2_standard_time_sec(order: dict[str, Any]) -> float:
+    operations = order.get("operations") if isinstance(order.get("operations"), list) else []
+    total_standard_time_sec = 0.0
+    for operation in operations:
+        if not isinstance(operation, dict):
+            continue
+        if str(operation.get("stationId") or "").strip().lower() != "station2":
+            continue
+        standard_time_sec = max(0.0, _numeric(operation.get("standardTimeSec")))
+        if standard_time_sec > 0:
+            total_standard_time_sec += standard_time_sec
+    if total_standard_time_sec > 0:
+        return total_standard_time_sec
+    return max(0.0, _numeric(order.get("idealCycleTimeSec") or order.get("cycleTimeSec")))
+
+
+def _validate_package_work_order(order: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if not str(order.get("orderId") or "").strip():
+        errors.append("WORK_ORDER_ID_REQUIRED")
+    if max(0, round(_numeric(order.get("quantity")))) <= 0:
+        errors.append("TARGET_QTY_REQUIRED")
+    materials = order.get("materials") if isinstance(order.get("materials"), list) else []
+    if not materials:
+        errors.append("MATERIALS_REQUIRED")
+    for material in materials:
+        if not isinstance(material, dict):
+            errors.append("MATERIAL_INVALID")
+            continue
+        item_type = str(material.get("itemType") or "").strip().lower()
+        if item_type not in VALID_WORK_ORDER_MATERIAL_TYPES:
+            errors.append("MATERIAL_ITEM_TYPE_INVALID")
+        if item_type == "box" and not str(material.get("color") or "").strip():
+            errors.append("BOX_COLOR_REQUIRED")
+    operations = order.get("operations") if isinstance(order.get("operations"), list) else []
+    station2_ops = [
+        row
+        for row in operations
+        if isinstance(row, dict) and str(row.get("stationId") or "").strip().lower() == "station2"
+    ]
+    if not station2_ops:
+        errors.append("STATION2_OPERATION_REQUIRED")
+    if _station2_standard_time_sec(order) <= 0:
+        errors.append("STATION2_STANDARD_TIME_REQUIRED")
+    return errors
+
+
+def _is_package_work_order(order: dict[str, Any]) -> bool:
+    if isinstance(order.get("materials"), list) and order.get("materials"):
+        return True
+    if isinstance(order.get("operations"), list) and any(
+        isinstance(row, dict) and str(row.get("stationId") or "").strip().lower() == "station2"
+        for row in order.get("operations", [])
+    ):
+        return True
+    product_code = str(order.get("productCode") or order.get("productId") or order.get("stockCode") or "").strip().upper()
+    return product_code.startswith("PKT-")
+
+
 def _ferp_import_warning(raw: dict[str, Any], validation: dict[str, Any]) -> dict[str, Any] | None:
     warning_messages = [str(value or "").strip() for value in validation.get("warnings", []) if str(value or "").strip()]
     if not warning_messages and not validation.get("unknown_labels") and not validation.get("missing_required_labels"):
@@ -1064,7 +1233,7 @@ def _ferp_import_warning(raw: dict[str, Any], validation: dict[str, Any]) -> dic
     }
 
 
-def _prepare_work_order_import_row(raw: Any) -> tuple[Any, list[dict[str, Any]]]:
+def _prepare_work_order_import_row(raw: Any, *, validate_ferp_labels: bool = True) -> tuple[Any, list[dict[str, Any]]]:
     if not isinstance(raw, dict):
         return raw, []
 
@@ -1085,15 +1254,24 @@ def _prepare_work_order_import_row(raw: Any) -> tuple[Any, list[dict[str, Any]]]
         prepared["erp_type"] = prepared["ferp_screen"]
 
     warnings: list[dict[str, Any]] = []
-    try:
-        validation = validate_label_payload(prepared["ferp_object"], labels)
-    except FerpLabelRegistryError as exc:
+    if validate_ferp_labels:
+        try:
+            validation = validate_label_payload(prepared["ferp_object"], labels)
+        except FerpLabelRegistryError as exc:
+            validation = {
+                "valid": False,
+                "known_labels": [],
+                "unknown_labels": sorted(str(key) for key in labels),
+                "missing_required_labels": [],
+                "warnings": [str(exc)],
+            }
+    else:
         validation = {
-            "valid": False,
-            "known_labels": [],
-            "unknown_labels": sorted(str(key) for key in labels),
+            "valid": True,
+            "known_labels": sorted(str(key) for key in labels),
+            "unknown_labels": [],
             "missing_required_labels": [],
-            "warnings": [str(exc)],
+            "warnings": [],
         }
     prepared["_ferp_validation"] = validation
     warning = _ferp_import_warning(raw, validation)
@@ -1108,6 +1286,8 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
     order_id = _text_or_default(
         entry.get("order_id")
         or entry.get("orderId")
+        or entry.get("workOrderId")
+        or entry.get("work_order_id")
         or entry.get("id")
         or entry.get("is_emri_no")
         or entry.get("iş_emri_no")
@@ -1187,6 +1367,8 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
             _first_present(
                 entry.get("cycle_time_sec"),
                 entry.get("cycleTimeSec"),
+                entry.get("idealCycleTimeSec"),
+                entry.get("ideal_cycle_time_sec"),
                 entry.get("sure_sec"),
                 entry.get("sÃ¼re_saniye"),
                 entry.get("lblMMFB4_TIME"),
@@ -1200,6 +1382,24 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         list(ferp_warning_source.get("warnings") or [])
         if ferp_warning_source is not None
         else list(current.get("ferpWarnings") or [])
+    )
+    materials = _normalize_work_order_materials(entry, current)
+    operations = _normalize_work_order_operations(entry, current)
+    quantity_value = max(
+        0,
+        round(
+            _numeric(
+                _first_present(
+                    entry.get("targetQty"),
+                    entry.get("target_qty"),
+                    entry.get("qty"),
+                    entry.get("quantity"),
+                    entry.get("miktar"),
+                    entry.get("lblMMFB0_QTY"),
+                    current.get("quantity"),
+                )
+            )
+        ),
     )
     order = {
         "orderId": order_id,
@@ -1220,7 +1420,7 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         "lotCode": _text_or_default(entry.get("lot_code") or entry.get("lotCode") or entry.get("lot_kodu") or entry.get("lblMTML0_CODE") or current.get("lotCode")),
         "cutCode": _text_or_default(entry.get("cut_code") or entry.get("cutCode") or entry.get("kesim_kodu") or entry.get("lblFPJ09_CODE") or current.get("cutCode")),
         "partyNo": _text_or_default(entry.get("party_no") or entry.get("partyNo") or entry.get("parti_no") or entry.get("lblMTML0_PRTY_NO") or current.get("partyNo")),
-        "quantity": 0,
+        "quantity": quantity_value,
         "projectCode": _text_or_default(entry.get("project_code") or entry.get("projectCode") or entry.get("proje") or entry.get("lblFPJ00_ID") or current.get("projectCode")),
         "description": _text_or_default(entry.get("description") or entry.get("aciklama") or entry.get("açıklama") or entry.get("lblMMFB0_DESC") or current.get("description")),
         "workCenterCode": _text_or_default(entry.get("work_center_code") or entry.get("workCenterCode") or entry.get("is_merkezi") or entry.get("iş_merkezi") or entry.get("lblMFW00_CODE") or current.get("workCenterCode")),
@@ -1233,10 +1433,15 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         "setupTimeSec": _seconds_from_ms(setup_time_ms),
         "cycleTimeMs": cycle_time_ms,
         "cycleTimeSec": _seconds_from_ms(cycle_time_ms),
+        "idealCycleTimeSec": _seconds_from_ms(cycle_time_ms),
         "shiftCode": _text_or_default(entry.get("shift_code") or entry.get("shiftCode") or entry.get("vardiya") or entry.get("lblMMFB4_SHIFT_TYPE") or current.get("shiftCode")),
         "productCode": product_code or stock_code or order_id,
+        "productId": product_code or stock_code or order_id,
+        "productName": stock_name or product_code or stock_code or order_id,
         "productColor": color,
         "matchKey": _text_or_default(entry.get("matchKey") or current.get("matchKey"), color or product_code or stock_code or order_id),
+        "routeId": _text_or_default(entry.get("routeId") or entry.get("route_id") or current.get("routeId")),
+        "stationPlan": entry.get("stationPlan") if isinstance(entry.get("stationPlan"), list) else current.get("stationPlan") if isinstance(current.get("stationPlan"), list) else [],
         "status": status,
         "queuedAt": _text_or_default(entry.get("queuedAt") or current.get("queuedAt"), queued_at),
         "startedAt": _text_or_default(entry.get("startedAt") or current.get("startedAt")),
@@ -1245,12 +1450,14 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         "startedBy": _text_or_default(entry.get("startedBy") or entry.get("lblFCR00_ACC_CODE_PR") or current.get("startedBy")),
         "startedByName": _text_or_default(entry.get("startedByName") or entry.get("lblFCR00_NAME_PR") or current.get("startedByName")),
         "transitionReason": _text_or_default(entry.get("transitionReason") or current.get("transitionReason")),
-        "inventoryConsumedQty": 0,
-        "productionQty": 0,
-        "completedQty": 0,
-        "remainingQty": 0,
+        "inventoryConsumedQty": max(0, round(_numeric(entry.get("inventoryConsumedQty") or entry.get("inventory_consumed_qty") or current.get("inventoryConsumedQty")))),
+        "productionQty": max(0, round(_numeric(entry.get("productionQty") or entry.get("production_qty") or current.get("productionQty")))),
+        "completedQty": max(0, round(_numeric(entry.get("completedQty") or entry.get("completed_qty") or current.get("completedQty")))),
+        "remainingQty": max(0, round(_numeric(entry.get("remainingQty") or entry.get("remaining_qty") or current.get("remainingQty")))),
         "lastAllocationAt": _text_or_default(entry.get("lastAllocationAt") or current.get("lastAllocationAt")),
         "requirements": requirements,
+        "materials": materials,
+        "operations": operations,
     }
     _sync_work_order_row(order)
     return order
@@ -1268,7 +1475,16 @@ def _completed_item_match_key(item: dict[str, Any], item_key: str = "") -> str:
 
 
 def _inventory_backfill_disabled(item: dict[str, Any]) -> bool:
-    return bool(item.get("inventory_backfill_disabled"))
+    if bool(item.get("inventory_backfill_disabled")):
+        return True
+    return str(item.get("oee_scope") or "").strip() == "station1_component_transfer" or str(item.get("station_id") or "").strip() == "station1"
+
+
+def _is_station1_quality_candidate(item: dict[str, Any]) -> bool:
+    return (
+        str(item.get("oee_scope") or "").strip() == "station1_component_transfer"
+        or str(item.get("station_id") or "").strip() == "station1"
+    )
 
 
 def _backfill_completed_item_inventory(state: dict[str, Any]) -> None:
@@ -1390,7 +1606,8 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
 
     performance_mode = str(candidate.get("performanceMode") or base["performanceMode"]).upper()
     base["performanceMode"] = "IDEAL_CYCLE" if performance_mode == "IDEAL_CYCLE" else "TARGET"
-    base["version"] = int(candidate.get("version") or base["version"])
+    candidate_version = max(0, round(_numeric(candidate.get("version"))))
+    base["version"] = max(base["version"], candidate_version)
     base["targetQty"] = max(0, round(_numeric(_first_present(candidate.get("targetQty"), base["targetQty"]))))
     base["idealCycleMs"] = _duration_ms(
         _first_present(candidate.get("idealCycleMs"), candidate.get("idealCycleSec")),
@@ -1450,6 +1667,8 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     base["itemsById"] = candidate.get("itemsById") if isinstance(candidate.get("itemsById"), dict) else {}
     base["queueOrder"] = candidate.get("queueOrder") if isinstance(candidate.get("queueOrder"), list) else []
     base["recentItemIds"] = candidate.get("recentItemIds") if isinstance(candidate.get("recentItemIds"), list) else []
+    base["station1"] = _normalize_station1_state(candidate.get("station1"))
+    base["station2"] = _normalize_station2_state(candidate.get("station2"))
     work_orders = candidate.get("workOrders") if isinstance(candidate.get("workOrders"), dict) else {}
     base["workOrders"]["toleranceMs"] = _duration_ms(
         _first_present(work_orders.get("toleranceMs"), work_orders.get("toleranceMinutes")),
@@ -1511,6 +1730,9 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
         for key, value in inventory.items()
         if str(key or "").strip()
     }
+    if candidate_version == 5:
+        _migrate_v5_robot_completions_to_station1(base)
+        _recompute_item_counts(base)
     _sanitize_reused_items_after_load(base)
     _backfill_completed_item_inventory(base)
     base["workOrders"]["transitionLog"] = work_orders.get("transitionLog") if isinstance(work_orders.get("transitionLog"), list) else []
@@ -1672,6 +1894,162 @@ def _work_orders_state(state: dict[str, Any]) -> dict[str, Any]:
     work_orders["lastCompletedOrderId"] = str(work_orders.get("lastCompletedOrderId") or "").strip()
     work_orders["lastCompletedAt"] = str(work_orders.get("lastCompletedAt") or "")
     return work_orders
+
+
+def _normalize_station_color_counter(raw: Any) -> dict[str, int]:
+    source = raw if isinstance(raw, dict) else {}
+    return {
+        color: max(0, round(_numeric(source.get(color))))
+        for color in ("red", "yellow", "blue", "unknown")
+    }
+
+
+def _normalize_station1_state(raw: Any) -> dict[str, Any]:
+    source = raw if isinstance(raw, dict) else {}
+    station = default_station1_state()
+    station.update({key: value for key, value in source.items() if key in station})
+    station["stationId"] = "station1"
+    station["name"] = str(station.get("name") or "Konveyor / Renk Dogrulama")
+    station["status"] = str(station.get("status") or "idle")
+    station["detectedCount"] = max(0, round(_numeric(station.get("detectedCount"))))
+    station["verifiedCount"] = max(0, round(_numeric(station.get("verifiedCount"))))
+    station["mismatchCount"] = max(0, round(_numeric(station.get("mismatchCount"))))
+    station["transferCount"] = max(0, round(_numeric(station.get("transferCount"))))
+    station["byColor"] = _normalize_station_color_counter(station.get("byColor"))
+    component_buffer = station.get("componentBuffer") if isinstance(station.get("componentBuffer"), dict) else {}
+    station["componentBuffer"] = {
+        "mode": str(component_buffer.get("mode") or "work_order_history_warning"),
+        "sinceWorkOrderId": str(component_buffer.get("sinceWorkOrderId") or ""),
+        "since": str(component_buffer.get("since") or ""),
+        "byColor": _normalize_station_color_counter(component_buffer.get("byColor")),
+    }
+    station["transferHistory"] = [
+        row
+        for row in (station.get("transferHistory") if isinstance(station.get("transferHistory"), list) else [])
+        if isinstance(row, dict)
+    ][:50]
+    station["lastTransferAt"] = str(station.get("lastTransferAt") or "")
+    station["lastColor"] = _normalize_station_color(station.get("lastColor"))
+    station["lastItemId"] = str(station.get("lastItemId") or "")
+    return station
+
+
+def _normalize_station2_state(raw: Any) -> dict[str, Any]:
+    source = raw if isinstance(raw, dict) else {}
+    station = default_station2_state()
+    station.update({key: value for key, value in source.items() if key in station})
+    station["stationId"] = "station2"
+    station["name"] = str(station.get("name") or "Paketleme Istasyonu")
+    station["status"] = str(station.get("status") or "idle")
+    station["activeCycleId"] = str(station.get("activeCycleId") or "")
+    station["pendingQualityCycleId"] = str(station.get("pendingQualityCycleId") or "")
+    station["runningNoByWorkOrder"] = station.get("runningNoByWorkOrder") if isinstance(station.get("runningNoByWorkOrder"), dict) else {}
+    station["cyclesById"] = station.get("cyclesById") if isinstance(station.get("cyclesById"), dict) else {}
+    station["cycleHistory"] = [
+        row
+        for row in (station.get("cycleHistory") if isinstance(station.get("cycleHistory"), list) else [])
+        if isinstance(row, dict)
+    ][:50]
+    raw_counts = station.get("qualityCounts") if isinstance(station.get("qualityCounts"), dict) else {}
+    station["qualityCounts"] = {
+        "GOOD": max(0, round(_numeric(raw_counts.get("GOOD")))),
+        "REWORK": max(0, round(_numeric(raw_counts.get("REWORK")))),
+        "SCRAP": max(0, round(_numeric(raw_counts.get("SCRAP")))),
+    }
+    return station
+
+
+def _station1_state(state: dict[str, Any]) -> dict[str, Any]:
+    station = _normalize_station1_state(state.get("station1"))
+    state["station1"] = station
+    return station
+
+
+def _station2_state(state: dict[str, Any]) -> dict[str, Any]:
+    station = _normalize_station2_state(state.get("station2"))
+    state["station2"] = station
+    return station
+
+
+def _record_station1_transfer(
+    state: dict[str, Any],
+    item: dict[str, Any],
+    *,
+    resolved_key: str,
+    received_at: str,
+) -> None:
+    station = _station1_state(state)
+    color = _normalize_station_color(item.get("final_color"), item.get("color"), item.get("sensor_color"))
+    item_id = str(item.get("item_id") or resolved_key)
+    station["status"] = "transfer_completed"
+    station["transferCount"] = max(0, round(_numeric(station.get("transferCount")))) + 1
+    station["byColor"] = _normalize_station_color_counter(station.get("byColor"))
+    station["byColor"][color] = max(0, round(_numeric(station["byColor"].get(color)))) + 1
+    buffer = station.get("componentBuffer") if isinstance(station.get("componentBuffer"), dict) else default_station1_state()["componentBuffer"]
+    buffer["byColor"] = _normalize_station_color_counter(buffer.get("byColor"))
+    buffer["byColor"][color] = max(0, round(_numeric(buffer["byColor"].get(color)))) + 1
+    station["componentBuffer"] = buffer
+    station["lastTransferAt"] = received_at
+    station["lastColor"] = color
+    station["lastItemId"] = item_id
+    history = station["transferHistory"] if isinstance(station.get("transferHistory"), list) else []
+    history.insert(
+        0,
+        {
+            "eventType": "station1_transfer_completed",
+            "stationId": "station1",
+            "itemId": item_id,
+            "itemKey": resolved_key,
+            "color": color,
+            "receivedAt": received_at,
+        },
+    )
+    station["transferHistory"] = history[:50]
+
+
+def _migrate_v5_robot_completions_to_station1(state: dict[str, Any]) -> None:
+    station = _station1_state(state)
+    items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
+    computed_counts = _normalize_station_color_counter({})
+    computed_history: list[dict[str, Any]] = []
+    for item_key, item in items.items():
+        if not isinstance(item, dict) or not item.get("completed_at"):
+            continue
+        if str(item.get("package_cycle_id") or "").strip():
+            continue
+        item["station_id"] = "station1"
+        item["oee_scope"] = "station1_component_transfer"
+        item["count_in_oee"] = False
+        item["inventory_backfill_disabled"] = True
+        item["station1_transfer_at"] = str(item.get("station1_transfer_at") or item.get("completed_at") or "")
+        item["work_order_id"] = ""
+        item["work_order_match_key"] = ""
+        item["inventory_match_key"] = ""
+        item["inventoryAction"] = "station1_component_transfer"
+        color = _normalize_station_color(item.get("final_color"), item.get("color"), item.get("sensor_color"))
+        computed_counts[color] = computed_counts[color] + 1
+        computed_history.append(
+            {
+                "eventType": "station1_transfer_completed",
+                "stationId": "station1",
+                "itemId": str(item.get("item_id") or item_key),
+                "itemKey": str(item_key),
+                "color": color,
+                "receivedAt": str(item.get("station1_transfer_at") or item.get("completed_at") or ""),
+            }
+        )
+    if computed_history:
+        station["transferCount"] = sum(computed_counts.values())
+        station["byColor"] = computed_counts
+        station["transferHistory"] = sorted(
+            computed_history,
+            key=lambda row: str(row.get("receivedAt") or ""),
+            reverse=True,
+        )[:50]
+        latest = station["transferHistory"][0]
+        station["lastTransferAt"] = str(latest.get("receivedAt") or "")
+        station["lastColor"] = str(latest.get("color") or "unknown")
+        station["lastItemId"] = str(latest.get("itemId") or "")
 
 
 def _work_order_orders(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1985,6 +2363,134 @@ def _completed_items_for_work_order(state: dict[str, Any], order_id: str) -> lis
     return related_items
 
 
+def _station2_cycles(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    station = state.get("station2") if isinstance(state.get("station2"), dict) else _station2_state(state)
+    cycles = station.get("cyclesById")
+    if not isinstance(cycles, dict):
+        cycles = {}
+        station["cyclesById"] = cycles
+    state["station2"] = station
+    return cycles
+
+
+def _counted_package_cycles_for_work_order(state: dict[str, Any], order_id: str) -> list[dict[str, Any]]:
+    normalized_order_id = str(order_id or "").strip()
+    if not normalized_order_id:
+        return []
+    cycles = [
+        cycle
+        for cycle in _station2_cycles(state).values()
+        if isinstance(cycle, dict)
+        and str(cycle.get("workOrderId") or "").strip() == normalized_order_id
+        and bool(cycle.get("countedInOee"))
+        and str(cycle.get("quality") or "").strip().upper() in {"GOOD", "REWORK", "SCRAP"}
+    ]
+    cycles.sort(
+        key=lambda row: (
+            str(row.get("qualityAt") or ""),
+            str(row.get("finishedAt") or ""),
+            str(row.get("cycleId") or ""),
+        )
+    )
+    return cycles
+
+
+def _package_quality_totals(cycles: list[dict[str, Any]]) -> dict[str, int]:
+    totals = {"GOOD": 0, "REWORK": 0, "SCRAP": 0}
+    for cycle in cycles:
+        quality = str(cycle.get("quality") or "").strip().upper()
+        if quality in totals:
+            totals[quality] += 1
+    return totals
+
+
+def _recompute_station2_package_counts(state: dict[str, Any]) -> None:
+    station = _station2_state(state)
+    cycles = list(_station2_cycles(state).values())
+    shift = state.get("shift") if isinstance(state.get("shift"), dict) else {}
+    shift_started = _parse_iso(str(shift.get("startedAt") or ""))
+    counted_cycles: list[dict[str, Any]] = []
+    for cycle in cycles:
+        if not isinstance(cycle, dict) or not bool(cycle.get("countedInOee")):
+            continue
+        quality_at = _parse_iso(str(cycle.get("qualityAt") or cycle.get("finishedAt") or ""))
+        if shift_started is not None and quality_at is not None and quality_at < shift_started:
+            continue
+        counted_cycles.append(cycle)
+    totals = _package_quality_totals(counted_cycles)
+    station["qualityCounts"] = totals
+    state["counts"] = {
+        "total": totals["GOOD"] + totals["REWORK"] + totals["SCRAP"],
+        "good": totals["GOOD"],
+        "rework": totals["REWORK"],
+        "scrap": totals["SCRAP"],
+        "byColor": {
+            "red": empty_color_counts(),
+            "yellow": empty_color_counts(),
+            "blue": empty_color_counts(),
+        },
+    }
+
+
+def _sync_package_work_order_progress(
+    state: dict[str, Any],
+    order: dict[str, Any],
+    *,
+    completed_at: str,
+    now: datetime,
+) -> None:
+    cycles = _counted_package_cycles_for_work_order(state, str(order.get("orderId") or ""))
+    totals = _package_quality_totals(cycles)
+    final_package_count = totals["GOOD"] + totals["REWORK"] + totals["SCRAP"]
+    target_qty = max(0, round(_numeric(order.get("quantity"))))
+    order["goodQty"] = totals["GOOD"]
+    order["reworkQty"] = totals["REWORK"]
+    order["scrapQty"] = totals["SCRAP"]
+    order["completedQty"] = final_package_count
+    order["productionQty"] = final_package_count
+    order["inventoryConsumedQty"] = 0
+    order["remainingQty"] = max(0, target_qty - final_package_count)
+    order["lastAllocationAt"] = completed_at
+    if str(order.get("status") or "") == "active" and target_qty > 0 and final_package_count >= target_qty:
+        order["status"] = "pending_approval"
+        order["autoCompletedAt"] = completed_at
+        order["completedAt"] = ""
+        work_orders = _work_orders_state(state)
+        work_orders["activeOrderId"] = str(order.get("orderId") or "")
+        metrics = _persist_work_order_metrics(state, order, now=now)
+        work_orders["transitionLog"] = _prepend_capped(
+            work_orders["transitionLog"],
+            _work_order_log_row(
+                order,
+                event_type="package_target_completed",
+                stamp=completed_at,
+                note=(
+                    "Paket hedefi tamamlandi. Operator onayi bekleniyor. "
+                    f"PERF={round(metrics['performance'] * 100.0, 1)}% | "
+                    f"KALITE={round(metrics['quality'] * 100.0, 1)}%"
+                ),
+            ),
+        )
+    else:
+        _persist_work_order_metrics(state, order, now=now)
+
+
+def _active_package_work_order(state: dict[str, Any]) -> dict[str, Any]:
+    work_orders = _work_orders_state(state)
+    active_order_id = str(work_orders.get("activeOrderId") or "").strip()
+    order = _work_order_orders(state).get(active_order_id) if active_order_id else None
+    if not active_order_id or not isinstance(order, dict):
+        raise ValueError("WORK_ORDER_NOT_FOUND")
+    if str(order.get("status") or "") != "active":
+        raise ValueError("WORK_ORDER_NOT_ACTIVE")
+    return order
+
+
+def _package_cycle_id(work_order_id: str, running_no: int) -> str:
+    safe_order_id = str(work_order_id or "").strip()
+    return f"PKG-{safe_order_id}-{max(1, int(running_no)):04d}"
+
+
 def _mark_work_order_pending_approval_if_ready(state: dict[str, Any], order: dict[str, Any], *, now: datetime, completed_at: str) -> bool:
     _sync_work_order_row(order)
     if order.get("status") != "active":
@@ -2143,6 +2649,47 @@ def _route_completed_item_to_work_orders(
         f"#{item_id} aktif is emrine uymadigi icin depoya alindi ({match_key}).",
         now=now,
     )
+
+
+def _route_station1_transfer_to_active_component_work_order(
+    state: dict[str, Any],
+    item: dict[str, Any],
+    *,
+    resolved_key: str,
+    received_at: str,
+    now: datetime,
+) -> bool:
+    work_orders = _work_orders_state(state)
+    active_order_id = str(work_orders.get("activeOrderId") or "").strip()
+    active_order = _work_order_orders(state).get(active_order_id) if active_order_id else None
+    if not isinstance(active_order, dict) or str(active_order.get("status") or "") != "active":
+        return False
+    if _is_package_work_order(active_order):
+        return False
+    if _normalize_classification(item.get("classification")) != "GOOD":
+        return False
+
+    item_color = _normalize_order_color(item.get("final_color"), item.get("color"), item.get("sensor_color"))
+    matching_requirement = _find_matching_requirement(active_order, item_color)
+    if not isinstance(matching_requirement, dict):
+        return False
+
+    matching_requirement["productionQty"] = max(0, round(_numeric(matching_requirement.get("productionQty")))) + 1
+    matching_requirement["completedQty"] = max(0, round(_numeric(matching_requirement.get("completedQty")))) + 1
+    active_order["lastAllocationAt"] = received_at
+    _sync_work_order_row(active_order)
+    _assign_item_to_work_order(item, active_order, matching_requirement, action="station1_component_transfer")
+    item["inventory_backfill_disabled"] = True
+    item["inventoryAction"] = "station1_component_transfer"
+    item["inventory_match_key"] = ""
+    item_id = str(item.get("item_id") or resolved_key)
+    if not _mark_work_order_pending_approval_if_ready(state, active_order, now=now, completed_at=received_at):
+        _set_summary(
+            state,
+            f"#{item_id} Station 1 transferi {active_order.get('orderId')} is emrine bilesen olarak yazildi. Kalan {active_order.get('remainingQty')} adet.",
+            now=now,
+        )
+    return True
 
 
 def _recompute_item_counts(state: dict[str, Any]) -> None:
@@ -2655,6 +3202,7 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
     if stamp.tzinfo is None:
         stamp = stamp.astimezone()
     order_id = str(order.get("orderId") or "").strip()
+    package_cycles = _counted_package_cycles_for_work_order(state, order_id)
     items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
     related_items = [
         item
@@ -2663,17 +3211,23 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
         and str(item.get("work_order_id") or "").strip() == order_id
         and item.get("completed_at")
     ]
-    good = 0
-    rework = 0
-    scrap = 0
-    for item in related_items:
-        classification = _normalize_classification(item.get("classification"))
-        if classification == "REWORK":
-            rework += 1
-        elif classification == "SCRAP":
-            scrap += 1
-        else:
-            good += 1
+    if package_cycles:
+        package_totals = _package_quality_totals(package_cycles)
+        good = package_totals["GOOD"]
+        rework = package_totals["REWORK"]
+        scrap = package_totals["SCRAP"]
+    else:
+        good = 0
+        rework = 0
+        scrap = 0
+        for item in related_items:
+            classification = _normalize_classification(item.get("classification"))
+            if classification == "REWORK":
+                rework += 1
+            elif classification == "SCRAP":
+                scrap += 1
+            else:
+                good += 1
     total = good + rework + scrap
     persisted_good = max(0, round(_numeric(order.get("goodQty"))))
     persisted_rework = max(0, round(_numeric(order.get("reworkQty"))))
@@ -2685,7 +3239,7 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
         rework = persisted_rework
         scrap = persisted_scrap
         total = persisted_total
-    requirements = _work_order_requirements(order)
+    requirements = [] if _is_package_work_order(order) else _work_order_requirements(order)
     if requirements:
         target_qty = sum(max(0, round(_numeric(requirement.get("quantity")))) for requirement in requirements)
         inventory_consumed_qty = sum(max(0, round(_numeric(requirement.get("inventoryConsumedQty")))) for requirement in requirements)
@@ -2695,7 +3249,7 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
     else:
         target_qty = max(0, round(_numeric(order.get("quantity"))))
         inventory_consumed_qty = max(0, round(_numeric(order.get("inventoryConsumedQty"))))
-        production_qty = max(total, round(_numeric(order.get("productionQty"))))
+        production_qty = total if _is_package_work_order(order) else max(total, round(_numeric(order.get("productionQty"))))
         completed_qty = max(0, round(_numeric(order.get("completedQty"))))
         remaining_raw = order.get("remainingQty")
         remaining_qty = None if remaining_raw in (None, "") else max(0, round(_numeric(remaining_raw)))
@@ -2703,7 +3257,9 @@ def build_work_order_snapshot(state: dict[str, Any], order: dict[str, Any], *, n
     if remaining_qty is not None:
         fulfilled_candidates.append(target_qty - remaining_qty)
     fulfilled_qty = min(target_qty, max(fulfilled_candidates) if fulfilled_candidates else 0)
+    package_standard_time_sec = _station2_standard_time_sec(order) if _is_package_work_order(order) else 0.0
     ideal_cycle_ms = _first_positive_duration_ms(
+        (package_standard_time_sec, 1000.0),
         (order.get("cycleTimeMs"), 1.0),
         (order.get("cycleTimeSec"), 1000.0),
         (state.get("idealCycleMs"), 1.0),
@@ -2902,6 +3458,15 @@ def _complete_runtime_item(
             "classification": "GOOD",
             "updated_at": received_at,
             "queue_status": "completed",
+            "station_id": "station1",
+            "oee_scope": "station1_component_transfer",
+            "count_in_oee": False,
+            "inventory_backfill_disabled": True,
+            "station1_transfer_at": received_at,
+            "work_order_id": "",
+            "work_order_match_key": "",
+            "inventory_match_key": "",
+            "inventoryAction": "station1_component_transfer",
             "pick_started": True,
             "pick_trigger_source": str(item.get("pick_trigger_source") or parsed.get("trigger_source") or "TIMER").upper(),
             "final_color_frozen_at": received_at,
@@ -2910,15 +3475,25 @@ def _complete_runtime_item(
     items[resolved_key] = item
     _remove_queue_item(state, resolved_key)
     _append_recent_id(state, resolved_key)
-    _recompute_item_counts(state)
-    _set_summary(state, f"#{item.get('item_id') or resolved_key} tamamlandi ve renk {normalized_color} olarak kilitlendi.", now=now)
-    _route_completed_item_to_work_orders(
+    if _station2_cycles(state):
+        _recompute_station2_package_counts(state)
+    else:
+        _recompute_item_counts(state)
+    _record_station1_transfer(
         state,
-        resolved_key,
         item,
+        resolved_key=resolved_key,
+        received_at=received_at,
+    )
+    routed_to_order = _route_station1_transfer_to_active_component_work_order(
+        state,
+        item,
+        resolved_key=resolved_key,
         received_at=received_at,
         now=now,
     )
+    if not routed_to_order:
+        _set_summary(state, f"#{item.get('item_id') or resolved_key} Station 1 transferi olarak kaydedildi ({normalized_color}).", now=now)
     return True
 
 
@@ -3694,7 +4269,7 @@ class OeeRuntimeStateManager:
                 continue
             if shift_started_at is not None and completed_at < shift_started_at:
                 continue
-            if require_counted and not bool(item.get("count_in_oee")):
+            if require_counted and not (bool(item.get("count_in_oee")) or _is_station1_quality_candidate(item)):
                 continue
             candidate_id = str(item.get("item_id") or raw_key or "").strip()
             if not candidate_id or candidate_id in visible_item_ids:
@@ -3734,6 +4309,7 @@ class OeeRuntimeStateManager:
         replace_existing: bool = True,
         source_folder: str = "",
         source_file: str = "",
+        validate_ferp_labels: bool = True,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         stamp = now or datetime.now().astimezone()
@@ -3750,7 +4326,7 @@ class OeeRuntimeStateManager:
         incoming_ids: list[str] = []
         import_warnings: list[dict[str, Any]] = []
         for raw_order in raw_orders:
-            prepared_order, row_warnings = _prepare_work_order_import_row(raw_order)
+            prepared_order, row_warnings = _prepare_work_order_import_row(raw_order, validate_ferp_labels=validate_ferp_labels)
             import_warnings.extend(row_warnings)
             normalized = _normalize_work_order_row(prepared_order, queued_at=queued_at)
             order_id = str(normalized.get("orderId") or "").strip()
@@ -3783,6 +4359,10 @@ class OeeRuntimeStateManager:
                 )
                 merged["lastAllocationAt"] = str(existing.get("lastAllocationAt") or merged.get("lastAllocationAt") or "")
             _sync_work_order_row(merged)
+            if _is_package_work_order(merged):
+                package_errors = _validate_package_work_order(merged)
+                if package_errors:
+                    raise ValueError(f"PACKAGE_WORK_ORDER_INVALID:{','.join(sorted(set(package_errors)))}")
             next_orders[order_id] = merged
             if order_id not in incoming_ids:
                 incoming_ids.append(order_id)
@@ -3837,6 +4417,7 @@ class OeeRuntimeStateManager:
         path: Path,
         *,
         replace_existing: bool = True,
+        validate_ferp_labels: bool = True,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         try:
@@ -3853,6 +4434,7 @@ class OeeRuntimeStateManager:
             replace_existing=replace_existing,
             source_folder=str(path.parent),
             source_file=path.name,
+            validate_ferp_labels=validate_ferp_labels,
             now=now,
         )
 
@@ -3955,6 +4537,13 @@ class OeeRuntimeStateManager:
         order["startedByName"] = str(operator_name or "").strip()
         order["transitionReason"] = cleaned_reason
         work_orders["activeOrderId"] = normalized_order_id
+        station1 = _station1_state(state)
+        station1["componentBuffer"] = {
+            "mode": "work_order_history_warning",
+            "sinceWorkOrderId": normalized_order_id,
+            "since": start_text,
+            "byColor": {"red": 0, "yellow": 0, "blue": 0, "unknown": 0},
+        }
         inventory_used = _consume_inventory_for_order(state, order, now=start_dt)
         _persist_work_order_metrics(state, order, now=start_dt)
         work_orders["transitionLog"] = _prepend_capped(
@@ -3985,6 +4574,203 @@ class OeeRuntimeStateManager:
             "order": order,
             "inventory_used": inventory_used,
         }
+
+    @_state_locked
+    def start_package_cycle(
+        self,
+        *,
+        operator_code: str = "",
+        operator_name: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        state = self.read_state()
+        if not bool((state.get("shift") if isinstance(state.get("shift"), dict) else {}).get("active")):
+            raise ValueError("SHIFT_NOT_ACTIVE")
+        station = _station2_state(state)
+        if str(station.get("activeCycleId") or "").strip():
+            raise ValueError("PACKAGE_ACTIVE_EXISTS")
+        if str(station.get("pendingQualityCycleId") or "").strip():
+            raise ValueError("PACKAGE_PENDING_QUALITY_EXISTS")
+        work_orders = _work_orders_state(state)
+        active_order_id = str(work_orders.get("activeOrderId") or "").strip()
+        active_candidate = _work_order_orders(state).get(active_order_id) if active_order_id else None
+        if isinstance(active_candidate, dict) and str(active_candidate.get("status") or "") == "pending_approval":
+            target_qty = max(0, round(_numeric(active_candidate.get("quantity"))))
+            final_package_count = max(0, round(_numeric(active_candidate.get("productionQty"))))
+            if target_qty > 0 and final_package_count >= target_qty:
+                raise ValueError("WORK_ORDER_TARGET_COMPLETED")
+        order = _active_package_work_order(state)
+        if not _is_package_work_order(order):
+            raise ValueError("PACKAGE_RECIPE_REQUIRED")
+        validation_errors = _validate_package_work_order(order)
+        if validation_errors:
+            raise ValueError(f"PACKAGE_WORK_ORDER_INVALID:{','.join(sorted(set(validation_errors)))}")
+        target_qty = max(0, round(_numeric(order.get("quantity"))))
+        final_package_count = max(0, round(_numeric(order.get("productionQty"))))
+        if target_qty > 0 and final_package_count >= target_qty:
+            raise ValueError("WORK_ORDER_TARGET_COMPLETED")
+        standard_time_sec = _station2_standard_time_sec(order)
+        if standard_time_sec <= 0:
+            raise ValueError("PACKAGE_STANDARD_TIME_REQUIRED")
+
+        running_numbers = station.get("runningNoByWorkOrder") if isinstance(station.get("runningNoByWorkOrder"), dict) else {}
+        work_order_id = str(order.get("orderId") or "").strip()
+        running_no = max(0, round(_numeric(running_numbers.get(work_order_id)))) + 1
+        running_numbers[work_order_id] = running_no
+        station["runningNoByWorkOrder"] = running_numbers
+        cycle_id = _package_cycle_id(work_order_id, running_no)
+        started_text = _pseudo_iso_text(stamp)
+        cycle = {
+            "cycleId": cycle_id,
+            "stationId": "station2",
+            "oeeScope": "station2_final_package",
+            "workOrderId": work_order_id,
+            "productId": str(order.get("productId") or order.get("productCode") or ""),
+            "productName": str(order.get("productName") or order.get("stockName") or ""),
+            "state": "packaging",
+            "startedAt": started_text,
+            "finishedAt": "",
+            "qualityAt": "",
+            "quality": "",
+            "operatorCode": str(operator_code or order.get("startedBy") or "").strip(),
+            "operatorName": str(operator_name or order.get("startedByName") or "").strip(),
+            "standardTimeSec": standard_time_sec,
+            "standardTimeMs": _duration_ms(standard_time_sec, multiplier=1000.0),
+            "durationMs": 0,
+            "countedInOee": False,
+            "voidedAt": "",
+            "voidReason": "",
+        }
+        cycles = _station2_cycles(state)
+        cycles[cycle_id] = cycle
+        station["activeCycleId"] = cycle_id
+        station["pendingQualityCycleId"] = ""
+        station["status"] = "packaging"
+        _set_summary(state, f"{cycle_id} paketleme cevrimi basladi.", now=stamp)
+        self.write_state(state)
+        return {"state": state, "summary": state["lastEventSummary"], "cycle": cycle}
+
+    @_state_locked
+    def finish_package_cycle(self, *, now: datetime | None = None) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        state = self.read_state()
+        station = _station2_state(state)
+        cycle_id = str(station.get("activeCycleId") or "").strip()
+        if not cycle_id:
+            raise ValueError("PACKAGE_ACTIVE_NOT_FOUND")
+        cycle = _station2_cycles(state).get(cycle_id)
+        if not isinstance(cycle, dict) or str(cycle.get("state") or "") != "packaging":
+            raise ValueError("PACKAGE_ACTIVE_NOT_FOUND")
+        finished_text = _pseudo_iso_text(stamp)
+        started_at = _parse_iso(str(cycle.get("startedAt") or ""))
+        duration_ms = int((stamp - started_at).total_seconds() * 1000) if started_at is not None and stamp >= started_at else 0
+        cycle["state"] = "pending_quality"
+        cycle["finishedAt"] = finished_text
+        cycle["durationMs"] = max(0, duration_ms)
+        station["activeCycleId"] = ""
+        station["pendingQualityCycleId"] = cycle_id
+        station["status"] = "pending_quality"
+        _set_summary(state, f"{cycle_id} paketleme bitti. Kalite sonucu bekleniyor.", now=stamp)
+        self.write_state(state)
+        return {"state": state, "summary": state["lastEventSummary"], "cycle": cycle}
+
+    @_state_locked
+    def finalize_package_cycle_quality(
+        self,
+        quality: Any,
+        *,
+        cycle_id: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        normalized_quality = str(quality or "").strip().upper()
+        if normalized_quality not in {"GOOD", "REWORK", "SCRAP"}:
+            raise ValueError("INVALID_PACKAGE_QUALITY")
+        state = self.read_state()
+        station = _station2_state(state)
+        resolved_cycle_id = str(cycle_id or station.get("pendingQualityCycleId") or "").strip()
+        if not resolved_cycle_id:
+            raise ValueError("PACKAGE_PENDING_QUALITY_NOT_FOUND")
+        cycle = _station2_cycles(state).get(resolved_cycle_id)
+        if not isinstance(cycle, dict):
+            raise ValueError("PACKAGE_PENDING_QUALITY_NOT_FOUND")
+        cycle_state = str(cycle.get("state") or "").strip()
+        if cycle_state.startswith("completed_") or bool(cycle.get("countedInOee")):
+            raise ValueError("PACKAGE_CYCLE_ALREADY_FINALIZED")
+        if cycle_state != "pending_quality" or resolved_cycle_id != str(station.get("pendingQualityCycleId") or "").strip():
+            raise ValueError("PACKAGE_PENDING_QUALITY_NOT_FOUND")
+
+        quality_text = _pseudo_iso_text(stamp)
+        cycle["state"] = f"completed_{normalized_quality.lower()}"
+        cycle["quality"] = normalized_quality
+        cycle["qualityAt"] = quality_text
+        cycle["countedInOee"] = True
+        station["pendingQualityCycleId"] = ""
+        station["activeCycleId"] = ""
+        station["status"] = "idle"
+        history = station.get("cycleHistory") if isinstance(station.get("cycleHistory"), list) else []
+        history.insert(
+            0,
+            {
+                "cycleId": resolved_cycle_id,
+                "workOrderId": str(cycle.get("workOrderId") or ""),
+                "quality": normalized_quality,
+                "startedAt": str(cycle.get("startedAt") or ""),
+                "finishedAt": str(cycle.get("finishedAt") or ""),
+                "qualityAt": quality_text,
+                "durationMs": max(0, round(_numeric(cycle.get("durationMs")))),
+            },
+        )
+        station["cycleHistory"] = history[:50]
+
+        orders = _work_order_orders(state)
+        order = orders.get(str(cycle.get("workOrderId") or ""))
+        if not isinstance(order, dict):
+            raise ValueError("WORK_ORDER_NOT_FOUND")
+        _sync_package_work_order_progress(state, order, completed_at=quality_text, now=stamp)
+        _recompute_station2_package_counts(state)
+        if str(order.get("status") or "") == "pending_approval":
+            station["status"] = "target_completed"
+            _set_summary(state, f"{order.get('orderId')} hedefi tamamlandi. Yeni paket baslatma kapali.", now=stamp)
+        else:
+            _set_summary(state, f"{resolved_cycle_id} {normalized_quality} olarak final urun sayildi.", now=stamp)
+        if state["shift"]["active"]:
+            _append_oee_trend_snapshot(state, now=stamp, reason="station2_package_quality", force=True)
+        self.write_state(state)
+        return {"state": state, "summary": state["lastEventSummary"], "cycle": cycle, "order": order}
+
+    @_state_locked
+    def cancel_package_cycle(self, *, reason: str = "", now: datetime | None = None) -> dict[str, Any]:
+        stamp = now or datetime.now().astimezone()
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        state = self.read_state()
+        station = _station2_state(state)
+        cycle_id = str(station.get("activeCycleId") or station.get("pendingQualityCycleId") or "").strip()
+        if not cycle_id:
+            raise ValueError("PACKAGE_CYCLE_NOT_FOUND")
+        cycle = _station2_cycles(state).get(cycle_id)
+        if not isinstance(cycle, dict):
+            raise ValueError("PACKAGE_CYCLE_NOT_FOUND")
+        if str(cycle.get("state") or "").startswith("completed_") or bool(cycle.get("countedInOee")):
+            raise ValueError("PACKAGE_CYCLE_ALREADY_FINALIZED")
+        cycle["state"] = "void"
+        cycle["voidedAt"] = _pseudo_iso_text(stamp)
+        cycle["voidReason"] = str(reason or "").strip()
+        cycle["countedInOee"] = False
+        station["activeCycleId"] = ""
+        station["pendingQualityCycleId"] = ""
+        station["status"] = "idle"
+        _set_summary(state, f"{cycle_id} paket cevrimi iptal edildi. OEE'ye dahil edilmedi.", now=stamp)
+        self.write_state(state)
+        return {"state": state, "summary": state["lastEventSummary"], "cycle": cycle}
 
     @_state_locked
     def accept_active_work_order(self, *, now: datetime | None = None) -> dict[str, Any]:
@@ -4054,6 +4840,7 @@ class OeeRuntimeStateManager:
         inventory = _work_order_inventory(state)
         tracked_items = _completed_items_for_work_order(state, active_order_id)
         tracked_counts_by_match: dict[str, int] = {}
+        returned_tracked_count = 0
         for item in tracked_items:
             match_key = (
                 str(item.get("work_order_match_key") or "").strip()
@@ -4062,6 +4849,11 @@ class OeeRuntimeStateManager:
                 or _order_match_key(order)
                 or "unknown"
             )
+            tracked_counts_by_match[match_key] = tracked_counts_by_match.get(match_key, 0) + 1
+            if _is_station1_quality_candidate(item):
+                _clear_item_work_order_context(item, updated_at=rollback_text, inventory_action="station1_component_transfer")
+                item["inventory_backfill_disabled"] = True
+                continue
             _move_completed_item_to_inventory(
                 state,
                 item,
@@ -4073,7 +4865,7 @@ class OeeRuntimeStateManager:
                 stock_name=str(item.get("stock_name") or item.get("final_color") or match_key).upper(),
                 color=_normalize_order_color(item.get("final_color"), item.get("color"), item.get("sensor_color")),
             )
-            tracked_counts_by_match[match_key] = tracked_counts_by_match.get(match_key, 0) + 1
+            returned_tracked_count += 1
 
         anonymous_returned = 0
         tracked_remaining_by_match = dict(tracked_counts_by_match)
@@ -4136,12 +4928,12 @@ class OeeRuntimeStateManager:
         _sync_work_order_row(order)
         _persist_work_order_metrics(state, order, now=stamp)
 
-        returned_to_inventory = len(tracked_items) + anonymous_returned
+        returned_to_inventory = returned_tracked_count + anonymous_returned
         note = "Aktif is emri kuyruga geri alindi."
         if returned_to_inventory > 0:
             note = f"{returned_to_inventory} adet depoya geri alindi."
             if anonymous_returned > 0:
-                note = f"{note} (izlenen {len(tracked_items)}, sayisal {anonymous_returned})"
+                note = f"{note} (izlenen {returned_tracked_count}, sayisal {anonymous_returned})"
         work_orders["transitionLog"] = _prepend_capped(
             work_orders["transitionLog"],
             _work_order_log_row(
@@ -4391,7 +5183,7 @@ class OeeRuntimeStateManager:
                     "pick_trigger_source": str(item.get("pick_trigger_source") or ""),
                     "early_pick_triggered": bool(item.get("early_pick_triggered")),
                     "late_vision_audit_flag": bool(item.get("late_vision_audit_flag")),
-                    "count_in_oee": bool(item.get("count_in_oee")) or bool(state["shift"]["active"]),
+                    "count_in_oee": False,
                 }
             )
             items[item_key] = item
@@ -4585,16 +5377,22 @@ class OeeRuntimeStateManager:
                         order,
                         str(item.get("work_order_match_key") or item.get("inventory_match_key") or ""),
                     )
-                    inventory_delta = fulfillment_delta if str(item.get("inventoryAction") or "") == "consumed_for_work_order" else 0
+                    item_action = str(item.get("inventoryAction") or "").strip()
+                    inventory_delta = fulfillment_delta if item_action == "consumed_for_work_order" else 0
+                    production_delta = fulfillment_delta if item_action in {"work_order", "station1_component_transfer"} else 0
                     if isinstance(requirement, dict):
                         requirement["completedQty"] = max(0, round(_numeric(requirement.get("completedQty"))) + fulfillment_delta)
                         if inventory_delta:
                             requirement["inventoryConsumedQty"] = max(0, round(_numeric(requirement.get("inventoryConsumedQty"))) + inventory_delta)
+                        if production_delta:
+                            requirement["productionQty"] = max(0, round(_numeric(requirement.get("productionQty"))) + production_delta)
                         _sync_work_order_requirement(requirement)
                     else:
                         order["completedQty"] = max(0, round(_numeric(order.get("completedQty"))) + fulfillment_delta)
                         if inventory_delta:
                             order["inventoryConsumedQty"] = max(0, round(_numeric(order.get("inventoryConsumedQty"))) + inventory_delta)
+                        if production_delta:
+                            order["productionQty"] = max(0, round(_numeric(order.get("productionQty"))) + production_delta)
                     _sync_work_order_row(order)
                     if fulfillment_delta < 0 and str(order.get("status") or "") == "pending_approval":
                         order["status"] = "active"

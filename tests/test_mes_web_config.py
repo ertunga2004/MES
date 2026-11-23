@@ -46,6 +46,12 @@ class AppConfigTests(unittest.TestCase):
         self.assertEqual(config.ferp_import_dir.name, "ferp_import")
         self.assertEqual(config.work_orders_dir, config.ferp_import_dir)
 
+    def test_default_ferp_paths_point_to_docs_folder(self) -> None:
+        config = AppConfig()
+
+        self.assertEqual(config.ferp_labels_path, config.root_dir / "docs" / "FERP_XLS" / "ferp_labels.xlsx")
+        self.assertEqual(config.ferp_xls_dir, config.root_dir / "docs" / "FERP_XLS")
+
     def test_work_order_source_env_override_wins_over_ferp_import_default(self) -> None:
         with patch.dict(os.environ, {"MES_WEB_WORK_ORDERS_DIR": "C:/tmp/mes-work-orders"}, clear=False):
             config = AppConfig.from_env()

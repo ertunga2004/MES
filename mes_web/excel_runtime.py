@@ -27,7 +27,8 @@ from .parsers import (
 
 EVENT_LOG_COLUMNS = [
     "log_event_id", "event_time_text", "source_id", "source_code", "event_type_id", "event_type_code", "event_summary_tr",
-    "item_id", "measure_id", "fault_id", "oee_snapshot_id", "vision_event_id", "line_id", "station_id", "color_id",
+    "item_id", "measure_id", "fault_id", "oee_snapshot_id", "vision_event_id", "line_id", "station_id", "oee_scope",
+    "package_cycle_id", "color_id",
     "color_code", "decision_source_id", "decision_source_code", "mega_state_id", "mega_state_code", "queue_depth",
     "review_required", "travel_ms", "notes", "raw_line",
 ]
@@ -47,11 +48,12 @@ COMPLETED_COLUMNS = [
     "override_flag", "override_source_code", "override_applied_at", "sensor_color_code", "vision_color_code",
     "final_color_code", "mismatch_flag", "correlation_status", "finalization_reason", "early_pick_triggered",
     "pick_trigger_source", "early_pick_request_sent_at", "early_pick_accepted_at", "final_color_frozen_at",
+    "station_id", "oee_scope", "package_cycle_id",
 ]
 OEE_SNAPSHOT_COLUMNS = [
     "oee_snapshot_id", "snapshot_time", "event_log_id", "sample_cycle_tag", "oee", "availability", "performance", "quality",
     "mavi_s", "mavi_r", "mavi_h", "sari_s", "sari_r", "sari_h", "kirmizi_s", "kirmizi_r", "kirmizi_h",
-    "is_full_cycle_reference", "notes", "raw_line",
+    "is_full_cycle_reference", "station_id", "oee_scope", "package_cycle_id", "notes", "raw_line",
 ]
 VISION_COLUMNS = [
     "vision_event_id", "event_time", "source_code", "vision_track_id", "event_type", "color_id", "color_code", "item_id",
@@ -61,7 +63,7 @@ VISION_COLUMNS = [
 ]
 RAW_LOG_COLUMNS = [
     "raw_log_id", "logged_at", "source_topic", "source_code", "parsed_flag", "event_type_code", "item_id", "measure_id",
-    "color_code", "notes", "raw_payload",
+    "color_code", "station_id", "oee_scope", "package_cycle_id", "notes", "raw_payload",
 ]
 WORK_ORDER_COLUMNS = [
     "work_order_record_id", "order_id", "erp_type", "source_file", "queued_at", "started_at", "completed_at",
@@ -139,13 +141,18 @@ EVENT_TYPE_IDS = {
     "help_requested": 27,
     "help_acknowledged": 28,
     "help_resolved": 29,
+    "station2_package_started": 30,
+    "station2_package_finished": 31,
+    "station2_quality_good": 32,
+    "station2_quality_rework": 33,
+    "station2_quality_scrap": 34,
 }
 DECISION_SOURCE_IDS = {"CORE_STABLE": 1, "MEDIAN_STABLE": 2, "CORE_VOTE_MATCH": 3, "VISION": 4, "TABLET": 5, "SYSTEM": 6}
 MEGA_STATE_IDS = {"SEARCH": 1, "SEARCHING": 2, "MEASURING": 3, "WAIT_ARM": 4, "PAUSED": 5, "STOPPED": 6, "QUEUE": 7}
 EXCEL_ILLEGAL_CHARACTERS_RE = re.compile(r"[\x00-\x08\x0B-\x0C\x0E-\x1F]")
 
 
-def _station_for_event(event_type_code: str) -> int:
+def _station_for_event(event_type_code: str) -> int | str:
     if event_type_code in {"measurement_decision"}:
         return 1
     if event_type_code == "queue_enq":
@@ -164,7 +171,31 @@ def _station_for_event(event_type_code: str) -> int:
         "help_resolved",
     }:
         return 4
+    if event_type_code in {
+        "station2_package_started",
+        "station2_package_finished",
+        "station2_quality_good",
+        "station2_quality_rework",
+        "station2_quality_scrap",
+    }:
+        return "station2"
     return 6 if event_type_code == "vision_event" else 5
+
+
+def _oee_scope_for_event(event_type_code: str) -> str:
+    if event_type_code in {"pick_released", "pickplace_done"}:
+        return "station1_component_transfer"
+    if event_type_code in {
+        "station2_package_started",
+        "station2_package_finished",
+        "station2_quality_good",
+        "station2_quality_rework",
+        "station2_quality_scrap",
+    }:
+        return "station2_final_package"
+    if event_type_code in {"tablet_oee_snapshot", "shift_start", "shift_stop", "oee_control"}:
+        return "station2_packaging_oee"
+    return ""
 
 
 def _decision_source_id(value: str | None) -> int | str:
@@ -431,6 +462,9 @@ class WorkbookProjector:
             "kirmizi_r": int(((colors.get("red") or {}).get("rework") or 0)),
             "kirmizi_h": int(((colors.get("red") or {}).get("scrap") or 0)),
             "is_full_cycle_reference": 1,
+            "station_id": "station2",
+            "oee_scope": "station2_packaging_oee",
+            "package_cycle_id": "",
             "notes": notes,
             "raw_line": raw_line,
         }
@@ -492,12 +526,15 @@ class WorkbookProjector:
             "early_pick_request_sent_at": state.get("early_pick_request_sent_at", ""),
             "early_pick_accepted_at": state.get("early_pick_accepted_at", ""),
             "final_color_frozen_at": completed_at or received_at,
+            "station_id": "station1",
+            "oee_scope": "station1_component_transfer",
+            "package_cycle_id": "",
         }
         self.completed_rows_by_item[str(state.get("item_id", parsed["item_id"]) or key)] = row
         self.completed_state.pop(key, None)
         return row
 
-    def _raw_row(self, *, received_at: str, source_topic: str, source_code: str, raw_payload: Any, parsed_flag: int, event_type_code: str = "", item_id: str = "", measure_id: str = "", color_code: str = "", notes: str = "") -> dict[str, Any]:
+    def _raw_row(self, *, received_at: str, source_topic: str, source_code: str, raw_payload: Any, parsed_flag: int, event_type_code: str = "", item_id: str = "", measure_id: str = "", color_code: str = "", station_id: Any = "", oee_scope: str = "", package_cycle_id: str = "", notes: str = "") -> dict[str, Any]:
         return {
             "raw_log_id": self._next("raw_log_id"),
             "logged_at": received_at,
@@ -508,11 +545,14 @@ class WorkbookProjector:
             "item_id": item_id,
             "measure_id": measure_id,
             "color_code": color_code,
+            "station_id": station_id,
+            "oee_scope": oee_scope or _oee_scope_for_event(event_type_code),
+            "package_cycle_id": package_cycle_id,
             "notes": notes,
             "raw_payload": _json_text(raw_payload),
         }
 
-    def _event_row(self, *, log_event_id: int, received_at: str, source_code: str, event_type_code: str, item_id: str = "", measure_id: str = "", color_code: str = "", decision_source_code: str = "", mega_state_code: str = "", queue_depth: Any = "", review_required: Any = "", travel_ms: Any = "", notes: str = "", raw_line: str = "", event_summary_tr: str = "", vision_event_id: Any = "", oee_snapshot_id: Any = "") -> dict[str, Any]:
+    def _event_row(self, *, log_event_id: int, received_at: str, source_code: str, event_type_code: str, item_id: str = "", measure_id: str = "", color_code: str = "", decision_source_code: str = "", mega_state_code: str = "", queue_depth: Any = "", review_required: Any = "", travel_ms: Any = "", station_id: Any = "", oee_scope: str = "", package_cycle_id: str = "", notes: str = "", raw_line: str = "", event_summary_tr: str = "", vision_event_id: Any = "", oee_snapshot_id: Any = "") -> dict[str, Any]:
         normalized_color = normalize_color(color_code)
         event_id_key = "vision_event" if event_type_code == "vision_event" else event_type_code
         return {
@@ -529,7 +569,9 @@ class WorkbookProjector:
             "oee_snapshot_id": oee_snapshot_id,
             "vision_event_id": vision_event_id,
             "line_id": 1,
-            "station_id": _station_for_event(event_id_key),
+            "station_id": station_id or _station_for_event(event_id_key),
+            "oee_scope": oee_scope or _oee_scope_for_event(event_id_key),
+            "package_cycle_id": package_cycle_id,
             "color_id": _color_id(normalized_color),
             "color_code": normalized_color if normalized_color != "unknown" else "",
             "decision_source_id": _decision_source_id(decision_source_code),
@@ -703,9 +745,14 @@ class WorkbookProjector:
             return {}
         item_id = str(row.get("item_id") or row.get("itemId") or "").strip()
         measure_id = str(row.get("measure_id") or row.get("measureId") or "").strip()
+        station_id = str(row.get("station_id") or row.get("stationId") or row.get("bound_station_id") or "").strip()
+        package_cycle_id = str(row.get("package_cycle_id") or row.get("packageCycleId") or "").strip()
+        oee_scope = str(row.get("oee_scope") or row.get("oeeScope") or "").strip() or _oee_scope_for_event(event_type)
         note_parts = [
             f"device_id={row.get('device_id')}" if row.get("device_id") else "",
             f"station_id={row.get('bound_station_id')}" if row.get("bound_station_id") else "",
+            f"package_cycle_id={package_cycle_id}" if package_cycle_id else "",
+            f"oee_scope={oee_scope}" if oee_scope else "",
             f"operator_id={row.get('operator_id')}" if row.get("operator_id") else "",
             f"session_id={row.get('session_id')}" if row.get("session_id") else "",
             f"step_code={row.get('step_code')}" if row.get("step_code") else "",
@@ -730,6 +777,11 @@ class WorkbookProjector:
             "help_requested": "Teknisyen yardim istegi acildi",
             "help_acknowledged": "Yardim istegi onaylandi",
             "help_resolved": "Yardim istegi cozuldu",
+            "station2_package_started": "Paketleme cevrimi baslatildi",
+            "station2_package_finished": "Paketleme cevrimi bitirildi",
+            "station2_quality_good": "Paket kalite sonucu: GOOD",
+            "station2_quality_rework": "Paket kalite sonucu: REWORK",
+            "station2_quality_scrap": "Paket kalite sonucu: SCRAP",
         }
         raw_payload = {
             "event_type": event_type,
@@ -742,6 +794,9 @@ class WorkbookProjector:
             "fault_code": row.get("fault_code") or "",
             "technician_name": row.get("technician_name") or "",
             "reason": row.get("reason") or "",
+            "station_id": station_id,
+            "package_cycle_id": package_cycle_id,
+            "oee_scope": oee_scope,
         }
         return {
             "1_Olay_Logu": [
@@ -752,6 +807,9 @@ class WorkbookProjector:
                     event_type_code=event_type,
                     item_id=item_id,
                     measure_id=measure_id,
+                    station_id=station_id,
+                    oee_scope=oee_scope,
+                    package_cycle_id=package_cycle_id,
                     notes=";".join(part for part in note_parts if part),
                     raw_line=_json_text(raw_payload),
                     event_summary_tr=summary_map.get(event_type, event_type),
@@ -767,6 +825,9 @@ class WorkbookProjector:
                     event_type_code=event_type,
                     item_id=item_id,
                     measure_id=measure_id,
+                    station_id=station_id,
+                    oee_scope=oee_scope,
+                    package_cycle_id=package_cycle_id,
                 )
             ],
         }
@@ -778,7 +839,17 @@ class WorkbookProjector:
         if parsed is None:
             return rows
         parsed, key = self._resolve_robot_event_context(parsed)
-        rows[RAW_LOG_SHEET_NAME][0].update({"parsed_flag": 1, "event_type_code": parsed["event_type"], "item_id": parsed["item_id"], "measure_id": parsed["measure_id"], "color_code": parsed["color"]})
+        rows[RAW_LOG_SHEET_NAME][0].update(
+            {
+                "parsed_flag": 1,
+                "event_type_code": parsed["event_type"],
+                "item_id": parsed["item_id"],
+                "measure_id": parsed["measure_id"],
+                "color_code": parsed["color"],
+                "station_id": _station_for_event(parsed["event_type"]),
+                "oee_scope": _oee_scope_for_event(parsed["event_type"]),
+            }
+        )
         log_event_id = self._next("log_event_id")
         raw = parsed["raw"]
         summary = {
@@ -1134,6 +1205,8 @@ class ExcelRuntimeSink:
         except ModuleNotFoundError:
             print("MES Web: Excel sink disabled because openpyxl is not installed.")
             return
+        if self.config.workbook_schema_validation_enabled:
+            self._run_workbook_schema_validation()
         self._enabled = True
         self._thread = threading.Thread(target=self._worker, name="mes-web-excel-sink", daemon=True)
         self._thread.start()
@@ -1208,6 +1281,23 @@ class ExcelRuntimeSink:
                     payload=envelope_payload,
                 )
             )
+
+    def _run_workbook_schema_validation(self) -> None:
+        try:
+            from .workbook_schema_validator import validate_workbook_schema
+
+            report = validate_workbook_schema(self.config.excel_workbook_path)
+        except Exception as exc:
+            print(f"MES Web: workbook schema validation warning: {type(exc).__name__}: {exc}")
+            return
+
+        status = str(report.get("status") or "warning")
+        summary = str(report.get("summary") or "")
+        print(f"MES Web: workbook schema validation status={status}; {summary}")
+        for warning in report.get("warnings") or []:
+            print(f"MES Web: workbook schema validation warning: {warning}")
+        for error in report.get("errors") or []:
+            print(f"MES Web: workbook schema validation error_candidate: {error}")
 
     def _worker(self) -> None:
         from openpyxl import Workbook, load_workbook

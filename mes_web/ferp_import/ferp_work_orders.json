@@ -17,7 +17,97 @@
         "lblMTM00_NAME": "Kirmizi Test Kutusu",
         "lblMUNT0_CODE": "ADET",
         "lblFPJ00_ID": "FIELD-TEST",
-        "lblMMFB0_DESC": "Fiziksel saha test is emri - GOOD akisi"
+        "lblMMFB0_DESC": "Fiziksel saha test is emri - kirmizi kutu"
+      },
+      "requirements": [
+        {
+          "line_id": "RED-BOX",
+          "lblMTM00_CODE": "BOX-RED",
+          "lblMTM00_NAME": "Kirmizi Test Kutusu",
+          "lblMMFB0_QTY": 1
+        }
+      ]
+    },
+    {
+      "ferp_object": "mym4004",
+      "ferp_screen": "Paketleme Is Emirleri",
+      "cycle_time_sec": 45,
+      "routeId": "PKT-RENK-ROUTE-01",
+      "stationPlan": ["station1", "station2"],
+      "materials": [
+        {
+          "itemCode": "KUTU-KRM",
+          "itemName": "Kirmizi Kutu",
+          "itemType": "box",
+          "color": "red",
+          "qtyPerUnit": 1
+        },
+        {
+          "itemCode": "PKT-KIRMIZI",
+          "itemName": "Kirmizi Paket",
+          "itemType": "package",
+          "color": "red",
+          "qtyPerUnit": 1
+        },
+        {
+          "itemCode": "ETK-PKT-KIRMIZI",
+          "itemName": "Kirmizi Paket Etiketi",
+          "itemType": "label",
+          "qtyPerUnit": 1
+        },
+        {
+          "itemCode": "KLVZ-PKT-01",
+          "itemName": "Kullanim Kilavuzu",
+          "itemType": "consumable",
+          "qtyPerUnit": 1
+        },
+        {
+          "itemCode": "BANT-PKT-01",
+          "itemName": "Paket Bandi",
+          "itemType": "consumable",
+          "qtyPerUnit": 1
+        }
+      ],
+      "operations": [
+        {
+          "opNo": 10,
+          "stationId": "station2",
+          "operationName": "Kutu Koy",
+          "standardTimeSec": 12,
+          "source": "time_study"
+        },
+        {
+          "opNo": 20,
+          "stationId": "station2",
+          "operationName": "Kullanim Kilavuzu Koy",
+          "standardTimeSec": 8,
+          "source": "time_study"
+        },
+        {
+          "opNo": 30,
+          "stationId": "station2",
+          "operationName": "Paketi Kapat",
+          "standardTimeSec": 15,
+          "source": "time_study"
+        },
+        {
+          "opNo": 40,
+          "stationId": "station2",
+          "operationName": "Bantla",
+          "standardTimeSec": 10,
+          "source": "time_study"
+        }
+      ],
+      "ferp_labels": {
+        "lblMMFB0_DATE": "2026-04-28",
+        "lblMMFB0_NUMBER": "WO-PKT-RED-001",
+        "lblMMFB0_QTY": 1,
+        "lblMTMT0_CODE": "Mamul",
+        "lblMTM00_CODE": "PKT-RED",
+        "lblMTM00_NAME": "Kirmizi Paket",
+        "lblMUNT0_CODE": "ADET",
+        "lblFPJ00_ID": "FIELD-TEST",
+        "lblMMFB0_DESC": "Kirmizi paket demo is emri"
       }
     },
     {
@@ -33,7 +123,97 @@
         "lblMTM00_NAME": "Sari Test Kutusu",
         "lblMUNT0_CODE": "ADET",
         "lblFPJ00_ID": "FIELD-TEST",
-        "lblMMFB0_DESC": "Fiziksel saha test is emri - REWORK akisi"
+        "lblMMFB0_DESC": "Fiziksel saha test is emri - sari kutu"
+      },
+      "requirements": [
+        {
+          "line_id": "YELLOW-BOX",
+          "lblMTM00_CODE": "BOX-YEL",
+          "lblMTM00_NAME": "Sari Test Kutusu",
+          "lblMMFB0_QTY": 1
+        }
+      ]
+    },
+    {
+      "ferp_object": "mym4004",
+      "ferp_screen": "Paketleme Is Emirleri",
+      "cycle_time_sec": 45,
+      "routeId": "PKT-RENK-ROUTE-01",
+      "stationPlan": ["station1", "station2"],
+      "materials": [
+        {
+          "itemCode": "KUTU-SRI",
+          "itemName": "Sari Kutu",
+          "itemType": "box",
+          "color": "yellow",
+          "qtyPerUnit": 1
+        },
+        {
+          "itemCode": "PKT-SARI",
+          "itemName": "Sari Paket",
+          "itemType": "package",
+          "color": "yellow",
+          "qtyPerUnit": 1
+        },
+        {
+          "itemCode": "ETK-PKT-SARI",
+          "itemName": "Sari Paket Etiketi",
+          "itemType": "label",
+          "qtyPerUnit": 1
+        },
+        {
+          "itemCode": "KLVZ-PKT-01",
+          "itemName": "Kullanim Kilavuzu",
+          "itemType": "consumable",
+          "qtyPerUnit": 1
+        },
+        {
+          "itemCode": "BANT-PKT-01",
+          "itemName": "Paket Bandi",
+          "itemType": "consumable",
+          "qtyPerUnit": 1
+        }
+      ],
+      "operations": [
+        {
+          "opNo": 10,
+          "stationId": "station2",
+          "operationName": "Kutu Koy",
+          "standardTimeSec": 12,
+          "source": "time_study"
+        },
+        {
+          "opNo": 20,
+          "stationId": "station2",
+          "operationName": "Kullanim Kilavuzu Koy",
+          "standardTimeSec": 8,
+          "source": "time_study"
+        },
+        {
+          "opNo": 30,
+          "stationId": "station2",
+          "operationName": "Paketi Kapat",
+          "standardTimeSec": 15,
+          "source": "time_study"
+        },
+        {
+          "opNo": 40,
+          "stationId": "station2",
+          "operationName": "Bantla",
+          "standardTimeSec": 10,
+          "source": "time_study"
+        }
+      ],
+      "ferp_labels": {
+        "lblMMFB0_DATE": "2026-04-28",
+        "lblMMFB0_NUMBER": "WO-PKT-YELLOW-001",
+        "lblMMFB0_QTY": 1,
+        "lblMTMT0_CODE": "Mamul",
+        "lblMTM00_CODE": "PKT-YELLOW",
+        "lblMTM00_NAME": "Sari Paket",
+        "lblMUNT0_CODE": "ADET",
+        "lblFPJ00_ID": "FIELD-TEST",
+        "lblMMFB0_DESC": "Sari paket demo is emri"
       }
     },
     {
@@ -43,13 +223,103 @@
       "ferp_labels": {
         "lblMMFB0_DATE": "2026-04-28",
         "lblMMFB0_NUMBER": "TEST-FERP-SCRAP",
-        "lblMMFB0_QTY": 1,
+        "lblMMFB0_QTY": 6,
         "lblMTMT0_CODE": "Mamul",
         "lblMTM00_CODE": "BOX-BLUE",
         "lblMTM00_NAME": "Mavi Test Kutusu",
         "lblMUNT0_CODE": "ADET",
         "lblFPJ00_ID": "FIELD-TEST",
-        "lblMMFB0_DESC": "Fiziksel saha test is emri - SCRAP akisi"
+        "lblMMFB0_DESC": "Fiziksel saha test is emri - mavi kutu"
+      },
+      "requirements": [
+        {
+          "line_id": "BLUE-BOX",
+          "lblMTM00_CODE": "BOX-BLUE",
+          "lblMTM00_NAME": "Mavi Test Kutusu",
+          "lblMMFB0_QTY": 6
+        }
+      ]
+    },
+    {
+      "ferp_object": "mym4004",
+      "ferp_screen": "Paketleme Is Emirleri",
+      "cycle_time_sec": 45,
+      "routeId": "PKT-RENK-ROUTE-01",
+      "stationPlan": ["station1", "station2"],
+      "materials": [
+        {
+          "itemCode": "KUTU-MVI",
+          "itemName": "Mavi Kutu",
+          "itemType": "box",
+          "color": "blue",
+          "qtyPerUnit": 2
+        },
+        {
+          "itemCode": "PKT-MAVI",
+          "itemName": "Mavi Paket",
+          "itemType": "package",
+          "color": "blue",
+          "qtyPerUnit": 1
+        },
+        {
+          "itemCode": "ETK-PKT-MAVI",
+          "itemName": "Mavi Paket Etiketi",
+          "itemType": "label",
+          "qtyPerUnit": 1
+        },
+        {
+          "itemCode": "KLVZ-PKT-01",
+          "itemName": "Kullanim Kilavuzu",
+          "itemType": "consumable",
+          "qtyPerUnit": 1
+        },
+        {
+          "itemCode": "BANT-PKT-01",
+          "itemName": "Paket Bandi",
+          "itemType": "consumable",
+          "qtyPerUnit": 1
+        }
+      ],
+      "operations": [
+        {
+          "opNo": 10,
+          "stationId": "station2",
+          "operationName": "Kutu Koy",
+          "standardTimeSec": 12,
+          "source": "time_study"
+        },
+        {
+          "opNo": 20,
+          "stationId": "station2",
+          "operationName": "Kullanim Kilavuzu Koy",
+          "standardTimeSec": 8,
+          "source": "time_study"
+        },
+        {
+          "opNo": 30,
+          "stationId": "station2",
+          "operationName": "Paketi Kapat",
+          "standardTimeSec": 15,
+          "source": "time_study"
+        },
+        {
+          "opNo": 40,
+          "stationId": "station2",
+          "operationName": "Bantla",
+          "standardTimeSec": 10,
+          "source": "time_study"
+        }
+      ],
+      "ferp_labels": {
+        "lblMMFB0_DATE": "2026-04-28",
+        "lblMMFB0_NUMBER": "WO-PKT-BLUE-001",
+        "lblMMFB0_QTY": 3,
+        "lblMTMT0_CODE": "Mamul",
+        "lblMTM00_CODE": "PKT-BLUE",
+        "lblMTM00_NAME": "Mavi Paket",
+        "lblMUNT0_CODE": "ADET",
+        "lblFPJ00_ID": "FIELD-TEST",
+        "lblMMFB0_DESC": "Mavi paket demo is emri"
       }
     }
   ]

@@ -14,6 +14,7 @@ _XLSX_NS = {
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
 }
 _MASTERDATA_CACHE: dict[str, Any] = {"key": None, "value": None}
+_MASTERDATA_VALIDATION_LOG_CACHE: dict[str, Any] = {"key": None}
 
 
 DEFAULT_OPERATORS = [
@@ -347,7 +348,44 @@ def _masterdata_source_path(config: AppConfig) -> Path | None:
     return None
 
 
+def _masterdata_validation_cache_key(config: AppConfig) -> tuple[Any, ...]:
+    path = _masterdata_source_path(config)
+    if path is None:
+        return ("no-source", str(config.excel_workbook_path), str(config.excel_template_path or ""))
+    try:
+        return (str(path.resolve()), path.stat().st_mtime)
+    except OSError:
+        return (str(path), "stat-error")
+
+
+def _maybe_log_masterdata_validation(config: AppConfig) -> None:
+    if not getattr(config, "masterdata_validation_enabled", False):
+        return
+    cache_key = _masterdata_validation_cache_key(config)
+    if _MASTERDATA_VALIDATION_LOG_CACHE.get("key") == cache_key:
+        return
+    _MASTERDATA_VALIDATION_LOG_CACHE["key"] = cache_key
+    try:
+        from .masterdata_validator import validate_masterdata_source
+
+        report = validate_masterdata_source(config)
+    except Exception as exc:
+        print(f"MES Web: masterdata validation warning: {type(exc).__name__}: {exc}")
+        return
+
+    status = str(report.get("status") or "warning")
+    summary = str(report.get("summary") or "")
+    print(f"MES Web: masterdata validation status={status}; {summary}")
+    for fallback_name in report.get("fallback_used") or []:
+        print(f"MES Web: masterdata validation fallback_used: {fallback_name}")
+    for warning in report.get("warnings") or []:
+        print(f"MES Web: masterdata validation warning: {warning}")
+    for error in report.get("errors") or []:
+        print(f"MES Web: masterdata validation error_candidate: {error}")
+
+
 def load_kiosk_masterdata(config: AppConfig) -> dict[str, Any]:
+    _maybe_log_masterdata_validation(config)
     path = _masterdata_source_path(config)
     if path is None:
         return _normalize_catalog({})

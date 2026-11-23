@@ -4,9 +4,9 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from mes_web.excel_runtime import INVENTORY_SHEET_NAME, MAINTENANCE_SHEET_NAME, RAW_LOG_SHEET_NAME, WORK_ORDER_SHEET_NAME, WorkbookProjector
+from mes_web.excel_runtime import COMPLETED_COLUMNS, EVENT_LOG_COLUMNS, INVENTORY_SHEET_NAME, MAINTENANCE_SHEET_NAME, RAW_LOG_COLUMNS, RAW_LOG_SHEET_NAME, WORK_ORDER_SHEET_NAME, WorkbookProjector
 
 
 class WorkbookProjectorTests(unittest.TestCase):
@@ -55,6 +55,41 @@ class WorkbookProjectorTests(unittest.TestCase):
         self.assertEqual(completed_rows["4_Uretim_Tamamlanan"][0]["completed_at"], "2026-04-02T10:15:29Z")
         self.assertEqual(completed_rows["4_Uretim_Tamamlanan"][0]["flow_ms"], 4000)
         self.assertEqual(completed_rows["4_Uretim_Tamamlanan"][0]["cycle_ms"], "")
+        self.assertEqual(completed_rows["4_Uretim_Tamamlanan"][0]["station_id"], "station1")
+        self.assertEqual(completed_rows["4_Uretim_Tamamlanan"][0]["oee_scope"], "station1_component_transfer")
+        self.assertEqual(completed_rows["4_Uretim_Tamamlanan"][0]["package_cycle_id"], "")
+        self.assertEqual(completed_rows[RAW_LOG_SHEET_NAME][0]["oee_scope"], "station1_component_transfer")
+
+    def test_p0_log_columns_include_station_scope_and_package_cycle_id(self) -> None:
+        self.assertIn("station_id", EVENT_LOG_COLUMNS)
+        self.assertIn("oee_scope", EVENT_LOG_COLUMNS)
+        self.assertIn("package_cycle_id", EVENT_LOG_COLUMNS)
+        self.assertIn("station_id", RAW_LOG_COLUMNS)
+        self.assertIn("oee_scope", RAW_LOG_COLUMNS)
+        self.assertIn("package_cycle_id", RAW_LOG_COLUMNS)
+        self.assertIn("station_id", COMPLETED_COLUMNS)
+        self.assertIn("oee_scope", COMPLETED_COLUMNS)
+        self.assertIn("package_cycle_id", COMPLETED_COLUMNS)
+
+    def test_station2_package_kiosk_event_writes_station_scope_and_cycle_id(self) -> None:
+        rows = self.projector.consume_kiosk_event(
+            {
+                "event_type": "station2_package_started",
+                "station_id": "station2",
+                "package_cycle_id": "PKG-WO-PKT-A-001-0001",
+                "operator_id": "1",
+            },
+            "2026-04-02T10:15:30Z",
+        )
+
+        event_row = rows["1_Olay_Logu"][0]
+        raw_row = rows[RAW_LOG_SHEET_NAME][0]
+        self.assertEqual(event_row["station_id"], "station2")
+        self.assertEqual(event_row["oee_scope"], "station2_final_package")
+        self.assertEqual(event_row["package_cycle_id"], "PKG-WO-PKT-A-001-0001")
+        self.assertEqual(raw_row["station_id"], "station2")
+        self.assertEqual(raw_row["oee_scope"], "station2_final_package")
+        self.assertEqual(raw_row["package_cycle_id"], "PKG-WO-PKT-A-001-0001")
 
     def test_vision_event_creates_vision_and_raw_rows(self) -> None:
         rows = self.projector.consume_vision_event(
@@ -582,6 +617,91 @@ class WorkbookProjectorTests(unittest.TestCase):
             self.assertFalse(workbook_path.exists())
             archived = list(Path(temp_dir).glob("broken.xlsx.corrupt-*"))
             self.assertTrue(archived)
+
+    def test_workbook_schema_validation_flag_defaults_disabled(self) -> None:
+        from mes_web.config import AppConfig
+
+        self.assertFalse(AppConfig().workbook_schema_validation_enabled)
+        with patch.dict(os.environ, {"MES_WORKBOOK_SCHEMA_VALIDATION_ENABLED": "true"}, clear=False):
+            self.assertTrue(AppConfig.from_env().workbook_schema_validation_enabled)
+
+    def test_excel_sink_does_not_call_workbook_schema_validator_when_flag_disabled(self) -> None:
+        try:
+            import openpyxl  # noqa: F401
+        except ModuleNotFoundError:
+            self.skipTest("openpyxl is not installed")
+        from mes_web.config import AppConfig
+        from mes_web.excel_runtime import ExcelRuntimeSink
+
+        config = AppConfig(workbook_schema_validation_enabled=False)
+        sink = ExcelRuntimeSink(config)
+        with (
+            patch("mes_web.workbook_schema_validator.validate_workbook_schema") as validator,
+            patch("mes_web.excel_runtime.threading.Thread") as thread_class,
+        ):
+            thread_class.return_value.start = Mock()
+
+            sink.start()
+
+        validator.assert_not_called()
+        thread_class.return_value.start.assert_called_once()
+
+    def test_excel_sink_logs_workbook_schema_validation_when_flag_enabled(self) -> None:
+        try:
+            import openpyxl  # noqa: F401
+        except ModuleNotFoundError:
+            self.skipTest("openpyxl is not installed")
+        from mes_web.config import AppConfig
+        from mes_web.excel_runtime import ExcelRuntimeSink
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "mes.xlsx"
+            config = AppConfig(workbook_schema_validation_enabled=True)
+            sink = ExcelRuntimeSink(config)
+            with (
+                patch.dict(os.environ, {"MES_WEB_EXCEL_WORKBOOK_PATH": str(workbook_path)}, clear=False),
+                patch("mes_web.workbook_schema_validator.validate_workbook_schema") as validator,
+                patch("mes_web.excel_runtime.threading.Thread") as thread_class,
+                patch("builtins.print") as print_mock,
+            ):
+                validator.return_value = {
+                    "status": "warning",
+                    "summary": "Workbook schema validation completed with 1 warnings.",
+                    "warnings": ["MISSING_SHEET: 6_Vision"],
+                    "errors": [],
+                }
+                thread_class.return_value.start = Mock()
+
+                sink.start()
+
+        validator.assert_called_once_with(workbook_path)
+        thread_class.return_value.start.assert_called_once()
+        printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list)
+        self.assertIn("workbook schema validation status=warning", printed)
+        self.assertIn("MISSING_SHEET: 6_Vision", printed)
+
+    def test_excel_sink_continues_when_workbook_schema_validator_fails(self) -> None:
+        try:
+            import openpyxl  # noqa: F401
+        except ModuleNotFoundError:
+            self.skipTest("openpyxl is not installed")
+        from mes_web.config import AppConfig
+        from mes_web.excel_runtime import ExcelRuntimeSink
+
+        config = AppConfig(workbook_schema_validation_enabled=True)
+        sink = ExcelRuntimeSink(config)
+        with (
+            patch("mes_web.workbook_schema_validator.validate_workbook_schema", side_effect=RuntimeError("boom")),
+            patch("mes_web.excel_runtime.threading.Thread") as thread_class,
+            patch("builtins.print") as print_mock,
+        ):
+            thread_class.return_value.start = Mock()
+
+            sink.start()
+
+        thread_class.return_value.start.assert_called_once()
+        printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list)
+        self.assertIn("workbook schema validation warning: RuntimeError: boom", printed)
 
     def test_kiosk_event_creates_audit_log_rows(self) -> None:
         rows = self.projector.consume_kiosk_event(

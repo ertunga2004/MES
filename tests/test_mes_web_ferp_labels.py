@@ -131,6 +131,48 @@ class FerpImportTests(unittest.TestCase):
             self.assertEqual(order["quantity"], 1)
             self.assertEqual(order["cycleTimeSec"], 15.0)
             self.assertEqual(order["ferpObject"], "mym4004")
+            orders = result["state"]["workOrders"]["ordersById"]
+            self.assertEqual(
+                result["state"]["workOrders"]["orderSequence"],
+                [
+                    "TEST-FERP-001",
+                    "WO-PKT-RED-001",
+                    "TEST-FERP-REWORK",
+                    "WO-PKT-YELLOW-001",
+                    "TEST-FERP-SCRAP",
+                    "WO-PKT-BLUE-001",
+                ],
+            )
+            self.assertEqual(orders["TEST-FERP-SCRAP"]["quantity"], 6)
+            self.assertEqual(orders["WO-PKT-YELLOW-001"]["quantity"], 1)
+            self.assertEqual(orders["WO-PKT-RED-001"]["quantity"], 1)
+            self.assertEqual(orders["WO-PKT-BLUE-001"]["quantity"], 3)
+            self.assertEqual(orders["WO-PKT-BLUE-001"]["materials"][0]["color"], "blue")
+            self.assertEqual(orders["WO-PKT-BLUE-001"]["materials"][0]["qtyPerUnit"], 2.0)
+            self.assertEqual(len(orders["WO-PKT-BLUE-001"]["materials"]), 5)
+            self.assertEqual(orders["WO-PKT-BLUE-001"]["materials"][-1]["itemType"], "consumable")
+            self.assertEqual(orders["WO-PKT-BLUE-001"]["materials"][-1]["itemCode"], "BANT-PKT-01")
+            self.assertEqual(
+                [row["operationName"] for row in orders["WO-PKT-BLUE-001"]["operations"]],
+                ["Kutu Koy", "Kullanim Kilavuzu Koy", "Paketi Kapat", "Bantla"],
+            )
+            self.assertEqual(sum(row["standardTimeSec"] for row in orders["WO-PKT-BLUE-001"]["operations"]), 45.0)
+
+    def test_file_import_can_skip_ferp_label_validation_for_fast_reload(self) -> None:
+        source_path = Path(__file__).resolve().parents[1] / "mes_web" / "ferp_import" / "ferp_work_orders.json"
+        with _temporary_directory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+
+            with patch("mes_web.oee_state.validate_label_payload") as validate_mock:
+                result = manager.import_work_orders_from_file(
+                    source_path,
+                    validate_ferp_labels=False,
+                    now=datetime(2026, 4, 28, 9, 0, tzinfo=timezone.utc),
+                )
+
+        validate_mock.assert_not_called()
+        self.assertEqual(result["total_count"], 6)
+        self.assertEqual(result["warnings"], [])
 
     def test_label_first_work_order_import_normalizes_runtime_state(self) -> None:
         with _temporary_directory() as temp_dir:
@@ -351,7 +393,7 @@ class FerpExportTests(unittest.TestCase):
 
 class FerpXlsExportTests(unittest.TestCase):
     def _ferp_xls_dir(self) -> Path:
-        return Path(__file__).resolve().parents[1] / "FERP_XLS"
+        return Path(__file__).resolve().parents[1] / "docs" / "FERP_XLS"
 
     def test_seeded_examples_include_conveyor_master_data_without_touching_sources(self) -> None:
         source_dir = self._ferp_xls_dir()
@@ -447,7 +489,7 @@ class FerpAcceptActiveEndpointTests(unittest.TestCase):
                 "MES_WEB_OEE_RUNTIME_STATE_PATH": str(state_path),
                 "MES_WEB_FERP_EXPORT_PENDING_DIR": str(export_dir),
                 "MES_WEB_FERP_EXPORT_EXAMPLES_DIR": str(Path(temp_dir) / "ferp_exports" / "examples"),
-                "MES_WEB_FERP_XLS_DIR": str(root_dir / "FERP_XLS"),
+                "MES_WEB_FERP_XLS_DIR": str(root_dir / "docs" / "FERP_XLS"),
                 "MES_WEB_FERP_LABELS_PATH": str(default_ferp_labels_path(root_dir)),
                 "MES_WEB_EXCEL_WORKBOOK_PATH": str(Path(temp_dir) / "mes.xlsx"),
             },
@@ -500,6 +542,19 @@ class FerpAcceptActiveEndpointTests(unittest.TestCase):
             "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=ITEM-1|MEASURE_ID=1|TRIGGER=TIMER",
             "2026-04-27T09:02:10Z",
         )
+        prepared_state = manager.read_state()
+        prepared_order = prepared_state["workOrders"]["ordersById"][order_id]
+        prepared_order["status"] = "pending_approval"
+        prepared_order["completedQty"] = 1
+        prepared_order["productionQty"] = 1
+        prepared_order["remainingQty"] = 0
+        prepared_order["autoCompletedAt"] = "2026-04-27T09:02:10Z"
+        for requirement in prepared_order.get("requirements", []):
+            requirement["completedQty"] = 1
+            requirement["productionQty"] = 1
+            requirement["remainingQty"] = 0
+        prepared_state["workOrders"]["activeOrderId"] = order_id
+        manager.write_state(prepared_state)
         prepared_state = manager.read_state()
         self.assertEqual(prepared_state["workOrders"]["ordersById"][order_id]["status"], "pending_approval")
 

@@ -23,6 +23,17 @@ const els = {
   activeOrderTitle: document.getElementById("activeOrderTitle"),
   activeOrderMeta: document.getElementById("activeOrderMeta"),
   activeOrderContents: document.getElementById("activeOrderContents"),
+  packagePanel: document.getElementById("packagePanel"),
+  packageStateText: document.getElementById("packageStateText"),
+  packageWarningText: document.getElementById("packageWarningText"),
+  packageReminderText: document.getElementById("packageReminderText"),
+  packageCounters: document.getElementById("packageCounters"),
+  packageRecipe: document.getElementById("packageRecipe"),
+  packageStartButton: document.getElementById("packageStartButton"),
+  packageFinishButton: document.getElementById("packageFinishButton"),
+  packageGoodButton: document.getElementById("packageGoodButton"),
+  packageReworkButton: document.getElementById("packageReworkButton"),
+  packageScrapButton: document.getElementById("packageScrapButton"),
   maintenancePanel: document.getElementById("maintenancePanel"),
   maintenanceTitle: document.getElementById("maintenanceTitle"),
   maintenanceProgress: document.getElementById("maintenanceProgress"),
@@ -397,6 +408,86 @@ function renderActiveOrderContents(order) {
   els.activeOrderContents.appendChild(createContentBadges(order.content_counts || {}));
 }
 
+function itemTypeLabel(itemType) {
+  const map = {
+    box: "Kutu",
+    bead: "Boncuk",
+    package: "Kagit Paket",
+    label: "Etiket",
+    consumable: "Sarf",
+  };
+  return map[String(itemType || "").trim().toLowerCase()] || "Malzeme";
+}
+
+function renderPackagePanel(displayOrder) {
+  const snapshot = state.snapshot || {};
+  const packageState = snapshot.package || {};
+  const station2 = packageState.station2 || {};
+  const counters = packageState.counters || {};
+  const warning = packageState.buffer_warning || {};
+  els.packageStateText.textContent = `Station 1: ${safeText(((packageState.station1 || {}).status), "idle")} / Station 2: ${safeText(station2.status, "idle")}`;
+  els.packageWarningText.textContent = safeText(warning.message, "-");
+  els.packageWarningText.className = `package-warning package-warning-${safeText(warning.level, "idle")}`;
+  els.packageReminderText.textContent = safeText(packageState.reminder, "Bitmis urun, Paketleme Bitir + kalite secimi sonrasi kaydedilir.");
+
+  const counterRows = [
+    ["Hedef", counters.target],
+    ["Tamamlanan", counters.completed],
+    ["GOOD", counters.good],
+    ["REWORK", counters.rework],
+    ["SCRAP", counters.scrap],
+    ["Kalan", counters.remaining],
+    ["Ort. sn", counters.average_cycle_sec],
+    ["Son sn", counters.last_cycle_sec],
+  ];
+  els.packageCounters.innerHTML = "";
+  for (const [label, value] of counterRows) {
+    const box = document.createElement("div");
+    box.className = "package-counter";
+    box.innerHTML = `<span>${label}</span><strong>${value ?? 0}</strong>`;
+    els.packageCounters.appendChild(box);
+  }
+
+  els.packageRecipe.innerHTML = "";
+  if (!displayOrder) {
+    els.packageRecipe.innerHTML = '<div class="empty-state">Paket recetesi icin is emri secin</div>';
+  } else {
+    const title = document.createElement("div");
+    title.className = "package-recipe-title";
+    title.innerHTML = `<strong>${safeText(displayOrder.stock_code, displayOrder.order_id)}</strong><span>${safeText(displayOrder.stock_name, "-")}</span>`;
+    els.packageRecipe.appendChild(title);
+    const list = document.createElement("div");
+    list.className = "package-material-list";
+    for (const row of displayOrder.requirements || []) {
+      const chip = document.createElement("div");
+      const colorClass = row.color ? ` color-${row.color}` : "";
+      chip.className = `package-material${colorClass}`;
+      chip.textContent = `${itemTypeLabel(row.item_type)}: ${safeText(row.item_name || row.stock_name || row.item_code || row.stock_code)} x${row.qty_per_unit ?? row.qty ?? 0}`;
+      list.appendChild(chip);
+    }
+    els.packageRecipe.appendChild(list);
+    const operations = Array.isArray(displayOrder.operations) ? displayOrder.operations : [];
+    if (operations.length > 0) {
+      const opList = document.createElement("div");
+      opList.className = "package-material-list";
+      for (const op of operations) {
+        const chip = document.createElement("div");
+        chip.className = "package-material package-operation";
+        chip.textContent = `${safeText(op.op_no)}. ${safeText(op.operation_name)} (${op.standard_time_sec ?? 0} sn)`;
+        opList.appendChild(chip);
+      }
+      els.packageRecipe.appendChild(opList);
+    }
+  }
+
+  els.packageStartButton.disabled = state.busy || !Boolean(packageState.can_start);
+  els.packageFinishButton.disabled = state.busy || !Boolean(packageState.can_finish);
+  const canQuality = Boolean(packageState.can_quality);
+  els.packageGoodButton.disabled = state.busy || !canQuality;
+  els.packageReworkButton.disabled = state.busy || !canQuality;
+  els.packageScrapButton.disabled = state.busy || !canQuality;
+}
+
 function renderPrimaryPanel() {
   const snapshot = state.snapshot || {};
   const workOrders = snapshot.work_orders || {};
@@ -419,6 +510,8 @@ function renderPrimaryPanel() {
   }
 
   renderActiveOrderContents(displayOrder);
+  const packageDisplayOrder = (snapshot.package || {}).display_order || displayOrder;
+  renderPackagePanel(packageDisplayOrder);
   els.bigActionButton.textContent = safeText(bigAction.label, "Hazirlaniyor");
   els.bigActionButton.disabled = state.busy || !Boolean(bigAction.enabled);
   els.systemStartButton.textContent = safeText(systemStart.label, "Sistem Start");
@@ -757,6 +850,39 @@ async function handleSystemStart() {
   });
 }
 
+async function handlePackageStart() {
+  await performAction(async () => {
+    await fetchJson(`/api/modules/${state.moduleId}/kiosk/packages/start`, {
+      method: "POST",
+      body: JSON.stringify(currentActorPayload()),
+    });
+    await loadBootstrap();
+  });
+}
+
+async function handlePackageFinish() {
+  await performAction(async () => {
+    await fetchJson(`/api/modules/${state.moduleId}/kiosk/packages/finish`, {
+      method: "POST",
+      body: JSON.stringify(currentActorPayload()),
+    });
+    await loadBootstrap();
+  });
+}
+
+async function handlePackageQuality(quality) {
+  await performAction(async () => {
+    await fetchJson(`/api/modules/${state.moduleId}/kiosk/packages/quality`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...currentActorPayload(),
+        quality,
+      }),
+    });
+    await loadBootstrap();
+  });
+}
+
 async function handleShiftStop() {
   await performAction(async () => {
     await fetchJson(`/api/modules/${state.moduleId}/kiosk/shift/stop`, {
@@ -911,6 +1037,11 @@ async function init() {
 
 els.bigActionButton.addEventListener("click", handleBigAction);
 els.systemStartButton.addEventListener("click", handleSystemStart);
+els.packageStartButton.addEventListener("click", handlePackageStart);
+els.packageFinishButton.addEventListener("click", handlePackageFinish);
+els.packageGoodButton.addEventListener("click", () => handlePackageQuality("GOOD"));
+els.packageReworkButton.addEventListener("click", () => handlePackageQuality("REWORK"));
+els.packageScrapButton.addEventListener("click", () => handlePackageQuality("SCRAP"));
 els.secondaryShiftStopButton.addEventListener("click", handleShiftStop);
 els.helpButton.addEventListener("click", handleHelpRequest);
 els.faultReasonButton.addEventListener("click", handleFaultReasonEdit);

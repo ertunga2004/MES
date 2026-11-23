@@ -75,6 +75,8 @@ class AppConfig:
     vision_bad_window_threshold: int = 2
     vision_recovery_window_threshold: int = 3
     excel_enabled: bool = True
+    workbook_schema_validation_enabled: bool = False
+    masterdata_validation_enabled: bool = False
     excel_flush_interval_sec: float = 1.0
     excel_batch_size: int = 25
     allowed_presets: tuple[str, ...] = field(default_factory=lambda: ALLOWED_PRESET_COMMANDS)
@@ -132,7 +134,7 @@ class AppConfig:
         raw = os.getenv("MES_WEB_FERP_LABELS_PATH")
         if raw:
             return Path(raw)
-        return self.root_dir / "README" / "ferp_labels.xlsx"
+        return self.root_dir / "docs" / "FERP_XLS" / "ferp_labels.xlsx"
 
     @property
     def ferp_export_pending_dir(self) -> Path:
@@ -153,7 +155,7 @@ class AppConfig:
         raw = os.getenv("MES_WEB_FERP_XLS_DIR")
         if raw:
             return Path(raw)
-        return self.root_dir / "FERP_XLS"
+        return self.root_dir / "docs" / "FERP_XLS"
 
     @property
     def excel_workbook_path(self) -> Path:
@@ -221,6 +223,8 @@ class AppConfig:
             vision_bad_window_threshold=int(os.getenv("MES_WEB_VISION_BAD_WINDOW_THRESHOLD", "2")),
             vision_recovery_window_threshold=int(os.getenv("MES_WEB_VISION_RECOVERY_WINDOW_THRESHOLD", "3")),
             excel_enabled=_env_bool("MES_WEB_EXCEL_ENABLED", True),
+            workbook_schema_validation_enabled=_env_bool("MES_WORKBOOK_SCHEMA_VALIDATION_ENABLED", False),
+            masterdata_validation_enabled=_env_bool("MES_MASTERDATA_VALIDATION_ENABLED", False),
             excel_flush_interval_sec=float(os.getenv("MES_WEB_EXCEL_FLUSH_INTERVAL_SEC", "1.0")),
             excel_batch_size=int(os.getenv("MES_WEB_EXCEL_BATCH_SIZE", "25")),
         )

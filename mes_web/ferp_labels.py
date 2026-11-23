@@ -14,7 +14,7 @@ except ModuleNotFoundError:  # pragma: no cover - environment-specific dependenc
     load_workbook = None
 
 
-FERP_LABELS_RELATIVE_PATH = Path("README") / "ferp_labels.xlsx"
+FERP_LABELS_RELATIVE_PATH = Path("docs") / "FERP_XLS" / "ferp_labels.xlsx"
 
 SUPPORTED_OBJECTS = {
     "mym4104",

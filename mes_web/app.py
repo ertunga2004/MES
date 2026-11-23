@@ -113,10 +113,45 @@ def _display_color_label(color_code: Any) -> str:
         "red": "Kirmizi",
         "blue": "Mavi",
         "yellow": "Sari",
+        "unknown": "Bilinmeyen",
     }.get(str(color_code or "").strip().lower(), "Bilinmeyen")
 
 
+def _project_kiosk_materials(order: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, int], str]:
+    raw_materials = order.get("materials") if isinstance(order.get("materials"), list) else []
+    projected: list[dict[str, Any]] = []
+    box_counts = {"red": 0, "blue": 0, "yellow": 0, "unknown": 0}
+    for index, row in enumerate(raw_materials, start=1):
+        if not isinstance(row, dict):
+            continue
+        item_type = str(row.get("itemType") or row.get("item_type") or "").strip().lower()
+        color_code = _display_color_code(row.get("color")) or ("unknown" if item_type == "box" else "")
+        qty = max(0.0, float(row.get("qtyPerUnit") or row.get("qty_per_unit") or 0))
+        projected.append(
+            {
+                "line_id": str(row.get("itemCode") or row.get("item_code") or index),
+                "item_code": str(row.get("itemCode") or row.get("item_code") or ""),
+                "item_name": str(row.get("itemName") or row.get("item_name") or ""),
+                "item_type": item_type,
+                "color": color_code,
+                "color_label": _display_color_label(color_code),
+                "qty_per_unit": qty,
+            }
+        )
+        if item_type == "box" and color_code in box_counts:
+            box_counts[color_code] += round(qty)
+    summary_parts = [
+        f"{_display_color_label(color_code)} {box_counts[color_code]}"
+        for color_code in ("red", "yellow", "blue")
+        if box_counts[color_code] > 0
+    ]
+    return projected, box_counts, " | ".join(summary_parts)
+
+
 def _project_kiosk_requirements(order: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, int], str]:
+    materials, box_counts, material_summary = _project_kiosk_materials(order)
+    if materials:
+        return materials, {key: box_counts.get(key, 0) for key in ("red", "blue", "yellow")}, material_summary
     raw_requirements = order.get("requirements") if isinstance(order.get("requirements"), list) else []
     projected: list[dict[str, Any]] = []
     content_counts = {"red": 0, "blue": 0, "yellow": 0}
@@ -169,6 +204,91 @@ def _project_kiosk_requirements(order: dict[str, Any]) -> tuple[list[dict[str, A
     return projected, content_counts, content_summary
 
 
+def _is_kiosk_package_work_order(order: dict[str, Any] | None) -> bool:
+    if not isinstance(order, dict):
+        return False
+    product_code = str(order.get("productCode") or order.get("productId") or order.get("stockCode") or "").strip().upper()
+    if product_code.startswith("PKT-"):
+        return True
+    if "PAKET" in str(order.get("erpType") or order.get("ferpScreen") or "").strip().upper():
+        return True
+    if str(order.get("operationCode") or "").strip().lower() == "packaging":
+        return True
+    if any(str(row or "").strip().lower() == "station2" for row in (order.get("stationPlan") if isinstance(order.get("stationPlan"), list) else [])):
+        return True
+    operations = order.get("operations") if isinstance(order.get("operations"), list) else []
+    if any(isinstance(row, dict) and str(row.get("stationId") or "").strip().lower() == "station2" for row in operations):
+        return True
+    materials = order.get("materials") if isinstance(order.get("materials"), list) else []
+    return bool(materials)
+
+
+def _station2_standard_time_total_sec(order: dict[str, Any]) -> float:
+    operations = order.get("operations") if isinstance(order.get("operations"), list) else []
+    total = 0.0
+    for row in operations:
+        if not isinstance(row, dict) or str(row.get("stationId") or "").strip().lower() != "station2":
+            continue
+        try:
+            total += max(0.0, float(row.get("standardTimeSec") or 0))
+        except (TypeError, ValueError):
+            continue
+    if total > 0:
+        return total
+    try:
+        return max(0.0, float(order.get("idealCycleTimeSec") or order.get("cycleTimeSec") or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _package_recipe_status(order: dict[str, Any] | None) -> tuple[bool, str]:
+    if not isinstance(order, dict):
+        return False, "Aktif paket is emri yok."
+    if not _is_kiosk_package_work_order(order):
+        return False, "Aktif is emri paketleme is emri degil. Paketleme icin paket is emrini baslatin."
+    materials = order.get("materials") if isinstance(order.get("materials"), list) else []
+    if not materials:
+        return False, "Paket recetesi eksik: materials alanini ekleyin."
+    operations = order.get("operations") if isinstance(order.get("operations"), list) else []
+    station2_ops = [
+        row
+        for row in operations
+        if isinstance(row, dict) and str(row.get("stationId") or "").strip().lower() == "station2"
+    ]
+    if not station2_ops:
+        return False, "Paket recetesi eksik: station2 paketleme operasyonlarini ekleyin."
+    if _station2_standard_time_total_sec(order) <= 0:
+        return False, "Paket recetesi eksik: station2 standardTimeSec veya idealCycleTimeSec ekleyin."
+    return True, "Paket recetesi hazir."
+
+
+def _project_kiosk_operations(order: dict[str, Any]) -> list[dict[str, Any]]:
+    operations = order.get("operations") if isinstance(order.get("operations"), list) else []
+    projected: list[dict[str, Any]] = []
+    for index, row in enumerate(operations, start=1):
+        if not isinstance(row, dict):
+            continue
+        try:
+            standard_time_sec = max(0.0, float(row.get("standardTimeSec") or 0))
+        except (TypeError, ValueError):
+            standard_time_sec = 0.0
+        try:
+            op_no = int(float(row.get("opNo") or index))
+        except (TypeError, ValueError):
+            op_no = index
+        projected.append(
+            {
+                "op_no": op_no,
+                "station_id": str(row.get("stationId") or "").strip(),
+                "operation_name": str(row.get("operationName") or "").strip(),
+                "standard_time_sec": standard_time_sec,
+                "source": str(row.get("source") or "").strip(),
+            }
+        )
+    projected.sort(key=lambda row: row["op_no"])
+    return projected
+
+
 def _queued_order_ids(raw_orders: dict[str, Any], sequence: list[Any]) -> list[str]:
     queued: list[str] = []
     seen: set[str] = set()
@@ -206,6 +326,7 @@ def _project_kiosk_work_order(order_id: str, order: dict[str, Any], state: dict[
         "stock_name": str(order.get("stockName") or ""),
         "product_color": str(order.get("productColor") or ""),
         "requirements": requirements,
+        "operations": _project_kiosk_operations(order),
         "content_counts": content_counts,
         "content_summary": content_summary,
         "qty": quantity,
@@ -217,6 +338,135 @@ def _project_kiosk_work_order(order_id: str, order: dict[str, Any], state: dict[
         "started_by": str(order.get("startedBy") or ""),
         "started_by_name": str(order.get("startedByName") or ""),
         "transition_reason": str(order.get("transitionReason") or ""),
+    }
+
+
+def _station1_buffer_warning(state: dict[str, Any], order: dict[str, Any] | None) -> dict[str, Any]:
+    station1 = state.get("station1") if isinstance(state.get("station1"), dict) else {}
+    buffer = station1.get("componentBuffer") if isinstance(station1.get("componentBuffer"), dict) else {}
+    observed = buffer.get("byColor") if isinstance(buffer.get("byColor"), dict) else {}
+    required = {"red": 0, "yellow": 0, "blue": 0}
+    if isinstance(order, dict):
+        _materials, box_counts, _summary = _project_kiosk_materials(order)
+        required.update({key: int(box_counts.get(key) or 0) for key in required})
+    missing = {
+        color: max(0, int(required[color]) - int(float(observed.get(color) or 0)))
+        for color in required
+    }
+    extra = {
+        color: max(0, int(float(observed.get(color) or 0)) - int(required[color]))
+        for color in required
+    }
+    has_missing = any(value > 0 for value in missing.values())
+    has_extra = any(value > 0 for value in extra.values())
+    if not isinstance(order, dict):
+        message = "Aktif paket recetesi yok."
+        level = "idle"
+    elif has_missing:
+        missing_text = ", ".join(f"{_display_color_label(color)} {qty}" for color, qty in missing.items() if qty > 0)
+        message = f"Eksik kutu dogrulamasi: {missing_text}."
+        level = "warning"
+    elif has_extra:
+        extra_text = ", ".join(f"{_display_color_label(color)} +{qty}" for color, qty in extra.items() if qty > 0)
+        message = f"Fazla dogrulanan kutu var: {extra_text}."
+        level = "warning"
+    else:
+        message = "Gerekli kutular dogrulandi."
+        level = "ok"
+    return {
+        "level": level,
+        "message": message,
+        "required_by_color": required,
+        "observed_by_color": {color: int(float(observed.get(color) or 0)) for color in ("red", "yellow", "blue")},
+        "missing_by_color": missing,
+        "extra_by_color": extra,
+        "since_work_order_id": str(buffer.get("sinceWorkOrderId") or ""),
+        "since": str(buffer.get("since") or ""),
+    }
+
+
+def _project_package_panel(
+    state: dict[str, Any],
+    active_order: dict[str, Any] | None,
+    display_order: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    station2 = state.get("station2") if isinstance(state.get("station2"), dict) else {}
+    cycles = station2.get("cyclesById") if isinstance(station2.get("cyclesById"), dict) else {}
+    active_cycle_id = str(station2.get("activeCycleId") or "")
+    pending_cycle_id = str(station2.get("pendingQualityCycleId") or "")
+    current_cycle = cycles.get(active_cycle_id) if active_cycle_id else cycles.get(pending_cycle_id) if pending_cycle_id else None
+    active_order_is_package = _is_kiosk_package_work_order(active_order)
+    package_order = active_order if active_order_is_package else display_order
+    if not _is_kiosk_package_work_order(package_order):
+        package_order = active_order
+    order_id = str((package_order or {}).get("orderId") or "")
+    order_snapshot = build_work_order_snapshot(state, package_order) if isinstance(package_order, dict) else {}
+    order_cycles = [
+        cycle
+        for cycle in cycles.values()
+        if isinstance(cycle, dict)
+        and str(cycle.get("workOrderId") or "") == order_id
+        and bool(cycle.get("countedInOee"))
+    ]
+    durations = [int(float(cycle.get("durationMs") or 0)) for cycle in order_cycles if int(float(cycle.get("durationMs") or 0)) > 0]
+    last_cycle = order_cycles[-1] if order_cycles else None
+    target_qty = int(order_snapshot.get("targetQty") or 0)
+    completed_qty = int(order_snapshot.get("fulfilledQty") or 0)
+    pending_quality = bool(pending_cycle_id)
+    active_packaging = bool(active_cycle_id)
+    recipe_ready, recipe_message = _package_recipe_status(active_order)
+    display_recipe_ready, display_recipe_message = _package_recipe_status(package_order)
+    buffer_warning = _station1_buffer_warning(state, package_order)
+    if active_order_is_package and isinstance(active_order, dict) and not recipe_ready:
+        buffer_warning = {
+            **buffer_warning,
+            "level": "warning",
+            "message": recipe_message,
+        }
+    elif not active_order_is_package and _is_kiosk_package_work_order(package_order):
+        buffer_warning = {
+            **buffer_warning,
+            "level": "warning",
+            "message": (
+                "Siradaki paket recetesi hazir. Paketleme icin paket is emrini baslatin."
+                if display_recipe_ready
+                else display_recipe_message
+            ),
+        }
+    elif isinstance(active_order, dict) and not active_order_is_package:
+        buffer_warning = {
+            **buffer_warning,
+            "level": "warning",
+            "message": recipe_message,
+        }
+    return {
+        "station1": copy.deepcopy(state.get("station1") if isinstance(state.get("station1"), dict) else {}),
+        "station2": {
+            "status": str(station2.get("status") or "idle"),
+            "active_cycle_id": active_cycle_id,
+            "pending_quality_cycle_id": pending_cycle_id,
+            "current_cycle": copy.deepcopy(current_cycle) if isinstance(current_cycle, dict) else None,
+        },
+        "can_start": bool(active_order) and recipe_ready and not active_packaging and not pending_quality and (target_qty <= 0 or completed_qty < target_qty),
+        "can_finish": active_packaging,
+        "can_quality": pending_quality,
+        "recipe_ready": recipe_ready,
+        "recipe_message": recipe_message,
+        "display_recipe_ready": display_recipe_ready,
+        "display_recipe_message": display_recipe_message,
+        "target_completed": active_order_is_package and target_qty > 0 and completed_qty >= target_qty,
+        "reminder": "Bitmis urun, Paketleme Bitir + kalite secimi sonrasi kaydedilir.",
+        "buffer_warning": buffer_warning,
+        "counters": {
+            "target": target_qty,
+            "completed": completed_qty,
+            "good": int(order_snapshot.get("goodQty") or 0),
+            "rework": int(order_snapshot.get("reworkQty") or 0),
+            "scrap": int(order_snapshot.get("scrapQty") or 0),
+            "remaining": int(order_snapshot.get("remainingQty") or 0),
+            "average_cycle_sec": round((sum(durations) / len(durations)) / 1000.0, 1) if durations else 0.0,
+            "last_cycle_sec": round(int(float((last_cycle or {}).get("durationMs") or 0)) / 1000.0, 1) if last_cycle else 0.0,
+        },
     }
 
 
@@ -357,11 +607,29 @@ def _build_kiosk_snapshot(module_id: str, device_id: str) -> dict[str, Any]:
         ),
         None,
     )
+    active_order_id = str((active_order or {}).get("order_id") or "").strip()
+    raw_active_order = raw_orders.get(active_order_id) if active_order_id else None
+    if not isinstance(raw_active_order, dict):
+        raw_active_order = None
     queue_orders = [row for row in ordered_orders if str(row.get("status") or "") == "queued"]
     top_queue_order_id = queued_order_ids[0] if queued_order_ids else ""
     for index, row in enumerate(queue_orders, start=1):
         row["queue_rank"] = index
         row["is_top_queue"] = str(row.get("order_id") or "") == top_queue_order_id
+    raw_package_display_order = raw_active_order if _is_kiosk_package_work_order(raw_active_order) else None
+    raw_package_display_order_id = active_order_id if raw_package_display_order is not None else ""
+    if raw_package_display_order is None:
+        for order_id in queued_order_ids:
+            candidate = raw_orders.get(order_id)
+            if _is_kiosk_package_work_order(candidate):
+                raw_package_display_order = candidate
+                raw_package_display_order_id = order_id
+                break
+    package_display_order = (
+        _project_kiosk_work_order(raw_package_display_order_id, raw_package_display_order, state)
+        if raw_package_display_order_id and isinstance(raw_package_display_order, dict)
+        else None
+    )
     opening_session = ((state.get("maintenance") or {}) if isinstance(state.get("maintenance"), dict) else {}).get("openingSession")
     closing_session = ((state.get("maintenance") or {}) if isinstance(state.get("maintenance"), dict) else {}).get("closingSession")
     recent_items: list[dict[str, Any]] = []
@@ -426,6 +694,10 @@ def _build_kiosk_snapshot(module_id: str, device_id: str) -> dict[str, Any]:
             "active_order": copy.deepcopy(active_order),
             "ordered": copy.deepcopy(ordered_orders),
             "queue": copy.deepcopy(queue_orders),
+        },
+        "package": {
+            **_project_package_panel(state, raw_active_order, raw_package_display_order),
+            "display_order": copy.deepcopy(package_display_order),
         },
         "recent_items": recent_items,
         "quality_options": ["GOOD", "REWORK", "SCRAP"],
@@ -773,6 +1045,33 @@ def create_app() -> FastAPI:
     def _refresh_after_kiosk_write(module_id: str, state: dict[str, Any] | None) -> None:
         store.refresh_oee_runtime_state(module_id, force=True)
         sync_work_order_runtime(state)
+
+    def _raise_package_http_error(exc: ValueError) -> None:
+        detail = str(exc)
+        code = detail.split(":", 1)[0]
+        conflict_codes = {
+            "SHIFT_NOT_ACTIVE",
+            "PACKAGE_ACTIVE_EXISTS",
+            "PACKAGE_ACTIVE_NOT_FOUND",
+            "PACKAGE_PENDING_QUALITY_EXISTS",
+            "PACKAGE_PENDING_QUALITY_NOT_FOUND",
+            "PACKAGE_CYCLE_ALREADY_FINALIZED",
+            "PACKAGE_CYCLE_NOT_FOUND",
+            "WORK_ORDER_TARGET_COMPLETED",
+        }
+        bad_request_codes = {
+            "WORK_ORDER_NOT_FOUND",
+            "WORK_ORDER_NOT_ACTIVE",
+            "PACKAGE_RECIPE_REQUIRED",
+            "PACKAGE_STANDARD_TIME_REQUIRED",
+            "PACKAGE_WORK_ORDER_INVALID",
+            "INVALID_PACKAGE_QUALITY",
+        }
+        if code in conflict_codes:
+            raise HTTPException(status_code=409, detail=detail) from exc
+        if code in bad_request_codes:
+            raise HTTPException(status_code=400, detail=detail) from exc
+        raise HTTPException(status_code=400, detail=detail) from exc
 
     @app.on_event("startup")
     async def on_startup() -> None:
@@ -1454,6 +1753,114 @@ def create_app() -> FastAPI:
             "ferp_export": ferp_export,
         }
 
+    @app.post("/api/modules/{module_id}/kiosk/packages/start")
+    async def kiosk_package_start(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        _ensure_module(module_id)
+        actor = _resolve_kiosk_actor(payload)
+        try:
+            result = oee_state_manager.start_package_cycle(
+                operator_code=actor["operator_code"],
+                operator_name=actor["operator_name"],
+            )
+        except ValueError as exc:
+            _raise_package_http_error(exc)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        stamp = utc_now_text()
+        updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
+        _refresh_after_kiosk_write(module_id, updated_state)
+        cycle = result.get("cycle") if isinstance(result.get("cycle"), dict) else {}
+        _record_kiosk_event(
+            "station2_package_started",
+            {**actor, "station_id": "station2", "package_cycle_id": str(cycle.get("cycleId") or "")},
+            received_at=str(cycle.get("startedAt") or stamp),
+        )
+        store.append_system_log(
+            module_id,
+            f"SYSTEM|KIOSK|PACKAGE_START|CYCLE={str(cycle.get('cycleId') or '')}|ORDER={str(cycle.get('workOrderId') or '')}",
+            topic="local/kiosk",
+            received_at=stamp,
+        )
+        return {
+            "status": "accepted",
+            "summary": str(result.get("summary") or ""),
+            "cycle": cycle,
+        }
+
+    @app.post("/api/modules/{module_id}/kiosk/packages/finish")
+    async def kiosk_package_finish(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        _ensure_module(module_id)
+        actor = _resolve_kiosk_actor(payload)
+        try:
+            result = oee_state_manager.finish_package_cycle()
+        except ValueError as exc:
+            _raise_package_http_error(exc)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        stamp = utc_now_text()
+        updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
+        _refresh_after_kiosk_write(module_id, updated_state)
+        cycle = result.get("cycle") if isinstance(result.get("cycle"), dict) else {}
+        _record_kiosk_event(
+            "station2_package_finished",
+            {**actor, "station_id": "station2", "package_cycle_id": str(cycle.get("cycleId") or "")},
+            received_at=str(cycle.get("finishedAt") or stamp),
+        )
+        store.append_system_log(
+            module_id,
+            f"SYSTEM|KIOSK|PACKAGE_FINISH|CYCLE={str(cycle.get('cycleId') or '')}|ORDER={str(cycle.get('workOrderId') or '')}",
+            topic="local/kiosk",
+            received_at=stamp,
+        )
+        return {
+            "status": "accepted",
+            "summary": str(result.get("summary") or ""),
+            "cycle": cycle,
+        }
+
+    @app.post("/api/modules/{module_id}/kiosk/packages/quality")
+    async def kiosk_package_quality(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        _ensure_module(module_id)
+        actor = _resolve_kiosk_actor(payload)
+        quality = str(payload.get("quality") or payload.get("classification") or "").strip().upper()
+        cycle_id = str(payload.get("package_cycle_id") or payload.get("packageCycleId") or payload.get("cycle_id") or payload.get("cycleId") or "").strip()
+        try:
+            result = oee_state_manager.finalize_package_cycle_quality(quality, cycle_id=cycle_id)
+        except ValueError as exc:
+            _raise_package_http_error(exc)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        stamp = utc_now_text()
+        updated_state = result.get("state") if isinstance(result.get("state"), dict) else None
+        _refresh_after_kiosk_write(module_id, updated_state)
+        cycle = result.get("cycle") if isinstance(result.get("cycle"), dict) else {}
+        order = result.get("order") if isinstance(result.get("order"), dict) else {}
+        quality_code = str(cycle.get("quality") or quality)
+        _record_kiosk_event(
+            f"station2_quality_{quality_code.lower()}",
+            {
+                **actor,
+                "station_id": "station2",
+                "package_cycle_id": str(cycle.get("cycleId") or ""),
+                "quality": quality_code,
+                "work_order_id": str(order.get("orderId") or ""),
+            },
+            received_at=str(cycle.get("qualityAt") or stamp),
+        )
+        store.append_system_log(
+            module_id,
+            f"SYSTEM|KIOSK|PACKAGE_QUALITY|CYCLE={str(cycle.get('cycleId') or '')}|QUALITY={quality_code}|ORDER={str(order.get('orderId') or '')}",
+            topic="local/kiosk",
+            received_at=stamp,
+        )
+        return {
+            "status": "accepted",
+            "summary": str(result.get("summary") or ""),
+            "cycle": cycle,
+            "order_id": str(order.get("orderId") or ""),
+            "quality": quality_code,
+        }
+
     @app.post("/api/modules/{module_id}/kiosk/quality/override")
     async def kiosk_quality_override(module_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         _ensure_module(module_id)
@@ -1627,7 +2034,11 @@ def create_app() -> FastAPI:
         if not candidates:
             raise HTTPException(status_code=404, detail="WORK_ORDER_SOURCE_NOT_FOUND")
         try:
-            result = oee_state_manager.import_work_orders_from_file(candidates[0], replace_existing=True)
+            result = oee_state_manager.import_work_orders_from_file(
+                candidates[0],
+                replace_existing=True,
+                validate_ferp_labels=False,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except OSError as exc:

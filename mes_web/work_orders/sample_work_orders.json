@@ -10,22 +10,354 @@
     "lblMUNT0_CODE": "ADET",
     "lblMTM00_NAME": "Kirmizi Kutu",
     "lblMTMM0_CODE": "STD-RED",
-    "lblMMFB0_QTY": 3,
+    "lblMMFB0_QTY": 1,
     "lblFPJ00_ID": "PRJ-RED-01",
-    "lblMMFB0_DESC": "Kirmizi kutu tek renk is emri",
+    "lblMMFB0_DESC": "Kirmizi paket icin kirmizi kutu is emri",
     "lblMFW00_CODE": "KNV-01",
     "lblMFW01_CODE": "IST-01",
     "lblMFWO0_CODE": "SORT",
     "lblMMFB4_SETUP_TIME": 30,
     "lblMMFB4_WORKER_COUNT": 1,
     "lblMMFB4_TIME": 15,
-    "lblMMFB4_SHIFT_TYPE": "SHIFT-A"
+    "lblMMFB4_SHIFT_TYPE": "SHIFT-A",
+    "requirements": [
+      {
+        "line_id": "RED-BOX",
+        "lblMTM00_CODE": "BOX-RED",
+        "lblMTM00_NAME": "Kirmizi Kutu",
+        "lblMMFB0_QTY": 1
+      }
+    ]
+  },
+  {
+    "erp_type": "Paketleme Is Emirleri",
+    "lblMMFB0_DATE": "2026-04-27",
+    "lblMMFB0_NUMBER": "WO-PKT-RED-001",
+    "lblMMFB0_PRNT_ORDER": 20,
+    "lblPRNT_ORDER_UPD": "h",
+    "lblMTMT0_CODE": "Mamul",
+    "lblMTM00_CODE": "PKT-RED",
+    "lblMUNT0_CODE": "ADET",
+    "lblMTM00_NAME": "Kirmizi Paket",
+    "lblMTMM0_CODE": "PKG-STD-RED",
+    "lblMMFB0_QTY": 1,
+    "lblFPJ00_ID": "PRJ-PKT-RED",
+    "lblMMFB0_DESC": "Kirmizi paket demo is emri",
+    "lblMFW00_CODE": "PKT-01",
+    "lblMFW01_CODE": "station2",
+    "lblMFWO0_CODE": "Packaging",
+    "lblMMFB4_SETUP_TIME": 30,
+    "lblMMFB4_WORKER_COUNT": 1,
+    "lblMMFB4_TIME": 45,
+    "lblMMFB4_SHIFT_TYPE": "SHIFT-A",
+    "routeId": "PKT-RENK-ROUTE-01",
+    "stationPlan": ["station1", "station2"],
+    "materials": [
+      {
+        "itemCode": "KUTU-KRM",
+        "itemName": "Kirmizi Kutu",
+        "itemType": "box",
+        "color": "red",
+        "qtyPerUnit": 1
+      },
+      {
+        "itemCode": "PKT-KIRMIZI",
+        "itemName": "Kirmizi Paket",
+        "itemType": "package",
+        "color": "red",
+        "qtyPerUnit": 1
+      },
+      {
+        "itemCode": "ETK-PKT-KIRMIZI",
+        "itemName": "Kirmizi Paket Etiketi",
+        "itemType": "label",
+        "qtyPerUnit": 1
+      },
+      {
+        "itemCode": "KLVZ-PKT-01",
+        "itemName": "Kullanim Kilavuzu",
+        "itemType": "consumable",
+        "qtyPerUnit": 1
+      },
+      {
+        "itemCode": "BANT-PKT-01",
+        "itemName": "Paket Bandi",
+        "itemType": "consumable",
+        "qtyPerUnit": 1
+      }
+    ],
+    "operations": [
+      {
+        "opNo": 10,
+        "stationId": "station2",
+        "operationName": "Kutu Koy",
+        "standardTimeSec": 12,
+        "source": "time_study"
+      },
+      {
+        "opNo": 20,
+        "stationId": "station2",
+        "operationName": "Kullanim Kilavuzu Koy",
+        "standardTimeSec": 8,
+        "source": "time_study"
+      },
+      {
+        "opNo": 30,
+        "stationId": "station2",
+        "operationName": "Paketi Kapat",
+        "standardTimeSec": 15,
+        "source": "time_study"
+      },
+      {
+        "opNo": 40,
+        "stationId": "station2",
+        "operationName": "Bantla",
+        "standardTimeSec": 10,
+        "source": "time_study"
+      }
+    ]
+  },
+  {
+    "erp_type": "Yari Mamul Is Emirleri",
+    "lblMMFB0_DATE": "2026-04-27",
+    "lblMMFB0_NUMBER": "41040003",
+    "lblMMFB0_PRNT_ORDER": 30,
+    "lblPRNT_ORDER_UPD": "h",
+    "lblMTMT0_CODE": "Yari Mamul",
+    "lblMTM00_CODE": "BOX-YEL",
+    "lblMUNT0_CODE": "ADET",
+    "lblMTM00_NAME": "Sari Kutu",
+    "lblMTMM0_CODE": "STD-YEL",
+    "lblMMFB0_QTY": 1,
+    "lblFPJ00_ID": "PRJ-YEL-03",
+    "lblMMFB0_DESC": "Sari paket icin sari kutu is emri",
+    "lblMFW00_CODE": "KNV-01",
+    "lblMFW01_CODE": "IST-01",
+    "lblMFWO0_CODE": "SORT",
+    "lblMMFB4_SETUP_TIME": 20,
+    "lblMMFB4_WORKER_COUNT": 1,
+    "lblMMFB4_TIME": 10,
+    "lblMMFB4_SHIFT_TYPE": "SHIFT-A",
+    "requirements": [
+      {
+        "line_id": "YELLOW-BOX",
+        "lblMTM00_CODE": "BOX-YEL",
+        "lblMTM00_NAME": "Sari Kutu",
+        "lblMMFB0_QTY": 1
+      }
+    ]
+  },
+  {
+    "erp_type": "Paketleme Is Emirleri",
+    "lblMMFB0_DATE": "2026-04-27",
+    "lblMMFB0_NUMBER": "WO-PKT-YELLOW-001",
+    "lblMMFB0_PRNT_ORDER": 40,
+    "lblPRNT_ORDER_UPD": "h",
+    "lblMTMT0_CODE": "Mamul",
+    "lblMTM00_CODE": "PKT-YELLOW",
+    "lblMUNT0_CODE": "ADET",
+    "lblMTM00_NAME": "Sari Paket",
+    "lblMTMM0_CODE": "PKG-STD-YELLOW",
+    "lblMMFB0_QTY": 1,
+    "lblFPJ00_ID": "PRJ-PKT-YELLOW",
+    "lblMMFB0_DESC": "Sari paket demo is emri",
+    "lblMFW00_CODE": "PKT-01",
+    "lblMFW01_CODE": "station2",
+    "lblMFWO0_CODE": "Packaging",
+    "lblMMFB4_SETUP_TIME": 30,
+    "lblMMFB4_WORKER_COUNT": 1,
+    "lblMMFB4_TIME": 45,
+    "lblMMFB4_SHIFT_TYPE": "SHIFT-A",
+    "routeId": "PKT-RENK-ROUTE-01",
+    "stationPlan": ["station1", "station2"],
+    "materials": [
+      {
+        "itemCode": "KUTU-SRI",
+        "itemName": "Sari Kutu",
+        "itemType": "box",
+        "color": "yellow",
+        "qtyPerUnit": 1
+      },
+      {
+        "itemCode": "PKT-SARI",
+        "itemName": "Sari Paket",
+        "itemType": "package",
+        "color": "yellow",
+        "qtyPerUnit": 1
+      },
+      {
+        "itemCode": "ETK-PKT-SARI",
+        "itemName": "Sari Paket Etiketi",
+        "itemType": "label",
+        "qtyPerUnit": 1
+      },
+      {
+        "itemCode": "KLVZ-PKT-01",
+        "itemName": "Kullanim Kilavuzu",
+        "itemType": "consumable",
+        "qtyPerUnit": 1
+      },
+      {
+        "itemCode": "BANT-PKT-01",
+        "itemName": "Paket Bandi",
+        "itemType": "consumable",
+        "qtyPerUnit": 1
+      }
+    ],
+    "operations": [
+      {
+        "opNo": 10,
+        "stationId": "station2",
+        "operationName": "Kutu Koy",
+        "standardTimeSec": 12,
+        "source": "time_study"
+      },
+      {
+        "opNo": 20,
+        "stationId": "station2",
+        "operationName": "Kullanim Kilavuzu Koy",
+        "standardTimeSec": 8,
+        "source": "time_study"
+      },
+      {
+        "opNo": 30,
+        "stationId": "station2",
+        "operationName": "Paketi Kapat",
+        "standardTimeSec": 15,
+        "source": "time_study"
+      },
+      {
+        "opNo": 40,
+        "stationId": "station2",
+        "operationName": "Bantla",
+        "standardTimeSec": 10,
+        "source": "time_study"
+      }
+    ]
+  },
+  {
+    "erp_type": "Is Emirleri",
+    "lblMMFB0_DATE": "2026-04-27",
+    "lblMMFB0_NUMBER": "41040004",
+    "lblMMFB0_PRNT_ORDER": 50,
+    "lblPRNT_ORDER_UPD": "h",
+    "lblMTMT0_CODE": "Mamul",
+    "lblMTM00_CODE": "BOX-BLUE",
+    "lblMUNT0_CODE": "ADET",
+    "lblMTM00_NAME": "Mavi Kutu",
+    "lblMTMM0_CODE": "STD-BLUE",
+    "lblMMFB0_QTY": 6,
+    "lblFPJ00_ID": "PRJ-BLU-04",
+    "lblMMFB0_DESC": "Uc mavi paket icin alti mavi kutu is emri",
+    "lblMFW00_CODE": "KNV-01",
+    "lblMFW01_CODE": "IST-02",
+    "lblMFWO0_CODE": "SORT",
+    "lblMMFB4_SETUP_TIME": 25,
+    "lblMMFB4_WORKER_COUNT": 1,
+    "lblMMFB4_TIME": 14,
+    "lblMMFB4_SHIFT_TYPE": "SHIFT-B",
+    "requirements": [
+      {
+        "line_id": "BLUE-BOX",
+        "lblMTM00_CODE": "BOX-BLUE",
+        "lblMTM00_NAME": "Mavi Kutu",
+        "lblMMFB0_QTY": 6
+      }
+    ]
+  },
+  {
+    "erp_type": "Paketleme Is Emirleri",
+    "lblMMFB0_DATE": "2026-04-27",
+    "lblMMFB0_NUMBER": "WO-PKT-BLUE-001",
+    "lblMMFB0_PRNT_ORDER": 60,
+    "lblPRNT_ORDER_UPD": "h",
+    "lblMTMT0_CODE": "Mamul",
+    "lblMTM00_CODE": "PKT-BLUE",
+    "lblMUNT0_CODE": "ADET",
+    "lblMTM00_NAME": "Mavi Paket",
+    "lblMTMM0_CODE": "PKG-STD-BLUE",
+    "lblMMFB0_QTY": 3,
+    "lblFPJ00_ID": "PRJ-PKT-BLUE",
+    "lblMMFB0_DESC": "Mavi paket demo is emri",
+    "lblMFW00_CODE": "PKT-01",
+    "lblMFW01_CODE": "station2",
+    "lblMFWO0_CODE": "Packaging",
+    "lblMMFB4_SETUP_TIME": 30,
+    "lblMMFB4_WORKER_COUNT": 1,
+    "lblMMFB4_TIME": 45,
+    "lblMMFB4_SHIFT_TYPE": "SHIFT-A",
+    "routeId": "PKT-RENK-ROUTE-01",
+    "stationPlan": ["station1", "station2"],
+    "materials": [
+      {
+        "itemCode": "KUTU-MVI",
+        "itemName": "Mavi Kutu",
+        "itemType": "box",
+        "color": "blue",
+        "qtyPerUnit": 2
+      },
+      {
+        "itemCode": "PKT-MAVI",
+        "itemName": "Mavi Paket",
+        "itemType": "package",
+        "color": "blue",
+        "qtyPerUnit": 1
+      },
+      {
+        "itemCode": "ETK-PKT-MAVI",
+        "itemName": "Mavi Paket Etiketi",
+        "itemType": "label",
+        "qtyPerUnit": 1
+      },
+      {
+        "itemCode": "KLVZ-PKT-01",
+        "itemName": "Kullanim Kilavuzu",
+        "itemType": "consumable",
+        "qtyPerUnit": 1
+      },
+      {
+        "itemCode": "BANT-PKT-01",
+        "itemName": "Paket Bandi",
+        "itemType": "consumable",
+        "qtyPerUnit": 1
+      }
+    ],
+    "operations": [
+      {
+        "opNo": 10,
+        "stationId": "station2",
+        "operationName": "Kutu Koy",
+        "standardTimeSec": 12,
+        "source": "time_study"
+      },
+      {
+        "opNo": 20,
+        "stationId": "station2",
+        "operationName": "Kullanim Kilavuzu Koy",
+        "standardTimeSec": 8,
+        "source": "time_study"
+      },
+      {
+        "opNo": 30,
+        "stationId": "station2",
+        "operationName": "Paketi Kapat",
+        "standardTimeSec": 15,
+        "source": "time_study"
+      },
+      {
+        "opNo": 40,
+        "stationId": "station2",
+        "operationName": "Bantla",
+        "standardTimeSec": 10,
+        "source": "time_study"
+      }
+    ]
   },
   {
     "erp_type": "Mamul Is Emirleri",
     "lblMMFB0_DATE": "2026-04-27",
     "lblMMFB0_NUMBER": "41040002",
-    "lblMMFB0_PRNT_ORDER": 20,
+    "lblMMFB0_PRNT_ORDER": 70,
     "lblPRNT_ORDER_UPD": "h",
     "lblMTMT0_CODE": "Mamul",
     "lblMTM00_CODE": "BOX-MIX",
@@ -64,54 +396,10 @@
     ]
   },
   {
-    "erp_type": "Yari Mamul Is Emirleri",
-    "lblMMFB0_DATE": "2026-04-27",
-    "lblMMFB0_NUMBER": "41040003",
-    "lblMMFB0_PRNT_ORDER": 30,
-    "lblPRNT_ORDER_UPD": "h",
-    "lblMTMT0_CODE": "Yari Mamul",
-    "lblMTM00_CODE": "BOX-YEL",
-    "lblMUNT0_CODE": "ADET",
-    "lblMTM00_NAME": "Sari Kutu",
-    "lblMTMM0_CODE": "STD-YEL",
-    "lblMMFB0_QTY": 2,
-    "lblFPJ00_ID": "PRJ-YEL-03",
-    "lblMMFB0_DESC": "Sari kutu deneme partisi",
-    "lblMFW00_CODE": "KNV-01",
-    "lblMFW01_CODE": "IST-01",
-    "lblMFWO0_CODE": "SORT",
-    "lblMMFB4_SETUP_TIME": 20,
-    "lblMMFB4_WORKER_COUNT": 1,
-    "lblMMFB4_TIME": 10,
-    "lblMMFB4_SHIFT_TYPE": "SHIFT-A"
-  },
-  {
-    "erp_type": "Is Emirleri",
-    "lblMMFB0_DATE": "2026-04-27",
-    "lblMMFB0_NUMBER": "41040004",
-    "lblMMFB0_PRNT_ORDER": 40,
-    "lblPRNT_ORDER_UPD": "h",
-    "lblMTMT0_CODE": "Mamul",
-    "lblMTM00_CODE": "BOX-BLUE",
-    "lblMUNT0_CODE": "ADET",
-    "lblMTM00_NAME": "Mavi Kutu",
-    "lblMTMM0_CODE": "STD-BLUE",
-    "lblMMFB0_QTY": 4,
-    "lblFPJ00_ID": "PRJ-BLU-04",
-    "lblMMFB0_DESC": "Mavi kutu ikinci vardiya",
-    "lblMFW00_CODE": "KNV-01",
-    "lblMFW01_CODE": "IST-02",
-    "lblMFWO0_CODE": "SORT",
-    "lblMMFB4_SETUP_TIME": 25,
-    "lblMMFB4_WORKER_COUNT": 1,
-    "lblMMFB4_TIME": 14,
-    "lblMMFB4_SHIFT_TYPE": "SHIFT-B"
-  },
-  {
     "erp_type": "Planlama Is Emirleri",
     "lblMMFB0_DATE": "2026-04-27",
     "lblMMFB0_NUMBER": "41040005",
-    "lblMMFB0_PRNT_ORDER": 50,
+    "lblMMFB0_PRNT_ORDER": 80,
     "lblPRNT_ORDER_UPD": "h",
     "lblMTMT0_CODE": "Mamul",
     "lblMTM00_CODE": "BOX-RED",
@@ -132,7 +420,7 @@
     "erp_type": "Is Emirleri",
     "lblMMFB0_DATE": "2026-04-27",
     "lblMMFB0_NUMBER": "41040006",
-    "lblMMFB0_PRNT_ORDER": 60,
+    "lblMMFB0_PRNT_ORDER": 90,
     "lblPRNT_ORDER_UPD": "e",
     "lblMTMT0_CODE": "Mamul",
     "lblMTM00_CODE": "BOX-BLUE",
@@ -156,7 +444,7 @@
     "erp_type": "Stok Degisim Is Emirleri",
     "lblMMFB0_DATE": "2026-04-27",
     "lblMMFB0_NUMBER": "41040007",
-    "lblMMFB0_PRNT_ORDER": 70,
+    "lblMMFB0_PRNT_ORDER": 100,
     "lblPRNT_ORDER_UPD": "h",
     "lblMTMT0_CODE": "Mamul",
     "lblMTM00_CODE": "BOX-MIX-PAIR",
@@ -192,7 +480,7 @@
     "erp_type": "Tamirat Is Emirleri",
     "lblMMFB0_DATE": "2026-04-27",
     "lblMMFB0_NUMBER": "41040008",
-    "lblMMFB0_PRNT_ORDER": 80,
+    "lblMMFB0_PRNT_ORDER": 110,
     "lblPRNT_ORDER_UPD": "h",
     "lblMTMT0_CODE": "Mamul",
     "lblFPJ00_ID": "PRJ-REP-08",

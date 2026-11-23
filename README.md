@@ -50,6 +50,23 @@ Ana adresler:
 - `Broker Offline` goruluyorsa once launcher'in kullandigi Python ortaminda `paho-mqtt` kurulu mu kontrol edilmelidir
 - MQTT client id varsayilan olarak benzersiz uretilir; ayni id ile iki MES Web acilmasi broker baglantisini titretir
 
+## MES Network Control v3.5
+
+Admin PowerShell oturumunda once sadece rapor alin:
+
+    Set-ExecutionPolicy Bypass -Scope Process -Force
+    .\MES_Network_Control.ps1 -Mode Report
+
+Ilk fazda sadece MES Web 8080 erisimi icin uygulanir:
+
+    .\MES_Network_Control.ps1 -Mode Apply -Scope MesOnly
+
+Geri alma sadece ilgili backup JSON ile yapilir:
+
+    .\MES_Network_Control.ps1 -Mode Rollback -BackupPath ".\network_backups\network-backup-YYYYMMDD-HHMMSS.json"
+
+Ilk fazda `MesAndSunshine`, `MqttBroker` ve `DisableBroadRules` kullanilmaz.
+
 ## Dokuman Haritasi
 
 - [Genel Mimari](README/architecture.md)
@@ -59,3 +76,35 @@ Ana adresler:
 - [MES Web](mes_web/README.md)
 - [Baslaticilar](Baslaticilar/README.md)
 - [AI Guide](README/AI_GUIDE.md)
+
+## Temiz Transfer Notu
+
+### Proje adi
+MES
+
+### Ne ise yarar
+Mini konveyor MES, kiosk, OEE ve kontrol yazilimlari.
+
+### Teknoloji
+Python FastAPI + PlatformIO/Arduino
+
+### Kurulum
+
+``powershell
+cd mes_web
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+``
+
+### Calistirma
+
+``powershell
+cd mes_web; python -m mes_web
+``
+
+### Eksik / kontrol edilecek noktalar
+- logs ve export dosyalari kopyalanmaz.
+- Excel/CSV/DB/JSONL dosyalari manuel kontrol gerektirir.
+- Bagimlilik durumu: Giyotin_kontrol\platformio.ini, Giyotin_kontrol\pc_app\requirements.txt, mes_web\requirements.txt, picktolight\requirements.txt, picktolight\esp32\picktolight_nokia5110\platformio.ini, raspberry\requirements.txt
+

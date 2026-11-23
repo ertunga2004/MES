@@ -99,7 +99,17 @@ def _project_recent_item(item_key: str, item: dict[str, Any]) -> dict[str, Any]:
         "correlation_status": str(item.get("correlation_status") or ""),
         "pick_trigger_source": str(item.get("pick_trigger_source") or ""),
         "review_required": bool(item.get("review_required")),
+        "station_id": str(item.get("station_id") or ""),
+        "oee_scope": str(item.get("oee_scope") or ""),
+        "count_in_oee": bool(item.get("count_in_oee")),
     }
+
+
+def _is_station1_quality_candidate(item: dict[str, Any]) -> bool:
+    return (
+        str(item.get("oee_scope") or "").strip() == "station1_component_transfer"
+        or str(item.get("station_id") or "").strip() == "station1"
+    )
 
 
 def _recent_completed_items(
@@ -114,7 +124,7 @@ def _recent_completed_items(
     seen: set[str] = set()
 
     def eligible(item: dict[str, Any]) -> bool:
-        if require_counted and not bool(item.get("count_in_oee")):
+        if require_counted and not (bool(item.get("count_in_oee")) or _is_station1_quality_candidate(item)):
             return False
         if min_completed_at is not None:
             completed_at = parse_iso_text(str(item.get("completed_at") or ""))

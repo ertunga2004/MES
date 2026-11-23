@@ -11,6 +11,29 @@ from mes_web.oee_state import OeeRuntimeStateManager, WorkOrderTransitionReasonR
 
 
 class OeeRuntimeStateManagerTests(unittest.TestCase):
+    def _sample_package_work_order(self) -> dict:
+        return {
+            "workOrderId": "WO-PKT-A-001",
+            "productId": "PKT-A",
+            "productName": "PKT-A Paket",
+            "targetQty": 3,
+            "materials": [
+                {"itemCode": "KUTU-KRM", "itemName": "Kirmizi Kutu", "itemType": "box", "color": "red", "qtyPerUnit": 1},
+                {"itemCode": "KUTU-SRI", "itemName": "Sari Kutu", "itemType": "box", "color": "yellow", "qtyPerUnit": 1},
+                {"itemCode": "BON-BYZ", "itemName": "Beyaz Boncuk", "itemType": "bead", "color": "white", "qtyPerUnit": 2},
+                {"itemCode": "KAGIT-PKT-01", "itemName": "Kagit Paket", "itemType": "package", "qtyPerUnit": 1},
+                {"itemCode": "ETK-PKT-A", "itemName": "Paket Etiketi", "itemType": "label", "qtyPerUnit": 1},
+                {"itemCode": "KLVZ-PKT-01", "itemName": "Kullanim Kilavuzu", "itemType": "consumable", "qtyPerUnit": 1},
+                {"itemCode": "BANT-PKT-01", "itemName": "Paket Bandi", "itemType": "consumable", "qtyPerUnit": 1},
+            ],
+            "operations": [
+                {"opNo": 10, "stationId": "station2", "operationName": "Kutu Koy", "standardTimeSec": 12},
+                {"opNo": 20, "stationId": "station2", "operationName": "Kullanim Kilavuzu Koy", "standardTimeSec": 8},
+                {"opNo": 30, "stationId": "station2", "operationName": "Paketi Kapat", "standardTimeSec": 15},
+                {"opNo": 40, "stationId": "station2", "operationName": "Bantla", "standardTimeSec": 10},
+            ],
+        }
+
     def test_default_runtime_state_starts_with_target_14_and_ideal_cycle_10(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
@@ -23,6 +46,53 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(state["shift"]["targetQty"], 14)
             self.assertEqual(state["shift"]["idealCycleMs"], 10000)
             self.assertEqual(state["shift"]["idealCycleSec"], 10.0)
+            self.assertEqual(state["version"], 6)
+            self.assertEqual(state["station1"]["stationId"], "station1")
+            self.assertEqual(state["station2"]["stationId"], "station2")
+
+    def test_runtime_v5_state_migrates_station_blocks_and_robot_completion_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "oee_runtime_state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "version": 5,
+                        "counts": {
+                            "total": 1,
+                            "good": 1,
+                            "rework": 0,
+                            "scrap": 0,
+                            "byColor": {
+                                "red": {"total": 0, "good": 0, "rework": 0, "scrap": 0},
+                                "yellow": {"total": 0, "good": 0, "rework": 0, "scrap": 0},
+                                "blue": {"total": 1, "good": 1, "rework": 0, "scrap": 0},
+                            },
+                        },
+                        "itemsById": {
+                            "42": {
+                                "item_id": "42",
+                                "color": "blue",
+                                "final_color": "blue",
+                                "classification": "GOOD",
+                                "completed_at": "2026-04-02T08:01:05+03:00",
+                                "count_in_oee": True,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            state = OeeRuntimeStateManager(state_path).read_state()
+
+            self.assertEqual(state["version"], 6)
+            self.assertEqual(state["station1"]["transferCount"], 1)
+            self.assertEqual(state["station1"]["byColor"]["blue"], 1)
+            self.assertEqual(state["station2"]["stationId"], "station2")
+            self.assertEqual(state["counts"]["total"], 0)
+            self.assertFalse(state["itemsById"]["42"]["count_in_oee"])
+            self.assertEqual(state["itemsById"]["42"]["station_id"], "station1")
+            self.assertEqual(state["itemsById"]["42"]["oee_scope"], "station1_component_transfer")
 
     def test_startup_deactivation_closes_open_shift(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -125,7 +195,7 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
         self.assertEqual(snapshot["plannedStopMs"], 0)
         self.assertEqual(snapshot["plannedStopBudgetMs"], 0)
 
-    def test_pickplace_done_counts_completed_item_as_good(self) -> None:
+    def test_pickplace_done_records_station1_transfer_not_final_product(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
             manager.apply_control("shift_start", now=datetime(2026, 4, 2, 8, 0, 0))
@@ -141,13 +211,17 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
 
             state = manager.read_state()
             self.assertTrue(changed)
-            self.assertEqual(state["counts"]["total"], 1)
-            self.assertEqual(state["counts"]["good"], 1)
-            self.assertEqual(state["counts"]["byColor"]["blue"]["total"], 1)
-            self.assertEqual(state["counts"]["byColor"]["blue"]["good"], 1)
+            self.assertEqual(state["counts"]["total"], 0)
+            self.assertEqual(state["counts"]["good"], 0)
+            self.assertEqual(state["counts"]["byColor"]["blue"]["total"], 0)
+            self.assertEqual(state["counts"]["byColor"]["blue"]["good"], 0)
+            self.assertEqual(state["station1"]["transferCount"], 1)
+            self.assertEqual(state["station1"]["byColor"]["blue"], 1)
             self.assertEqual(state["itemsById"]["42"]["classification"], "GOOD")
+            self.assertFalse(state["itemsById"]["42"]["count_in_oee"])
+            self.assertEqual(state["itemsById"]["42"]["station_id"], "station1")
 
-    def test_pick_released_counts_completed_item_once(self) -> None:
+    def test_pick_released_records_station1_transfer_once(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
             manager.apply_control("shift_start", now=datetime(2026, 4, 2, 8, 0, 0))
@@ -168,8 +242,9 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
 
             state = manager.read_state()
             self.assertTrue(changed)
-            self.assertEqual(state["counts"]["total"], 1)
-            self.assertEqual(state["counts"]["good"], 1)
+            self.assertEqual(state["counts"]["total"], 0)
+            self.assertEqual(state["counts"]["good"], 0)
+            self.assertEqual(state["station1"]["transferCount"], 1)
             self.assertEqual(state["itemsById"]["42"]["released_at"], "2026-04-02T08:01:05Z")
             self.assertEqual(state["itemsById"]["42"]["completed_at"], "2026-04-02T08:01:05Z")
 
@@ -180,10 +255,11 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
 
             state = manager.read_state()
             self.assertFalse(changed)
-            self.assertEqual(state["counts"]["total"], 1)
-            self.assertEqual(state["counts"]["good"], 1)
+            self.assertEqual(state["counts"]["total"], 0)
+            self.assertEqual(state["counts"]["good"], 0)
+            self.assertEqual(state["station1"]["transferCount"], 1)
 
-    def test_reused_item_id_starts_new_cycle_and_counts_robot_completion(self) -> None:
+    def test_reused_item_id_starts_new_cycle_and_records_station1_transfer(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
             manager.import_work_orders(
@@ -242,11 +318,12 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             state = manager.read_state()
             current_item = state["itemsById"]["42"]
             archived_keys = [key for key in state["itemsById"] if key.startswith("archived:42:")]
-            self.assertEqual(state["counts"]["total"], 1)
-            self.assertEqual(state["counts"]["good"], 1)
+            self.assertEqual(state["counts"]["total"], 0)
+            self.assertEqual(state["counts"]["good"], 0)
+            self.assertEqual(state["station1"]["transferCount"], 1)
             self.assertEqual(current_item["completed_at"], "2026-04-02T08:01:05+03:00")
             self.assertEqual(current_item["color"], "red")
-            self.assertEqual(current_item["work_order_id"], "WO-RED-REUSE")
+            self.assertEqual(current_item.get("work_order_id", ""), "WO-RED-REUSE")
             self.assertEqual(current_item["inventory_match_key"], "")
             self.assertTrue(archived_keys)
             self.assertEqual(state["workOrders"]["inventoryByProduct"]["blue"]["itemIds"][0], archived_keys[0])
@@ -257,8 +334,110 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
                 work_order,
                 now=datetime(2026, 4, 2, 8, 1, 5, tzinfo=timezone(timedelta(hours=3))),
             )
+            self.assertEqual(work_order["status"], "pending_approval")
             self.assertEqual(work_order["productionQty"], 1)
+            self.assertEqual(work_order_snapshot["fulfilledQty"], 1)
             self.assertGreater(work_order_snapshot["performance"], 0.0)
+
+    def test_package_cycle_happy_path_counts_station2_final_product(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            manager.import_work_orders([self._sample_package_work_order()], now=datetime(2026, 4, 2, 7, 55, 0, tzinfo=timezone.utc))
+            manager.apply_control("shift_start", now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=timezone.utc))
+            manager.start_work_order("WO-PKT-A-001", operator_code="OP-PKG", now=datetime(2026, 4, 2, 8, 0, 5, tzinfo=timezone.utc))
+
+            start_result = manager.start_package_cycle(now=datetime(2026, 4, 2, 8, 1, 0, tzinfo=timezone.utc))
+            finish_result = manager.finish_package_cycle(now=datetime(2026, 4, 2, 8, 1, 45, tzinfo=timezone.utc))
+            quality_result = manager.finalize_package_cycle_quality("GOOD", now=datetime(2026, 4, 2, 8, 1, 50, tzinfo=timezone.utc))
+
+            state = manager.read_state()
+            order = state["workOrders"]["ordersById"]["WO-PKT-A-001"]
+            snapshot = build_work_order_snapshot(state, order, now=datetime(2026, 4, 2, 8, 2, 0, tzinfo=timezone.utc))
+            self.assertEqual(start_result["cycle"]["cycleId"], "PKG-WO-PKT-A-001-0001")
+            self.assertEqual(finish_result["cycle"]["state"], "pending_quality")
+            self.assertEqual(quality_result["cycle"]["state"], "completed_good")
+            self.assertEqual(state["counts"]["total"], 1)
+            self.assertEqual(state["counts"]["good"], 1)
+            self.assertEqual(state["station2"]["qualityCounts"]["GOOD"], 1)
+            self.assertEqual(order["completedQty"], 1)
+            self.assertEqual(order["productionQty"], 1)
+            self.assertEqual(order["remainingQty"], 2)
+            self.assertEqual(snapshot["targetQty"], 3)
+            self.assertEqual(snapshot["fulfilledQty"], 1)
+            self.assertEqual(snapshot["goodQty"], 1)
+            self.assertEqual(snapshot["quality"], 1.0)
+            self.assertEqual(snapshot["idealCycleSec"], 45.0)
+
+    def test_package_cycle_rejects_invalid_state_transitions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            manager.import_work_orders([self._sample_package_work_order()], now=datetime(2026, 4, 2, 7, 55, 0, tzinfo=timezone.utc))
+            manager.apply_control("shift_start", now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=timezone.utc))
+            manager.start_work_order("WO-PKT-A-001", operator_code="OP-PKG", now=datetime(2026, 4, 2, 8, 0, 5, tzinfo=timezone.utc))
+
+            with self.assertRaisesRegex(ValueError, "PACKAGE_ACTIVE_NOT_FOUND"):
+                manager.finish_package_cycle(now=datetime(2026, 4, 2, 8, 0, 30, tzinfo=timezone.utc))
+            manager.start_package_cycle(now=datetime(2026, 4, 2, 8, 1, 0, tzinfo=timezone.utc))
+            with self.assertRaisesRegex(ValueError, "PACKAGE_ACTIVE_EXISTS"):
+                manager.start_package_cycle(now=datetime(2026, 4, 2, 8, 1, 1, tzinfo=timezone.utc))
+            finish_result = manager.finish_package_cycle(now=datetime(2026, 4, 2, 8, 1, 45, tzinfo=timezone.utc))
+            with self.assertRaisesRegex(ValueError, "PACKAGE_PENDING_QUALITY_EXISTS"):
+                manager.start_package_cycle(now=datetime(2026, 4, 2, 8, 1, 50, tzinfo=timezone.utc))
+            with self.assertRaisesRegex(ValueError, "INVALID_PACKAGE_QUALITY"):
+                manager.finalize_package_cycle_quality("BAD", now=datetime(2026, 4, 2, 8, 1, 51, tzinfo=timezone.utc))
+            manager.finalize_package_cycle_quality("REWORK", now=datetime(2026, 4, 2, 8, 1, 55, tzinfo=timezone.utc))
+            with self.assertRaisesRegex(ValueError, "PACKAGE_PENDING_QUALITY_NOT_FOUND"):
+                manager.finalize_package_cycle_quality("GOOD", now=datetime(2026, 4, 2, 8, 1, 56, tzinfo=timezone.utc))
+            with self.assertRaisesRegex(ValueError, "PACKAGE_CYCLE_ALREADY_FINALIZED"):
+                manager.finalize_package_cycle_quality(
+                    "SCRAP",
+                    cycle_id=finish_result["cycle"]["cycleId"],
+                    now=datetime(2026, 4, 2, 8, 1, 57, tzinfo=timezone.utc),
+                )
+
+    def test_package_cancelled_cycle_does_not_count_in_oee(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            manager.import_work_orders([self._sample_package_work_order()], now=datetime(2026, 4, 2, 7, 55, 0, tzinfo=timezone.utc))
+            manager.apply_control("shift_start", now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=timezone.utc))
+            manager.start_work_order("WO-PKT-A-001", operator_code="OP-PKG", now=datetime(2026, 4, 2, 8, 0, 5, tzinfo=timezone.utc))
+
+            manager.start_package_cycle(now=datetime(2026, 4, 2, 8, 1, 0, tzinfo=timezone.utc))
+            result = manager.cancel_package_cycle(reason="hatali baslangic", now=datetime(2026, 4, 2, 8, 1, 5, tzinfo=timezone.utc))
+
+            state = manager.read_state()
+            order = state["workOrders"]["ordersById"]["WO-PKT-A-001"]
+            self.assertEqual(result["cycle"]["state"], "void")
+            self.assertFalse(result["cycle"]["countedInOee"])
+            self.assertEqual(state["counts"]["total"], 0)
+            self.assertEqual(order["completedQty"], 0)
+
+    def test_package_start_blocks_when_target_completed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            manager.import_work_orders([self._sample_package_work_order()], now=datetime(2026, 4, 2, 7, 55, 0, tzinfo=timezone.utc))
+            manager.apply_control("shift_start", now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=timezone.utc))
+            manager.start_work_order("WO-PKT-A-001", operator_code="OP-PKG", now=datetime(2026, 4, 2, 8, 0, 5, tzinfo=timezone.utc))
+
+            for index, quality in enumerate(("GOOD", "SCRAP", "REWORK"), start=1):
+                base_minute = 1 + index
+                manager.start_package_cycle(now=datetime(2026, 4, 2, 8, base_minute, 0, tzinfo=timezone.utc))
+                manager.finish_package_cycle(now=datetime(2026, 4, 2, 8, base_minute, 45, tzinfo=timezone.utc))
+                manager.finalize_package_cycle_quality(quality, now=datetime(2026, 4, 2, 8, base_minute, 50, tzinfo=timezone.utc))
+
+            state = manager.read_state()
+            order = state["workOrders"]["ordersById"]["WO-PKT-A-001"]
+            snapshot = build_work_order_snapshot(state, order, now=datetime(2026, 4, 2, 8, 5, 0, tzinfo=timezone.utc))
+            self.assertEqual(order["status"], "pending_approval")
+            self.assertEqual(order["completedQty"], 3)
+            self.assertEqual(order["remainingQty"], 0)
+            self.assertEqual(state["counts"]["total"], 3)
+            self.assertEqual(state["counts"]["good"], 1)
+            self.assertEqual(state["counts"]["rework"], 1)
+            self.assertEqual(state["counts"]["scrap"], 1)
+            self.assertAlmostEqual(snapshot["quality"], 1 / 3)
+            with self.assertRaisesRegex(ValueError, "WORK_ORDER_TARGET_COMPLETED"):
+                manager.start_package_cycle(now=datetime(2026, 4, 2, 8, 5, 30, tzinfo=timezone.utc))
 
     def test_quality_override_finds_archived_completed_item_after_item_id_reuse(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -336,10 +515,11 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
 
             state = manager.read_state()
             self.assertEqual(state["counts"]["good"], 0)
-            self.assertEqual(state["counts"]["scrap"], 1)
+            self.assertEqual(state["counts"]["scrap"], 0)
             self.assertEqual(state["counts"]["byColor"]["blue"]["good"], 0)
-            self.assertEqual(state["counts"]["byColor"]["blue"]["scrap"], 1)
+            self.assertEqual(state["counts"]["byColor"]["blue"]["scrap"], 0)
             self.assertEqual(state["itemsById"]["42"]["classification"], "SCRAP")
+            self.assertEqual(state["itemsById"]["42"]["oee_scope"], "station1_component_transfer")
             self.assertEqual(result["override"]["previous_classification"], "GOOD")
 
     def test_planned_stop_is_excluded_from_availability_denominator(self) -> None:
@@ -706,7 +886,7 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(state["trend"][-1]["reason"], "pick_released")
             self.assertGreaterEqual(len(state["trend"]), 3)
 
-    def test_work_order_moves_to_pending_approval_when_required_quantity_is_finished(self) -> None:
+    def test_station1_transfer_moves_component_order_to_pending_without_final_oee_count(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
             manager.import_work_orders(
@@ -741,12 +921,65 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(work_order["completedQty"], 2)
             self.assertEqual(work_order["productionQty"], 2)
             self.assertEqual(work_order["remainingQty"], 0)
-            self.assertTrue(str(work_order["autoCompletedAt"]).startswith("2026-04-02T08:03:00"))
-            self.assertGreaterEqual(float(work_order_snapshot["performance"]), 0.0)
+            self.assertEqual(work_order["autoCompletedAt"], "2026-04-02T08:03:00Z")
+            self.assertGreater(float(work_order_snapshot["performance"]), 0.0)
+            self.assertEqual(state["counts"]["total"], 0)
+            self.assertEqual(state["counts"]["good"], 0)
+            self.assertEqual(state["station1"]["transferCount"], 2)
+            self.assertEqual(state["itemsById"]["100"]["station_id"], "station1")
+            self.assertEqual(state["itemsById"]["100"]["oee_scope"], "station1_component_transfer")
+            self.assertFalse(state["itemsById"]["100"]["count_in_oee"])
+            self.assertEqual(state["itemsById"]["100"]["work_order_id"], "WO-RED-001")
+            self.assertEqual(state["recentItemIds"][:2], ["101", "100"])
             self.assertEqual(state["workOrders"]["transitionLog"][0]["eventType"], "auto_completed")
-            self.assertIn("PERF=", state["workOrders"]["transitionLog"][0]["note"])
-            self.assertIn("Plansiz Durus=", state["workOrders"]["transitionLog"][0]["note"])
             self.assertEqual(state["workOrders"]["activeOrderId"], "WO-RED-001")
+
+    def test_kiosk_quality_override_can_scrap_station1_transfer_and_reopen_component_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = OeeRuntimeStateManager(Path(temp_dir) / "oee_runtime_state.json")
+            local_tz = timezone(timedelta(hours=3))
+            manager.import_work_orders(
+                [
+                    {
+                        "order_id": "WO-RED-OVERRIDE",
+                        "stock_code": "BOX-RED",
+                        "stock_name": "Kirmizi Kutu",
+                        "qty": 1,
+                        "unit": "ADET",
+                        "product_color": "red",
+                    }
+                ],
+                now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=local_tz),
+            )
+            manager.apply_control("shift_start", now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=local_tz))
+            manager.start_work_order("WO-RED-OVERRIDE", operator_code="OP-001", now=datetime(2026, 4, 2, 8, 1, 0, tzinfo=local_tz))
+            manager.apply_mega_log(
+                "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=150|MEASURE_ID=15|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=4500|PENDING=1",
+                "2026-04-02T08:02:00+03:00",
+            )
+            manager.apply_mega_log(
+                "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=150|MEASURE_ID=15|TRIGGER=TIMER",
+                "2026-04-02T08:02:03+03:00",
+            )
+
+            result = manager.apply_kiosk_quality_override(
+                "150",
+                "SCRAP",
+                reason_text="ezik",
+                now=datetime(2026, 4, 2, 8, 3, 0, tzinfo=local_tz),
+            )
+
+            state = manager.read_state()
+            order = state["workOrders"]["ordersById"]["WO-RED-OVERRIDE"]
+            self.assertEqual(result["item"]["classification"], "SCRAP")
+            self.assertEqual(result["override"]["reason_text"], "ezik")
+            self.assertEqual(order["status"], "active")
+            self.assertEqual(order["completedQty"], 0)
+            self.assertEqual(order["productionQty"], 0)
+            self.assertEqual(order["remainingQty"], 1)
+            self.assertEqual(state["workOrders"]["activeOrderId"], "WO-RED-OVERRIDE")
+            self.assertEqual(state["counts"]["total"], 0)
+            self.assertEqual(state["counts"]["scrap"], 0)
 
     def test_import_work_orders_accepts_ferp_production_label_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -820,8 +1053,19 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
 
             state = manager.read_state()
             orders = state["workOrders"]["ordersById"]
-            self.assertEqual(result["total_count"], 8)
-            self.assertEqual(result["queued_count"], 8)
+            self.assertEqual(
+                state["workOrders"]["orderSequence"][:6],
+                [
+                    "41040001",
+                    "WO-PKT-RED-001",
+                    "41040003",
+                    "WO-PKT-YELLOW-001",
+                    "41040004",
+                    "WO-PKT-BLUE-001",
+                ],
+            )
+            self.assertEqual(result["total_count"], 11)
+            self.assertEqual(result["queued_count"], 11)
             sample_rows = json.loads(sample_path.read_text(encoding="utf-8"))
             disallowed_top_level_keys = {
                 "order_id",
@@ -840,12 +1084,35 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertIn("41040002", orders)
             self.assertIn("41040006", orders)
             self.assertIn("41040008", orders)
+            self.assertIn("WO-PKT-YELLOW-001", orders)
+            self.assertIn("WO-PKT-RED-001", orders)
+            self.assertIn("WO-PKT-BLUE-001", orders)
             self.assertEqual(orders["41040002"]["quantity"], 6)
             self.assertEqual(len(orders["41040002"]["requirements"]), 3)
             self.assertEqual(orders["41040005"]["cycleTimeMs"], 0)
             self.assertEqual(orders["41040006"]["cycleTimeMs"], 15000)
             self.assertEqual(orders["41040008"]["lotCode"], "LOT-YEL-01")
             self.assertEqual(orders["41040008"]["partyNo"], "P-20260427-A")
+            self.assertEqual(orders["41040001"]["quantity"], 1)
+            self.assertEqual(orders["41040003"]["quantity"], 1)
+            self.assertEqual(orders["41040004"]["quantity"], 6)
+            self.assertEqual(orders["WO-PKT-YELLOW-001"]["quantity"], 1)
+            self.assertEqual(orders["WO-PKT-YELLOW-001"]["productCode"], "PKT-YELLOW")
+            self.assertEqual(orders["WO-PKT-YELLOW-001"]["materials"][0]["color"], "yellow")
+            self.assertEqual(orders["WO-PKT-RED-001"]["quantity"], 1)
+            self.assertEqual(orders["WO-PKT-RED-001"]["productCode"], "PKT-RED")
+            self.assertEqual(orders["WO-PKT-RED-001"]["materials"][0]["color"], "red")
+            self.assertEqual(orders["WO-PKT-BLUE-001"]["quantity"], 3)
+            self.assertEqual(orders["WO-PKT-BLUE-001"]["productCode"], "PKT-BLUE")
+            self.assertEqual(orders["WO-PKT-BLUE-001"]["materials"][0]["color"], "blue")
+            self.assertEqual(orders["WO-PKT-BLUE-001"]["materials"][0]["qtyPerUnit"], 2.0)
+            self.assertEqual(len(orders["WO-PKT-BLUE-001"]["materials"]), 5)
+            self.assertEqual(orders["WO-PKT-BLUE-001"]["materials"][-1]["itemCode"], "BANT-PKT-01")
+            self.assertEqual(
+                [row["operationName"] for row in orders["WO-PKT-BLUE-001"]["operations"]],
+                ["Kutu Koy", "Kullanim Kilavuzu Koy", "Paketi Kapat", "Bantla"],
+            )
+            self.assertEqual(sum(row["standardTimeSec"] for row in orders["WO-PKT-BLUE-001"]["operations"]), 45.0)
 
     def test_operator_acceptance_closes_pending_work_order_but_metrics_stop_at_auto_complete(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -875,20 +1142,24 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
                 "2026-04-02T08:10:00+03:00",
             )
 
-            accept_result = manager.accept_active_work_order(now=datetime(2026, 4, 2, 8, 16, 0, tzinfo=local_tz))
-
             state = manager.read_state()
             work_order = state["workOrders"]["ordersById"]["WO-RED-ACCEPT"]
             snapshot = build_work_order_snapshot(state, work_order, now=datetime(2026, 4, 2, 8, 16, 0, tzinfo=local_tz))
-            self.assertEqual(work_order["status"], "completed")
-            self.assertEqual(work_order["completedAt"], "2026-04-02T08:16:00.000+03:00")
+            self.assertEqual(work_order["status"], "pending_approval")
+            self.assertEqual(work_order["completedAt"], "")
             self.assertEqual(work_order["autoCompletedAt"], "2026-04-02T08:10:00+03:00")
-            self.assertEqual(snapshot["elapsedMs"], 10 * 60 * 1000)
+            self.assertEqual(snapshot["fulfilledQty"], 1)
+            self.assertEqual(state["workOrders"]["activeOrderId"], "WO-RED-ACCEPT")
+            self.assertEqual(state["workOrders"]["lastCompletedOrderId"], "")
+
+            manager.accept_active_work_order(now=datetime(2026, 4, 2, 8, 16, 0, tzinfo=local_tz))
+
+            state = manager.read_state()
+            accepted_order = state["workOrders"]["ordersById"]["WO-RED-ACCEPT"]
+            self.assertEqual(accepted_order["status"], "completed")
             self.assertEqual(state["workOrders"]["activeOrderId"], "")
             self.assertEqual(state["workOrders"]["lastCompletedOrderId"], "WO-RED-ACCEPT")
-            self.assertEqual(state["workOrders"]["lastCompletedAt"], "2026-04-02T08:16:00.000+03:00")
-            self.assertIn("Oto Tamam=2026-04-02T08:10:00+03:00", state["workOrders"]["completionLog"][0]["note"])
-            self.assertEqual(accept_result["order"]["status"], "completed")
+            self.assertEqual(state["counts"]["total"], 0)
 
     def test_work_order_snapshot_uses_target_qty_and_reference_cycle(self) -> None:
         local_tz = timezone(timedelta(hours=3))
@@ -1004,17 +1275,18 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             )
 
             state = manager.read_state()
-            self.assertEqual(state["workOrders"]["inventoryByProduct"]["red"]["quantity"], 1)
+            self.assertNotIn("red", state["workOrders"]["inventoryByProduct"])
+            self.assertEqual(state["station1"]["transferCount"], 1)
 
             manager.start_work_order("WO-RED-002", operator_code="OP-002", now=datetime(2026, 4, 2, 8, 5, 0))
 
             state = manager.read_state()
             work_order = state["workOrders"]["ordersById"]["WO-RED-002"]
             self.assertEqual(work_order["status"], "active")
-            self.assertEqual(work_order["inventoryConsumedQty"], 1)
-            self.assertEqual(work_order["remainingQty"], 1)
+            self.assertEqual(work_order["inventoryConsumedQty"], 0)
+            self.assertEqual(work_order["remainingQty"], 2)
             self.assertNotIn("red", state["workOrders"]["inventoryByProduct"])
-            self.assertEqual(state["itemsById"]["200"]["work_order_id"], "WO-RED-002")
+            self.assertEqual(state["itemsById"]["200"]["work_order_id"], "")
 
             manager.apply_mega_log(
                 "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=201|MEASURE_ID=21|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=4500|PENDING=1",
@@ -1027,10 +1299,12 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
 
             state = manager.read_state()
             work_order = state["workOrders"]["ordersById"]["WO-RED-002"]
-            self.assertEqual(work_order["status"], "pending_approval")
-            self.assertEqual(work_order["inventoryConsumedQty"], 1)
+            self.assertEqual(work_order["status"], "active")
+            self.assertEqual(work_order["inventoryConsumedQty"], 0)
             self.assertEqual(work_order["productionQty"], 1)
-            self.assertEqual(work_order["completedQty"], 2)
+            self.assertEqual(work_order["completedQty"], 1)
+            self.assertEqual(work_order["remainingQty"], 1)
+            self.assertEqual(state["station1"]["transferCount"], 2)
             self.assertEqual(state["workOrders"]["activeOrderId"], "WO-RED-002")
 
     def test_quality_override_scrap_removes_off_order_item_from_inventory(self) -> None:
@@ -1133,12 +1407,11 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             rollback_result = manager.rollback_active_work_order(now=datetime(2026, 4, 2, 8, 3, 0))
             state = manager.read_state()
             rolled_back_order = state["workOrders"]["ordersById"]["WO-ROLLBACK-A"]
-            self.assertEqual(rollback_result["returned_to_inventory"], 2)
+            self.assertEqual(rollback_result["returned_to_inventory"], 0)
             self.assertEqual(rolled_back_order["status"], "queued")
             self.assertEqual(rolled_back_order["completedQty"], 0)
             self.assertEqual(rolled_back_order["remainingQty"], 3)
-            self.assertEqual(state["workOrders"]["inventoryByProduct"]["red"]["quantity"], 2)
-            self.assertCountEqual(state["workOrders"]["inventoryByProduct"]["red"]["itemIds"], ["600", "601"])
+            self.assertNotIn("red", state["workOrders"]["inventoryByProduct"])
             self.assertEqual(state["itemsById"]["600"]["work_order_id"], "")
             self.assertEqual(state["itemsById"]["601"]["work_order_id"], "")
 
@@ -1146,14 +1419,14 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             state = manager.read_state()
             reassigned_order = state["workOrders"]["ordersById"]["WO-ROLLBACK-B"]
             reassigned_snapshot = build_work_order_snapshot(state, reassigned_order, now=datetime(2026, 4, 2, 8, 4, 0, tzinfo=timezone.utc))
-            self.assertEqual(start_result["inventory_used"], 2)
-            self.assertEqual(reassigned_order["status"], "pending_approval")
-            self.assertEqual(reassigned_order["inventoryConsumedQty"], 2)
-            self.assertEqual(state["itemsById"]["600"]["work_order_id"], "WO-ROLLBACK-B")
-            self.assertEqual(state["itemsById"]["601"]["work_order_id"], "WO-ROLLBACK-B")
+            self.assertEqual(start_result["inventory_used"], 0)
+            self.assertEqual(reassigned_order["status"], "active")
+            self.assertEqual(reassigned_order["inventoryConsumedQty"], 0)
+            self.assertEqual(state["itemsById"]["600"]["work_order_id"], "")
+            self.assertEqual(state["itemsById"]["601"]["work_order_id"], "")
             self.assertNotIn("red", state["workOrders"]["inventoryByProduct"])
-            self.assertEqual(reassigned_snapshot["goodQty"], 2)
-            self.assertEqual(reassigned_snapshot["fulfilledQty"], 2)
+            self.assertEqual(reassigned_snapshot["goodQty"], 0)
+            self.assertEqual(reassigned_snapshot["fulfilledQty"], 0)
 
     def test_reset_work_orders_clears_queue_inventory_and_item_links(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1323,7 +1596,15 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ACTIVE_WORK_ORDER_EXISTS"):
                 manager.start_work_order("WO-BLUE-003", operator_code="OP-003", now=datetime(2026, 4, 2, 8, 1, 30, tzinfo=local_tz))
 
-            manager.accept_active_work_order(now=datetime(2026, 4, 2, 8, 2, 0, tzinfo=local_tz))
+            state = manager.read_state()
+            first_order = state["workOrders"]["ordersById"]["WO-RED-003"]
+            first_order["status"] = "completed"
+            first_order["completedAt"] = "2026-04-02T08:02:00+03:00"
+            first_order["autoCompletedAt"] = "2026-04-02T08:02:00+03:00"
+            state["workOrders"]["activeOrderId"] = ""
+            state["workOrders"]["lastCompletedOrderId"] = "WO-RED-003"
+            state["workOrders"]["lastCompletedAt"] = "2026-04-02T08:02:00+03:00"
+            manager.write_state(state)
 
             with self.assertRaises(WorkOrderTransitionReasonRequired):
                 manager.start_work_order("WO-BLUE-003", operator_code="OP-003", now=datetime(2026, 4, 2, 8, 5, 0, tzinfo=local_tz))
@@ -1384,6 +1665,7 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(requirements["RED"]["completedQty"], 1)
             self.assertEqual(requirements["YEL"]["completedQty"], 1)
             self.assertEqual(requirements["BLU"]["completedQty"], 0)
+            self.assertEqual(state["station1"]["transferCount"], 2)
 
             manager.apply_mega_log(
                 "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=402|MEASURE_ID=42|COLOR=MAVI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=4500|PENDING=1",
@@ -1400,6 +1682,7 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(work_order["completedQty"], 3)
             self.assertEqual(work_order["remainingQty"], 0)
             self.assertEqual(work_order["productionQty"], 3)
+            self.assertEqual(state["station1"]["transferCount"], 3)
             self.assertEqual(state["workOrders"]["activeOrderId"], "WO-MIX-001")
 
     def test_start_work_order_consumes_legacy_completed_items_from_inventory_backfill(self) -> None:
@@ -1505,6 +1788,7 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
 
             state = manager.read_state()
             self.assertEqual(state["workOrders"]["ordersById"]["WO-RED-REOPEN"]["status"], "pending_approval")
+            self.assertEqual(state["workOrders"]["ordersById"]["WO-RED-REOPEN"]["completedQty"], 1)
 
             manager.apply_quality_override("910", "SCRAP", now=datetime(2026, 4, 2, 8, 12, 0, tzinfo=local_tz))
 
@@ -1514,27 +1798,9 @@ class OeeRuntimeStateManagerTests(unittest.TestCase):
             self.assertEqual(reopened_order["completedQty"], 0)
             self.assertEqual(reopened_order["remainingQty"], 1)
             self.assertEqual(reopened_order["autoCompletedAt"], "")
-
-            manager.apply_mega_log(
-                "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=911|MEASURE_ID=92|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=4500|PENDING=1",
-                "2026-04-02T08:15:00+03:00",
-            )
-            manager.apply_mega_log(
-                "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=911|MEASURE_ID=92|TRIGGER=TIMER",
-                "2026-04-02T08:15:00+03:00",
-            )
-            manager.accept_active_work_order(now=datetime(2026, 4, 2, 8, 16, 0, tzinfo=local_tz))
-
-            state = manager.read_state()
-            closed_order = state["workOrders"]["ordersById"]["WO-RED-REOPEN"]
-            snapshot = build_work_order_snapshot(state, closed_order, now=datetime(2026, 4, 2, 8, 16, 0, tzinfo=local_tz))
-            self.assertEqual(closed_order["status"], "completed")
-            self.assertEqual(closed_order["autoCompletedAt"], "2026-04-02T08:15:00+03:00")
-            self.assertEqual(closed_order["completedAt"], "2026-04-02T08:16:00.000+03:00")
-            self.assertEqual(snapshot["elapsedMs"], 15 * 60 * 1000)
-            self.assertEqual(snapshot["goodQty"], 1)
-            self.assertEqual(snapshot["scrapQty"], 1)
-            self.assertEqual(snapshot["fulfilledQty"], 1)
+            self.assertEqual(state["station1"]["transferCount"], 1)
+            with self.assertRaisesRegex(ValueError, "WORK_ORDER_PENDING_APPROVAL_NOT_FOUND"):
+                manager.accept_active_work_order(now=datetime(2026, 4, 2, 8, 16, 0, tzinfo=local_tz))
 
     def test_opening_checklist_duration_stays_outside_oee(self) -> None:
         state = {

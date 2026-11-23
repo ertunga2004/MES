@@ -4,7 +4,7 @@ Bu dokuman MES ile FERP arasindaki JSON sozlesmesini tarif eder. UI dili MES ola
 
 ## Tek Kaynak
 
-- Label kaynagi: `README/ferp_labels.xlsx`
+- Label kaynagi: `docs/FERP_XLS/ferp_labels.xlsx`
 - Registry kodu: `mes_web/ferp_labels.py`
 - Excel okunamazsa registry fonksiyonlari acik hata doner.
 - Import akisi registry hatasinda is emrini dusurmez; response icinde warning doner.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -61,6 +62,29 @@ class _FakeRuntimeService:
 
 
 class KioskAppTests(unittest.TestCase):
+    def _sample_package_work_order(self) -> dict:
+        return {
+            "workOrderId": "WO-PKT-A-001",
+            "productId": "PKT-A",
+            "productName": "PKT-A Paket",
+            "targetQty": 3,
+            "materials": [
+                {"itemCode": "KUTU-KRM", "itemName": "Kirmizi Kutu", "itemType": "box", "color": "red", "qtyPerUnit": 1},
+                {"itemCode": "KUTU-SRI", "itemName": "Sari Kutu", "itemType": "box", "color": "yellow", "qtyPerUnit": 1},
+                {"itemCode": "BON-BYZ", "itemName": "Beyaz Boncuk", "itemType": "bead", "color": "white", "qtyPerUnit": 2},
+                {"itemCode": "KAGIT-PKT-01", "itemName": "Kagit Paket", "itemType": "package", "qtyPerUnit": 1},
+                {"itemCode": "ETK-PKT-A", "itemName": "Paket Etiketi", "itemType": "label", "qtyPerUnit": 1},
+                {"itemCode": "KLVZ-PKT-01", "itemName": "Kullanim Kilavuzu", "itemType": "consumable", "qtyPerUnit": 1},
+                {"itemCode": "BANT-PKT-01", "itemName": "Paket Bandi", "itemType": "consumable", "qtyPerUnit": 1},
+            ],
+            "operations": [
+                {"opNo": 10, "stationId": "station2", "operationName": "Kutu Koy", "standardTimeSec": 12},
+                {"opNo": 20, "stationId": "station2", "operationName": "Kullanim Kilavuzu Koy", "standardTimeSec": 8},
+                {"opNo": 30, "stationId": "station2", "operationName": "Paketi Kapat", "standardTimeSec": 15},
+                {"opNo": 40, "stationId": "station2", "operationName": "Bantla", "standardTimeSec": 10},
+            ],
+        }
+
     def _build_client(self):
         if TestClient is None or app_module is None:
             self.skipTest("fastapi is not installed")
@@ -245,6 +269,248 @@ class KioskAppTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(runtime_service.mqtt_client.published, ["start"])
+
+    def test_kiosk_package_endpoints_complete_station2_final_product(self) -> None:
+        client, config, manager, store, runtime_service = self._build_client()
+        manager.import_work_orders([self._sample_package_work_order()])
+        manager.apply_control("shift_start")
+        manager.start_work_order("WO-PKT-A-001", operator_code="OP-PKG")
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        start = client.post(
+            f"/api/modules/{config.module_id}/kiosk/packages/start",
+            json={"device_id": "kiosk-1", "operator_id": "1"},
+        )
+        finish = client.post(
+            f"/api/modules/{config.module_id}/kiosk/packages/finish",
+            json={"device_id": "kiosk-1", "operator_id": "1"},
+        )
+        quality = client.post(
+            f"/api/modules/{config.module_id}/kiosk/packages/quality",
+            json={"device_id": "kiosk-1", "operator_id": "1", "quality": "GOOD"},
+        )
+
+        self.assertEqual(start.status_code, 200)
+        self.assertEqual(finish.status_code, 200)
+        self.assertEqual(quality.status_code, 200)
+        self.assertEqual(start.json()["cycle"]["cycleId"], "PKG-WO-PKT-A-001-0001")
+        state = manager.read_state()
+        self.assertEqual(state["counts"]["total"], 1)
+        self.assertEqual(state["counts"]["good"], 1)
+        self.assertEqual(state["workOrders"]["ordersById"]["WO-PKT-A-001"]["completedQty"], 1)
+        event_types = [row[0] for row in runtime_service.excel_sink.kiosk_events]
+        self.assertIn("station2_package_started", event_types)
+        self.assertIn("station2_package_finished", event_types)
+        self.assertIn("station2_quality_good", event_types)
+
+    def test_kiosk_package_endpoint_error_codes_are_explicit(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+
+        no_shift = client.post(
+            f"/api/modules/{config.module_id}/kiosk/packages/start",
+            json={"device_id": "kiosk-1", "operator_id": "1"},
+        )
+        self.assertEqual(no_shift.status_code, 409)
+        self.assertEqual(no_shift.json()["detail"], "SHIFT_NOT_ACTIVE")
+
+        manager.apply_control("shift_start")
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        no_order = client.post(
+            f"/api/modules/{config.module_id}/kiosk/packages/start",
+            json={"device_id": "kiosk-1", "operator_id": "1"},
+        )
+        self.assertEqual(no_order.status_code, 400)
+        self.assertEqual(no_order.json()["detail"], "WORK_ORDER_NOT_FOUND")
+
+        manager.import_work_orders([self._sample_package_work_order()])
+        manager.start_work_order("WO-PKT-A-001", operator_code="OP-PKG")
+        active_missing = client.post(
+            f"/api/modules/{config.module_id}/kiosk/packages/finish",
+            json={"device_id": "kiosk-1", "operator_id": "1"},
+        )
+        self.assertEqual(active_missing.status_code, 409)
+        self.assertEqual(active_missing.json()["detail"], "PACKAGE_ACTIVE_NOT_FOUND")
+
+        start = client.post(
+            f"/api/modules/{config.module_id}/kiosk/packages/start",
+            json={"device_id": "kiosk-1", "operator_id": "1"},
+        )
+        self.assertEqual(start.status_code, 200)
+        repeat_start = client.post(
+            f"/api/modules/{config.module_id}/kiosk/packages/start",
+            json={"device_id": "kiosk-1", "operator_id": "1"},
+        )
+        self.assertEqual(repeat_start.status_code, 409)
+        self.assertEqual(repeat_start.json()["detail"], "PACKAGE_ACTIVE_EXISTS")
+
+        finish = client.post(
+            f"/api/modules/{config.module_id}/kiosk/packages/finish",
+            json={"device_id": "kiosk-1", "operator_id": "1"},
+        )
+        self.assertEqual(finish.status_code, 200)
+        bad_quality = client.post(
+            f"/api/modules/{config.module_id}/kiosk/packages/quality",
+            json={"device_id": "kiosk-1", "operator_id": "1", "quality": "BAD"},
+        )
+        self.assertEqual(bad_quality.status_code, 400)
+        self.assertEqual(bad_quality.json()["detail"], "INVALID_PACKAGE_QUALITY")
+        quality = client.post(
+            f"/api/modules/{config.module_id}/kiosk/packages/quality",
+            json={"device_id": "kiosk-1", "operator_id": "1", "quality": "SCRAP"},
+        )
+        self.assertEqual(quality.status_code, 200)
+        repeat_quality = client.post(
+            f"/api/modules/{config.module_id}/kiosk/packages/quality",
+            json={
+                "device_id": "kiosk-1",
+                "operator_id": "1",
+                "quality": "GOOD",
+                "package_cycle_id": finish.json()["cycle"]["cycleId"],
+            },
+        )
+        self.assertEqual(repeat_quality.status_code, 409)
+        self.assertEqual(repeat_quality.json()["detail"], "PACKAGE_CYCLE_ALREADY_FINALIZED")
+
+    def test_kiosk_bootstrap_exposes_package_recipe_and_station_buffer_warning(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders([self._sample_package_work_order()])
+        manager.apply_control("shift_start")
+        manager.start_work_order("WO-PKT-A-001", operator_code="OP-PKG")
+        manager.apply_mega_log(
+            "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=101|MEASURE_ID=101|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=100|PENDING=1",
+            "2026-04-02T08:01:00Z",
+        )
+        manager.apply_mega_log("MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=101|MEASURE_ID=101|TRIGGER=TIMER", "2026-04-02T08:01:01Z")
+        manager.apply_mega_log(
+            "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=102|MEASURE_ID=102|COLOR=SARI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=100|PENDING=1",
+            "2026-04-02T08:01:02Z",
+        )
+        manager.apply_mega_log("MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=102|MEASURE_ID=102|TRIGGER=TIMER", "2026-04-02T08:01:03Z")
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        response = client.get(f"/api/modules/{config.module_id}/kiosk/bootstrap", params={"device_id": "kiosk-1"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        active_order = payload["work_orders"]["active_order"]
+        self.assertEqual(active_order["order_id"], "WO-PKT-A-001")
+        self.assertEqual(active_order["qty"], 3)
+        self.assertEqual(active_order["requirements"][0]["item_type"], "box")
+        self.assertEqual(payload["package"]["counters"]["target"], 3)
+        self.assertTrue(payload["package"]["recipe_ready"])
+        self.assertTrue(payload["package"]["can_start"])
+        self.assertEqual(payload["package"]["buffer_warning"]["level"], "ok")
+        self.assertEqual(payload["package"]["buffer_warning"]["observed_by_color"]["red"], 1)
+        self.assertEqual(payload["package"]["buffer_warning"]["observed_by_color"]["yellow"], 1)
+
+    def test_kiosk_package_panel_uses_next_package_recipe_while_component_order_is_active(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {
+                    "order_id": "WO-RED-COMPONENT",
+                    "stock_code": "BOX-RED",
+                    "stock_name": "Kirmizi Kutu",
+                    "qty": 1,
+                    "color": "red",
+                    "cycle_time_sec": 15,
+                },
+                self._sample_package_work_order(),
+            ]
+        )
+        manager.apply_control("shift_start")
+        manager.start_work_order("WO-RED-COMPONENT", operator_code="OP-BOX")
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        response = client.get(f"/api/modules/{config.module_id}/kiosk/bootstrap", params={"device_id": "kiosk-1"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["work_orders"]["active_order"]["order_id"], "WO-RED-COMPONENT")
+        self.assertFalse(payload["package"]["recipe_ready"])
+        self.assertTrue(payload["package"]["display_recipe_ready"])
+        self.assertEqual(payload["package"]["display_order"]["order_id"], "WO-PKT-A-001")
+        self.assertNotIn("materials", payload["package"]["buffer_warning"]["message"])
+        self.assertIn("paket is emrini baslatin", payload["package"]["buffer_warning"]["message"])
+        self.assertEqual(
+            [row["operation_name"] for row in payload["package"]["display_order"]["operations"]],
+            ["Kutu Koy", "Kullanim Kilavuzu Koy", "Paketi Kapat", "Bantla"],
+        )
+
+    def test_kiosk_bootstrap_shows_station1_transfer_quality_candidate_without_final_oee_count(self) -> None:
+        client, config, manager, _store, _runtime_service = self._build_client()
+        manager.apply_control("shift_start", now=datetime(2026, 4, 2, 8, 0, 0, tzinfo=timezone(timedelta(hours=3))))
+        manager.import_work_orders(
+            [
+                {
+                    "order_id": "WO-RED-COMPONENT",
+                    "stock_code": "BOX-RED",
+                    "stock_name": "Kirmizi Kutu",
+                    "qty": 1,
+                    "color": "red",
+                    "cycle_time_sec": 15,
+                }
+            ]
+        )
+        manager.start_work_order("WO-RED-COMPONENT", operator_code="OP-BOX")
+        manager.apply_mega_log(
+            "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=501|MEASURE_ID=51|COLOR=KIRMIZI|DECISION_SOURCE=CORE_STABLE|TRAVEL_MS=4500|PENDING=1",
+            "2026-04-02T08:02:00+03:00",
+        )
+        manager.apply_mega_log(
+            "MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=501|MEASURE_ID=51|TRIGGER=TIMER",
+            "2026-04-02T08:02:03+03:00",
+        )
+
+        response = client.get(f"/api/modules/{config.module_id}/kiosk/bootstrap", params={"device_id": "kiosk-1"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["line_status"]["production"]["total"], 0)
+        self.assertEqual(payload["recent_items"][0]["item_id"], "501")
+        self.assertTrue(payload["recent_items"][0]["can_override"])
+        self.assertEqual(payload["recent_items"][0]["oee_scope"], "station1_component_transfer")
+        active_order = payload["work_orders"]["active_order"]
+        self.assertEqual(active_order["order_id"], "WO-RED-COMPONENT")
+        self.assertEqual(active_order["status"], "pending_approval")
+
+    def test_work_order_folder_reload_skips_slow_ferp_label_validation(self) -> None:
+        client, config, manager, _store, _runtime_service = self._build_client()
+
+        with patch.object(manager, "import_work_orders_from_file", wraps=manager.import_work_orders_from_file) as import_mock:
+            response = client.post(f"/api/modules/{config.module_id}/work-orders/reload", json={})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(import_mock.called)
+        self.assertFalse(import_mock.call_args.kwargs["validate_ferp_labels"])
+
+    def test_kiosk_package_start_requires_package_recipe_in_active_order(self) -> None:
+        client, config, manager, store, _runtime_service = self._build_client()
+        manager.import_work_orders(
+            [
+                {
+                    "order_id": "WO-LEGACY-BOX",
+                    "stock_code": "BOX-RED",
+                    "stock_name": "Kirmizi Kutu",
+                    "qty": 1,
+                    "color": "red",
+                    "cycle_time_sec": 15,
+                }
+            ]
+        )
+        manager.apply_control("shift_start")
+        manager.start_work_order("WO-LEGACY-BOX", operator_code="OP-BOX")
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+
+        response = client.get(f"/api/modules/{config.module_id}/kiosk/bootstrap", params={"device_id": "kiosk-1"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["package"]["recipe_ready"])
+        self.assertFalse(payload["package"]["can_start"])
+        self.assertEqual(payload["package"]["buffer_warning"]["level"], "warning")
+        self.assertNotIn("materials", payload["package"]["recipe_message"])
+        self.assertIn("paketleme is emri degil", payload["package"]["recipe_message"])
 
     def test_non_top_kiosk_work_order_requires_reason(self) -> None:
         client, config, manager, store, _runtime_service = self._build_client()

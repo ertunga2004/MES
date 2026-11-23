@@ -825,7 +825,7 @@ class DashboardStore:
 
             module["work_orders"] = {
                 "enabled": True,
-                "manual_coating": manual_coating_progress(payload),
+                "manual_coating": manual_coating_progress(payload, cutting_enabled=self.config.cutting_workflow_enabled),
                 "updated_at": payload.get("lastUpdatedAt") or payload.get("lastSnapshotLoggedAt") or module["work_orders"].get("updated_at"),
                 "controls": {
                     "tolerance_ms": _duration_ms(

@@ -1270,6 +1270,7 @@ function renderWorkOrders(snapshot) {
   const summary = workOrders.summary || {};
   const controls = workOrders.controls || {};
   const activeOrder = workOrders.active_order;
+  const cutting = workOrders.manual_coating?.cutting;
   const acceptancePending = Boolean(activeOrder && (activeOrder.acceptance_pending || activeOrder.status === "pending_approval"));
   const completed = [...(workOrders.completed || [])].sort(
     (left, right) => String(right.completed_at || right.auto_completed_at || "").localeCompare(String(left.completed_at || left.auto_completed_at || "")) || String(right.order_id || "").localeCompare(String(left.order_id || ""))
@@ -1362,7 +1363,9 @@ function renderWorkOrders(snapshot) {
         ` : ""}
         ${workOrders.manual_coating?.unit_supported ? `
           <p class="work-order-row-meta">
-            <span>Manuel kaplama ${formatNumber(workOrders.manual_coating.completed_qty)} / ${formatNumber(workOrders.manual_coating.target_qty)}</span>
+            ${cutting ? `<span>Giyotin ${formatNumber(cutting.cut_tapes)} / ${formatNumber(cutting.target_tapes)} bant parçası</span>
+              <span>Kaplamaya hazır ${formatNumber(cutting.available_boxes)} kutu</span>` : ""}
+            <span>Manuel kaplama ${formatNumber(workOrders.manual_coating.completed_qty)} / ${formatNumber(workOrders.manual_coating.target_qty)}${cutting ? " kutu" : ""}</span>
             ${workOrders.manual_coating.awaiting_handoff ? "<span>Hat teslimi bekleniyor</span>" : ""}
           </p>
         ` : ""}

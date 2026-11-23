@@ -3,7 +3,7 @@ import copy
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -29,11 +29,19 @@ runtime_service = RuntimeService(config, store, hub)
 oee_state_manager = runtime_service.oee_manager
 
 
-class ManualCoatingBatch(BaseModel):
+class LocalStationRequest(BaseModel):
     request_id: StrictStr
     order_id: StrictStr
     order_key: StrictStr
     operator: StrictStr
+
+
+class ManualCoatingBatch(LocalStationRequest):
+    quantity: StrictInt
+
+
+class CuttingRequest(LocalStationRequest):
+    action: Literal["cut"] = "cut"
     quantity: StrictInt
 
 
@@ -44,6 +52,16 @@ def _require_local_coating(request: Request) -> None:
     origin = request.headers.get("origin")
     if origin is not None and origin != f"{request.url.scheme}://{request.url.netloc}":
         raise HTTPException(status_code=403, detail="COATING_ORIGIN_FORBIDDEN")
+
+
+def _local_station_operator(request: Request, batch: LocalStationRequest) -> str:
+    _require_local_coating(request)
+    if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
+        raise HTTPException(status_code=415, detail="COATING_JSON_REQUIRED")
+    operator = batch.operator.strip()
+    if not 0 < len(operator) <= 100 or not batch.order_id or not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", batch.request_id):
+        raise HTTPException(status_code=422, detail="COATING_INVALID_BATCH")
+    return operator
 
 
 def _is_benign_socket_disconnect_error(exc: BaseException) -> bool:
@@ -839,23 +857,45 @@ def create_app() -> FastAPI:
     @app.get("/api/manual-coating")
     async def get_manual_coating(request: Request) -> dict[str, Any]:
         _require_local_coating(request)
-        return {"progress": manual_coating_progress(oee_state_manager.read_state())}
+        state = oee_state_manager.read_state()
+        return {"progress": manual_coating_progress(state, cutting_enabled=config.cutting_workflow_enabled)}
 
     @app.post("/api/manual-coating")
     async def post_manual_coating(request: Request, batch: ManualCoatingBatch) -> dict[str, Any]:
-        _require_local_coating(request)
-        if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
-            raise HTTPException(status_code=415, detail="COATING_JSON_REQUIRED")
-        operator = batch.operator.strip()
-        if not 0 < len(operator) <= 100 or not batch.order_id or batch.quantity <= 0 or not re.fullmatch(
-            r"[a-zA-Z0-9_-]{1,80}", batch.request_id
-        ):
+        operator = _local_station_operator(request, batch)
+        if batch.quantity <= 0:
             raise HTTPException(status_code=422, detail="COATING_INVALID_BATCH")
         try:
             result = oee_state_manager.record_manual_coating(
                 request_id=batch.request_id, order_id=batch.order_id, order_key=batch.order_key,
-                operator=operator, quantity=batch.quantity,
+                operator=operator, quantity=batch.quantity, cutting_enabled=config.cutting_workflow_enabled,
             )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        return result
+
+    @app.get("/giyotin")
+    async def cutting_index(request: Request) -> FileResponse:
+        _require_local_coating(request)
+        if not config.cutting_workflow_enabled:
+            raise HTTPException(status_code=404, detail="CUTTING_DISABLED")
+        return FileResponse(static_dir / "manual-coating.html", headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/cutting-workflow")
+    async def post_cutting_workflow(request: Request, batch: CuttingRequest) -> dict[str, Any]:
+        operator = _local_station_operator(request, batch)
+        if not config.cutting_workflow_enabled:
+            raise HTTPException(status_code=404, detail="CUTTING_DISABLED")
+        if batch.quantity <= 0:
+            raise HTTPException(status_code=422, detail="CUTTING_INVALID_QUANTITY")
+        try:
+            result = oee_state_manager.record_cutting_action(batch.request_id, {
+                "operation": batch.action, "order_id": batch.order_id, "order_key": batch.order_key,
+                "operator": operator, "quantity": batch.quantity,
+            })
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except OSError as exc:

@@ -13,7 +13,7 @@
     <header class="topbar">
       <div>
         <p class="eyebrow">ATÖLYE MES</p>
-        <h1>Manuel kaplama</h1>
+        <h1 id="station-title">Manuel kaplama</h1>
       </div>
     </header>
     <section class="card coating-card" aria-labelledby="order">
@@ -27,8 +27,8 @@
           <span>Operatör adı ve soyadı</span>
           <input id="operator" maxlength="100" autocomplete="name" required>
         </label>
-        <label class="field" for="quantity">
-          <span>Kaplanan parça adedi</span>
+        <label class="field" for="quantity" id="quantity-field">
+          <span id="quantity-label">Kaplanan parça adedi</span>
           <input id="quantity" type="number" inputmode="numeric" min="1" step="1" required>
         </label>
         <button class="secondary-button" id="save" type="submit" disabled>Kaplamayı kaydet</button>

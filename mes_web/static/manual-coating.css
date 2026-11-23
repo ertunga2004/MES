@@ -46,6 +46,6 @@
   min-height: 1.4em;
 }
 
-#coating-form [hidden] {
+#coating-form [hidden], #handoff-panel[hidden], #handoff-panel [hidden] {
   display: none;
 }

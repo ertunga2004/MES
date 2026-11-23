@@ -12,6 +12,7 @@ from pydantic import BaseModel, StrictInt, StrictStr
 
 from .command_policy import is_local_only_command
 from .config import AppConfig
+from .conveyor_handoff import handoff_view
 from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
 from .kiosk_designer import create_kiosk_router
 from .manual_coating import manual_coating_progress
@@ -44,6 +45,12 @@ class ManualCoatingBatch(LocalStationRequest):
 class CuttingRequest(LocalStationRequest):
     action: Literal["cut"] = "cut"
     quantity: StrictInt
+
+
+class HandoffResolution(BaseModel):
+    handoff_id: StrictStr
+    item_id: StrictStr = ""
+    measure_id: StrictStr = ""
 
 
 def _require_local_coating(request: Request) -> None:
@@ -860,7 +867,43 @@ def create_app() -> FastAPI:
     async def get_manual_coating(request: Request) -> dict[str, Any]:
         _require_local_coating(request)
         state = oee_state_manager.read_state()
-        return {"progress": manual_coating_progress(state, cutting_enabled=config.cutting_workflow_enabled)}
+        progress = manual_coating_progress(state, cutting_enabled=config.cutting_workflow_enabled)
+        status = {"progress": progress}
+        if config.conveyor_handoff_enabled:
+            status["handoff"] = handoff_view(state, progress)
+        return status
+
+    @app.post("/api/manual-coating/handoff/start")
+    async def request_conveyor_handoff(request: Request, batch: LocalStationRequest) -> dict[str, Any]:
+        operator = _local_station_operator(request, batch)
+        if not config.conveyor_handoff_enabled:
+            raise HTTPException(404, "HANDOFF_DISABLED")
+        try:
+            result = oee_state_manager.start_conveyor_handoff(
+                request_id=batch.request_id, order_id=batch.order_id, order_key=batch.order_key, operator=operator,
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, "OEE_STATE_WRITE_FAILED") from exc
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        return result
+
+    @app.post("/api/manual-coating/handoff/{action}")
+    async def resolve_conveyor_handoff(request: Request, action: Literal["confirm", "close"], batch: HandoffResolution) -> dict[str, Any]:
+        _require_local_coating(request)
+        if not config.conveyor_handoff_enabled:
+            raise HTTPException(404, "HANDOFF_DISABLED")
+        if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
+            raise HTTPException(415, "COATING_JSON_REQUIRED")
+        try:
+            result = oee_state_manager.resolve_conveyor_handoff(batch.handoff_id, action, batch.item_id, batch.measure_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, "OEE_STATE_WRITE_FAILED") from exc
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        return result
 
     @app.post("/api/manual-coating")
     async def post_manual_coating(request: Request, batch: ManualCoatingBatch) -> dict[str, Any]:

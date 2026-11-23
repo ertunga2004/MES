@@ -50,6 +50,16 @@ Tasarım ve operatör işlemleri bu sürümde sunucu bilgisayarında yapılır. 
 
 Yayınlar ve açık işler mevcut MES durum dosyasına yazılır. Sunucu aynı durum dosyasıyla (`MES_WEB_OEE_RUNTIME_STATE_PATH`) açıldığında operatör, iş emri, başlangıç zamanı ve kullanılan kiosk sürümü korunur. Operatörün henüz tamamlamadığı adım girişleri aynı tarayıcı sekmesinde saklanır. Mevcut Giyotin ve Manuel Kaplama ekranları iki bant parçası bir kutu kuralıyla ayrı olarak çalışmaya devam eder.
 
+### Kaplamadan konveyöre teslim denemesi
+
+Sunucuyu `MES_WEB_CONVEYOR_HANDOFF_ENABLED=1` ile başlat. Açık bir hat vardiyası, aktif iş emri ve kaplanmış en az bir kutuyla `/kaplama` ekranını aç.
+
+1. **Konveyöre teslim et** düğmesi bir kutu için kayıt açar. Bu işlem makine komutu göndermez.
+2. Yalnız o kutuyu hatta ver. Hat yeni `QUEUE=ENQ` olayı gönderdiğinde, kutu ve ölçüm kimliğiyle operatör doğrulaması açılır. Bu kısıt, ilk denemede o anda hatta başka kutu verilmemesini gerektirir.
+3. Algılanan kutu operatörün verdiği kutuysa **Algılanan kutuyu doğrula** düğmesine bas. Hat tamamlanma olayı geldiğinde **İş Emirleri** ekranı teslim durumunu gösterir. Üretim ve OEE sayımını mevcut hat olayı yapar.
+
+Birden fazla giriş görülürse veya iş emri uyuşmazsa sistem otomatik eşleşme yapmaz. **Kutuyu vermedim** seçeneğini yalnız kutu gerçekten hatta gitmediyse kullan. Hat girişi görüldükten sonra eşleşmeden kapatılan kayıt inceleme için saklanır ve kutu yeniden teslime hazır sayılmaz. İlk doğrulama yerel, sahte hat olaylarıyla yapılır.
+
 ## Aktif API
 
 - `GET /health`

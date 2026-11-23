@@ -1274,6 +1274,7 @@ function renderWorkOrders(snapshot) {
   const controls = workOrders.controls || {};
   const activeOrder = workOrders.active_order;
   const cutting = workOrders.manual_coating?.cutting;
+  const handoff = workOrders.conveyor_handoff;
   const acceptancePending = Boolean(activeOrder && (activeOrder.acceptance_pending || activeOrder.status === "pending_approval"));
   const completed = [...(workOrders.completed || [])].sort(
     (left, right) => String(right.completed_at || right.auto_completed_at || "").localeCompare(String(left.completed_at || left.auto_completed_at || "")) || String(right.order_id || "").localeCompare(String(left.order_id || ""))
@@ -1322,7 +1323,21 @@ function renderWorkOrders(snapshot) {
       <strong>${summary.last_completed_order_id || "-"}</strong>
       <small>${formatTime(summary.last_completed_at)}</small>
     </article>
+    ${handoff ? `<article class="work-order-metric-card">
+      <span>Konveyöre teslim</span>
+      <strong>${formatNumber(handoff.ready_qty)} kutu hazır</strong>
+      <small data-handoff-status></small>
+    </article>` : ""}
   `;
+  if (handoff) {
+    const record = handoff.pending || handoff.latest;
+    const statuses = { waiting_entry: "Hat girişi bekleniyor", confirm_entry: "Operatör doğrulaması bekleniyor",
+      on_conveyor: "Konveyörde", completed: "Hat tamamladı", needs_review: "Eşleşme denetimi gerekiyor",
+      order_mismatch: "Hat iş emri doğrulanmadı", unresolved: "Eşleştirilmedi", cancelled: "Teslim iptal edildi" };
+    els.workOrderSummary.querySelector("[data-handoff-status]").textContent = record
+      ? [record.order_id, statuses[record.status], record.candidate ? `Kutu ${record.candidate.item_id}` : ""].filter(Boolean).join(" · ")
+      : "Teslim kaydı yok";
+  }
 
   if (!activeOrder) {
     els.workOrderActive.innerHTML = `<p class="empty-state">Aktif is emri yok. Operator kuyruktaki siradaki emri secebilir.</p>`;

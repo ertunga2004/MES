@@ -42,9 +42,11 @@ Bu akış iki istasyonu yan yana kabul eder. Bant kesildiğinde kaplamaya hazır
 
 Sunucu bilgisayarında MES ana ekranındaki **Kiosk Tasarla** bağlantısını aç. Sunucuyu başlatmadan önce `MES_WEB_KIOSK_DESIGN_PASSWORD` ortam değişkenine seçtiğin mühendis parolasını ata. Girişte kullanıcı adı `muhendis`. Tarayıcı giriş ekranı için ASCII karakterlerden oluşan bir parola seç.
 
-1. **Yeni kiosk** ile bir ad, adres adı ve operatör talimatı yaz. Onay, metin, sayı veya seçim adımlarını ekle. İstersen iş süresi sayacı, mevcut iş emri hedefi ve sonuç kaydını aç. **Bölüm ekle** ile operatörün okuyacağı ek metin yazabilirsin.
+1. **Yeni kiosk** aç. **İşlem Takip**, **Kalite Kontrol**, **Paketleme**, **Malzeme** veya **İstasyon Durumu** şablonunu seç. Her şablon ilgili kartları, yerleşimi ve başlangıç seçeneklerini açar. **Sade düzen** ile de başlayabilirsin. Kartları ekleyebilir, gizleyebilir, kaldırabilir, taşıyabilir ve desteklenen boyut ile veri kaynağını seçebilirsin. Tablet önizlemesi değişiklikleri gösterir. Kiosk adı, adresi, talimatları ve onay/metin/sayı/seçim adımlarını yaz. **Bölüm ekle** ile özel başlık ve içeriğini tanımlayabilirsin.
 2. **Taslağı kaydet** ile değişikliği sakla. Operatör ekranında göstermek için **Yayınla** düğmesini kullan. Operatörün yerel adresi `http://127.0.0.1:8080/istasyon/<adres-adı>` olur.
 3. Mevcut MES'te bir iş emrini etkinleştir. Operatör kendi adını girip işi başlatabilir ve adımları doldurabilir. Yeni yayın, başladıktan sonra açık işin talimatlarını veya zorunlu adımlarını değiştirmez. Bir sonraki iş güncel yayını kullanır.
+
+İş emri kartı mevcut emri, bağlı Giyotin veya Kaplama seçildiğinde WIP kartı mevcut kaplama bekleme bilgisini gösterir. Tasarımda kiosk için ayrı WIP alanları da tanımlanabilir. Operatör izin verilen adımda parçayı bir alana alıp iş etiketini ve nedeni kaydedebilir. Bekleyen iş, geri alındığında ilk yayınını ve kaydedilmiş adımlarını korur. Malzeme talepleri ve duruş bildirimleri kiosk işinde tutulur. Bağlı iş emrinde malzeme kodu varsa kartta gösterilir. Kiosk ayrı bir envanter kaynağına bağlı değildir.
 
 Tasarım ve operatör işlemleri bu sürümde sunucu bilgisayarında yapılır. Yayınlanan kiosk, yapılandırılabilir bir operatör ekranıdır. Yeni kiosk yayınlamak üretim rotası, makine bağlantısı veya OEE hesabı oluşturmaz. İstasyon kayıtları mevcut MES iş emrine bağlı saklanır. Konveyör komutu, konveyör üretim adedi ve OEE sonucu bu kayıtlardan etkilenmez.
 

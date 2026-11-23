@@ -1,16 +1,19 @@
 from __future__ import annotations
 import copy
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, StrictInt, StrictStr
 
 from .command_policy import is_local_only_command
 from .config import AppConfig
 from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
+from .manual_coating import manual_coating_progress
 from .masterdata import load_kiosk_masterdata
 from .oee_state import WorkOrderTransitionReasonRequired, build_work_order_snapshot
 from .parsers import normalize_color
@@ -24,6 +27,23 @@ store = DashboardStore(config)
 hub = SnapshotHub(store, coalesce_ms=config.ws_coalesce_ms)
 runtime_service = RuntimeService(config, store, hub)
 oee_state_manager = runtime_service.oee_manager
+
+
+class ManualCoatingBatch(BaseModel):
+    request_id: StrictStr
+    order_id: StrictStr
+    order_key: StrictStr
+    operator: StrictStr
+    quantity: StrictInt
+
+
+def _require_local_coating(request: Request) -> None:
+    loopback = {"127.0.0.1", "::1"}
+    if not request.client or request.client.host not in loopback or request.url.hostname not in loopback | {"localhost"}:
+        raise HTTPException(status_code=403, detail="COATING_LOCAL_ONLY")
+    origin = request.headers.get("origin")
+    if origin is not None and origin != f"{request.url.scheme}://{request.url.netloc}":
+        raise HTTPException(status_code=403, detail="COATING_ORIGIN_FORBIDDEN")
 
 
 def _is_benign_socket_disconnect_error(exc: BaseException) -> bool:
@@ -810,6 +830,38 @@ def create_app() -> FastAPI:
                 "Expires": "0",
             },
         )
+
+    @app.get("/kaplama")
+    async def manual_coating_index(request: Request) -> FileResponse:
+        _require_local_coating(request)
+        return FileResponse(static_dir / "manual-coating.html", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/manual-coating")
+    async def get_manual_coating(request: Request) -> dict[str, Any]:
+        _require_local_coating(request)
+        return {"progress": manual_coating_progress(oee_state_manager.read_state())}
+
+    @app.post("/api/manual-coating")
+    async def post_manual_coating(request: Request, batch: ManualCoatingBatch) -> dict[str, Any]:
+        _require_local_coating(request)
+        if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
+            raise HTTPException(status_code=415, detail="COATING_JSON_REQUIRED")
+        operator = batch.operator.strip()
+        if not 0 < len(operator) <= 100 or not batch.order_id or batch.quantity <= 0 or not re.fullmatch(
+            r"[a-zA-Z0-9_-]{1,80}", batch.request_id
+        ):
+            raise HTTPException(status_code=422, detail="COATING_INVALID_BATCH")
+        try:
+            result = oee_state_manager.record_manual_coating(
+                request_id=batch.request_id, order_id=batch.order_id, order_key=batch.order_key,
+                operator=operator, quantity=batch.quantity,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        return result
 
     @app.get("/technician/{device_id}")
     async def technician_index(device_id: str) -> FileResponse:

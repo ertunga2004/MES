@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Manuel Kaplama · MES</title>
+  <link rel="stylesheet" href="/static/kiosk.css">
+  <link rel="stylesheet" href="/static/manual-coating.css">
+  <script src="/static/manual-coating.js" defer></script>
+</head>
+<body>
+  <main class="kiosk-shell coating-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">ATÖLYE MES</p>
+        <h1>Manuel kaplama</h1>
+      </div>
+    </header>
+    <section class="card coating-card" aria-labelledby="order">
+      <p class="section-label">Aktif iş emri</p>
+      <h2 id="order">İş emri yükleniyor</h2>
+      <output class="coating-count" id="count" aria-live="polite">–</output>
+      <progress id="progress" aria-label="Kaplama ilerlemesi" max="1" value="0"></progress>
+      <p id="order-status" class="muted"></p>
+      <form id="coating-form">
+        <label class="field" for="operator">
+          <span>Operatör adı ve soyadı</span>
+          <input id="operator" maxlength="100" autocomplete="name" required>
+        </label>
+        <label class="field" for="quantity">
+          <span>Kaplanan parça adedi</span>
+          <input id="quantity" type="number" inputmode="numeric" min="1" step="1" required>
+        </label>
+        <button class="secondary-button" id="save" type="submit" disabled>Kaplamayı kaydet</button>
+      </form>
+      <p id="notice" role="status" class="coating-notice"></p>
+    </section>
+  </main>
+</body>
+</html>

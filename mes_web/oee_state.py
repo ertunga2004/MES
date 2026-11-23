@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .cutting_workflow import TAPES_PER_BOX, apply_cutting_action, cutting_batch, empty_cutting_workflow
+from .conveyor_handoff import handoff_view, observe_handoff_completion, observe_handoff_entry, resolve_handoff, start_handoff
 from .ferp_labels import FerpLabelRegistryError, validate_label_payload
 from .manual_coating import manual_coating_order_key, manual_coating_progress
 from .parsers import (
@@ -120,6 +121,7 @@ def default_runtime_state() -> dict[str, Any]:
     return {
         "version": 5,
         "manualCoatingRecords": {},
+        "conveyorHandoffs": {},
         "stationKiosks": {},
         "cuttingWorkflow": empty_cutting_workflow(),
         "shiftSelected": "SHIFT-A",
@@ -1390,6 +1392,8 @@ def _sanitize_reused_items_after_load(state: dict[str, Any]) -> None:
 def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     candidate = payload if isinstance(payload, dict) else {}
     base = default_runtime_state()
+    if isinstance(candidate.get("conveyorHandoffs"), dict):
+        base["conveyorHandoffs"] = candidate["conveyorHandoffs"]
     if isinstance(candidate.get("stationKiosks"), dict):
         base["stationKiosks"] = candidate["stationKiosks"]
     records = candidate.get("manualCoatingRecords")
@@ -2935,6 +2939,7 @@ def _complete_runtime_item(
         received_at=received_at,
         now=now,
     )
+    observe_handoff_completion(state, item)
     return True
 
 
@@ -3053,6 +3058,21 @@ class OeeRuntimeStateManager:
         if changed:
             self.write_state(state)
         return result
+
+    @_state_locked
+    def start_conveyor_handoff(self, *, request_id: str, order_id: str, order_key: str, operator: str) -> dict[str, Any]:
+        state = self.read_state()
+        progress = manual_coating_progress(state)
+        if start_handoff(state, progress, request_id, order_id, order_key, operator):
+            self.write_state(state)
+        return handoff_view(state, progress)
+
+    @_state_locked
+    def resolve_conveyor_handoff(self, handoff_id: str, action: str, item_id: str, measure_id: str) -> dict[str, Any]:
+        state = self.read_state()
+        if resolve_handoff(state, handoff_id, action, item_id, measure_id):
+            self.write_state(state)
+        return handoff_view(state, manual_coating_progress(state))
 
     @_state_locked
     def record_manual_coating(
@@ -4441,6 +4461,9 @@ class OeeRuntimeStateManager:
             changed = True
 
         elif parsed["event_type"] == "queue_enq" and item_key:
+            previous = items.get(item_key) or {}
+            known_measure = previous.get("measure_id") or ""
+            duplicate_entry = bool(previous.get("queued_at") and (not measure_id or known_measure == measure_id))
             item = _prepare_item_for_new_cycle(state, items, item_key, received_at=received_at)
             item.update(
                 {
@@ -4471,6 +4494,9 @@ class OeeRuntimeStateManager:
             items[item_key] = item
             if item_key not in _queue_order(state):
                 _queue_order(state).append(item_key)
+            if item_id and not duplicate_entry:
+                observed_at = _parse_iso(item.get("detected_at") or "") or now
+                observe_handoff_entry(state, item, observed_at, now)
             changed = True
 
         elif parsed["event_type"] == "arm_position_reached":

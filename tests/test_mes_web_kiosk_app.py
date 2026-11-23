@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -61,7 +62,7 @@ class _FakeRuntimeService:
 
 
 class KioskAppTests(unittest.TestCase):
-    def _build_client(self, host="127.0.0.1", cutting_enabled=False, kiosk_password=""):
+    def _build_client(self, host="127.0.0.1", cutting_enabled=False, kiosk_password="", handoff_enabled=False):
         if TestClient is None or app_module is None:
             self.skipTest("fastapi is not installed")
         temp_dir = tempfile.TemporaryDirectory()
@@ -78,6 +79,7 @@ class KioskAppTests(unittest.TestCase):
                 "MES_WEB_EXCEL_TEMPLATE_PATH": str(template_path),
                 "MES_WEB_CUTTING_WORKFLOW_ENABLED": "1" if cutting_enabled else "0",
                 "MES_WEB_KIOSK_DESIGN_PASSWORD": kiosk_password,
+                "MES_WEB_CONVEYOR_HANDOFF_ENABLED": "1" if handoff_enabled else "0",
             },
             clear=False,
         ):
@@ -106,6 +108,72 @@ class KioskAppTests(unittest.TestCase):
         client = TestClient(app_with_client, base_url="http://127.0.0.1:8080")
         self.addCleanup(client.close)
         return client, config, manager, store, runtime_service
+
+    def test_handoff_links_one_coated_box_to_one_line_item_without_counting_it(self) -> None:
+        client, config, manager, store, runtime = self._build_client(cutting_enabled=True, handoff_enabled=True)
+        manager.apply_control("shift_start")
+        manager.import_work_orders([{"orderId": "IE-10", "stockCode": "BOX-BLUE", "productColor": "blue", "quantity": 10}])
+        manager.start_work_order("IE-10")
+        url = "/api/manual-coating"
+        key = client.get(url).json()["progress"]["order_key"]
+        batch = {"operator": "Deneme Operatörü", "order_id": "IE-10", "order_key": key}
+        self.assertEqual(client.post(f"{url}/handoff/start", json={**batch, "request_id": "early"}).status_code, 409)
+        self.assertEqual(client.post("/api/cutting-workflow", json={**batch, "request_id": "cut", "quantity": 2}).status_code, 200)
+        self.assertEqual(client.post(url, json={**batch, "request_id": "coat", "quantity": 1}).status_code, 200)
+        entry_line = "MEGA|AUTO|QUEUE=ENQ|ITEM_ID=42|MEASURE_ID=7|COLOR=MAVI|TRAVEL_MS=4500|PENDING=1"
+        before = (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat()
+        manager.apply_mega_log(entry_line.replace("42", "41"), before)
+        request = {**batch, "request_id": "handoff-1"}
+        started = client.post(f"{url}/handoff/start", json=request)
+        self.assertEqual(started.status_code, 200, started.text)
+        self.assertEqual(started.json()["pending"]["status"], "waiting_entry")
+        self.assertEqual(client.post(f"{url}/handoff/start", json=request).status_code, 200)
+        self.assertEqual(client.post(f"{url}/handoff/start", json={**request, "request_id": "second"}).status_code, 409)
+
+        entered = (datetime.now(timezone.utc) + timedelta(milliseconds=50)).isoformat()
+        manager.apply_mega_log(entry_line, entered)
+        manager.apply_mega_log(entry_line, entered)
+        pending = client.get(url).json()["handoff"]["pending"]
+        self.assertEqual(pending["status"], "confirm_entry")
+        self.assertEqual(pending["candidate"]["item_id"], "42")
+        confirm = {"handoff_id": "handoff-1", "item_id": "42", "measure_id": "7"}
+        matched = client.post(f"{url}/handoff/confirm", json=confirm)
+        self.assertEqual(matched.status_code, 200, matched.text)
+        self.assertEqual(matched.json()["latest"]["status"], "on_conveyor")
+        self.assertEqual(client.post(f"{url}/handoff/confirm", json=confirm).status_code, 200)
+        self.assertEqual(manager.read_state()["counts"]["total"], 0)
+
+        completed = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+        manager.apply_mega_log("MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=42|MEASURE_ID=7|TRIGGER=TIMER", completed)
+        manager.apply_mega_log("MEGA|AUTO|EVENT=PICKPLACE_DONE|ITEM_ID=42|MEASURE_ID=7|COLOR=MAVI", completed)
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        dashboard = client.get(f"/api/modules/{config.module_id}/dashboard").json()["work_orders"]
+        self.assertEqual(dashboard["conveyor_handoff"]["latest"]["status"], "completed")
+        self.assertEqual(dashboard["conveyor_handoff"]["latest"]["line_order_id"], "IE-10")
+        self.assertEqual(manager.read_state()["counts"]["total"], 1)
+        self.assertEqual(runtime.mqtt_client.published, [])
+        self.assertTrue(manager.apply_mega_log(entry_line, completed))
+        self.assertEqual(manager.read_state()["conveyorHandoffs"]["handoff-1"]["status"], "completed")
+
+    def test_ambiguous_handoff_never_guesses_the_box(self) -> None:
+        client, _config, manager, _store, _runtime = self._build_client(handoff_enabled=True)
+        manager.apply_control("shift_start")
+        manager.import_work_orders([{"orderId": "IE-10", "stockCode": "BOX", "quantity": 10}])
+        manager.start_work_order("IE-10")
+        url = "/api/manual-coating"
+        key = client.get(url).json()["progress"]["order_key"]
+        data = {"operator": "Deneme", "order_id": "IE-10", "order_key": key}
+        self.assertEqual(client.post(url, json={**data, "request_id": "coat", "quantity": 1}).status_code, 200)
+        self.assertEqual(client.post(f"{url}/handoff/start", json={**data, "request_id": "handoff"}).status_code, 200)
+        received = (datetime.now().astimezone() + timedelta(milliseconds=50)).replace(tzinfo=None).isoformat()
+        for item_id in ["42", "43"]:
+            manager.apply_mega_log(f"MEGA|AUTO|QUEUE=ENQ|ITEM_ID={item_id}|MEASURE_ID={item_id}|COLOR=MAVI|PENDING=1", received)
+        self.assertEqual(client.get(url).json()["handoff"]["pending"]["status"], "needs_review")
+        self.assertEqual(client.post(f"{url}/handoff/confirm", json={"handoff_id": "handoff", "item_id": "42", "measure_id": "42"}).status_code, 409)
+        closed = client.post(f"{url}/handoff/close", json={"handoff_id": "handoff"}).json()
+        self.assertIsNone(closed["pending"])
+        self.assertEqual(closed["latest"]["status"], "unresolved")
+        self.assertEqual(closed["ready_qty"], 0)
 
     def test_kiosk_designer_pins_running_work_to_a_published_revision(self) -> None:
         client, _config, manager, _store, runtime = self._build_client(kiosk_password="test-kiosk-only")

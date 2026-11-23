@@ -13,6 +13,12 @@ const isCutting = window.location.pathname === "/giyotin";
 const pendingKey = isCutting ? "mes-cutting-pending" : "mes-manual-coating-pending";
 const readApi = "/api/manual-coating";
 const writeApi = isCutting ? "/api/cutting-workflow" : readApi;
+const handoffPanel = document.getElementById("handoff-panel");
+const handoffStatus = document.getElementById("handoff-status");
+const handoffFeedback = document.getElementById("handoff-feedback");
+const handoffStart = document.getElementById("handoff-start");
+const handoffConfirm = document.getElementById("handoff-confirm");
+const handoffClose = document.getElementById("handoff-close");
 
 if (isCutting) {
   document.title = "Giyotin · MES";
@@ -21,6 +27,8 @@ if (isCutting) {
 }
 
 let progress = null;
+let handoff = null;
+let handoffRequest;
 let pending = JSON.parse(sessionStorage.getItem(pendingKey) || "null");
 let busy = false;
 let refreshing = false;
@@ -39,6 +47,34 @@ function inputLimit() {
     return cutting?.order_open && !cutting.legacy_blocked ? cutting.target_tapes - cutting.cut_tapes : 0;
   }
   return progress?.can_record ? progress.remaining_qty : 0;
+}
+
+function renderHandoff() {
+  handoffPanel.hidden = isCutting || !handoff;
+  if (handoffPanel.hidden) return;
+  const waiting = handoff.pending;
+  const latest = handoff.latest;
+  handoffStart.hidden = Boolean(waiting);
+  handoffStart.disabled = busy || !handoff.can_start;
+  handoffConfirm.hidden = waiting?.status !== "confirm_entry";
+  handoffConfirm.disabled = busy;
+  handoffClose.hidden = !waiting;
+  handoffClose.disabled = busy;
+  handoffClose.textContent = waiting?.status === "waiting_entry" ? "Kutuyu vermedim" : "Eşleştirmeden kapat";
+  if (waiting?.status === "confirm_entry") {
+    handoffStatus.textContent = `Hat kutu ${waiting.candidate.item_id} algıladı. Yalnız az önce verdiğin kutuysa doğrula.`;
+  } else if (waiting?.status === "waiting_entry") {
+    handoffStatus.textContent = `İş emri ${waiting.order_id}. Yalnız bir kutuyu konveyöre ver ve algılanmasını bekle.`;
+  } else if (waiting) {
+    handoffStatus.textContent = "Hat girişi bu kutuyla güvenle eşleştirilemedi. Eşleşmeyi denetle.";
+  } else if (!handoff.shift_active) {
+    handoffStatus.textContent = "Teslim kaydı için hat vardiyasının açık olması gerekiyor.";
+  } else {
+    const states = { on_conveyor: "Konveyörde", completed: "Hat tamamladı", order_mismatch: "Hat iş emri doğrulanmadı",
+      unresolved: "Eşleştirilmedi", cancelled: "Teslim iptal edildi" };
+    const last = latest ? ` Son teslim: ${states[latest.status] || "–"}${latest.candidate ? ` · Kutu ${latest.candidate.item_id}` : ""}.` : "";
+    handoffStatus.textContent = `Teslime hazır ${handoff.ready_qty} kutu.${last}`;
+  }
 }
 
 function render() {
@@ -76,6 +112,7 @@ function render() {
   else quantity.max = limit;
   save.disabled = busy || !(pending || limit > 0);
   save.textContent = busy ? "Kaydediliyor…" : pending ? "Aynı kaydı yeniden dene" : isCutting ? "Kesimi kaydet" : "Kaplamayı kaydet";
+  renderHandoff();
 }
 
 async function refresh() {
@@ -94,11 +131,13 @@ async function refresh() {
       }
       activeIdentity = nextOrder;
       progress = data.progress;
+      handoff = data.handoff ?? null;
       render();
     }
   } catch {
     if (generation === writeGeneration) {
       progress = null;
+      handoff = null;
       render();
       statusText.textContent = "Sunucuya ulaşılamıyor.";
     }
@@ -167,6 +206,56 @@ form.addEventListener("submit", async event => {
     refresh();
   }
 });
+
+async function sendHandoff(action, payload) {
+  if (busy) return;
+  busy = true;
+  writeGeneration += 1;
+  render();
+  handoffFeedback.textContent = "Kaydediliyor…";
+  try {
+    const res = await fetch(`${readApi}/handoff/${action}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload), signal: AbortSignal.timeout(10000),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      if (res.status < 500 && action === "start") handoffRequest = undefined;
+      const messages = { HANDOFF_ALREADY_OPEN: "Önce açık teslim kaydını kontrol et.",
+        HANDOFF_NO_BOX: "Bu iş emrinde teslime hazır kaplanmış kutu yok.",
+        HANDOFF_SHIFT_REQUIRED: "Hat vardiyası kapalı.", HANDOFF_ORDER_CHANGED: "Aktif iş emri değişti.",
+        HANDOFF_CHANGED: "Hat kaydı değişti. Ekrandaki durumu yeniden kontrol et." };
+      throw new Error(messages[body.detail] || "Teslim kaydı doğrulanamadı. Durumu kontrol edip tekrar dene.");
+    }
+    handoff = body;
+    if (action === "start") handoffRequest = undefined;
+    handoffFeedback.textContent = action === "start" ? "Teslim kaydı açıldı." : "Teslim durumu kaydedildi.";
+  } catch (error) {
+    handoffFeedback.textContent = error.message;
+  } finally {
+    busy = false;
+    render();
+    refresh();
+  }
+}
+
+handoffStart.onclick = () => {
+  if (!progress || !handoff?.can_start) return;
+  const name = operator.value.trim();
+  if (!name) { handoffFeedback.textContent = "Operatör adını gir."; operator.focus(); return; }
+  if (handoffRequest?.order_key !== progress.order_key || handoffRequest.operator !== name) {
+    handoffRequest = { request_id: crypto.randomUUID(), order_id: progress.order_id, order_key: progress.order_key, operator: name };
+  }
+  sendHandoff("start", handoffRequest);
+};
+handoffConfirm.onclick = () => {
+  const current = handoff?.pending;
+  if (current?.status !== "confirm_entry") return;
+  sendHandoff("confirm", { handoff_id: current.id, item_id: current.candidate.item_id, measure_id: current.candidate.measure_id });
+};
+handoffClose.onclick = () => {
+  if (handoff?.pending) sendHandoff("close", { handoff_id: handoff.pending.id });
+};
 
 render();
 refresh();

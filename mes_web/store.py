@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import AppConfig
+from .conveyor_handoff import handoff_view
 from .manual_coating import manual_coating_progress
 from .oee_state import build_live_snapshot, build_work_order_snapshot, read_runtime_state_file, shift_options
 from .parsers import (
@@ -823,9 +824,11 @@ class DashboardStore:
                 )
             inventory_rows.sort(key=lambda row: (-row["quantity"], row["stock_code"], row["match_key"]))
 
+            coating = manual_coating_progress(payload, cutting_enabled=self.config.cutting_workflow_enabled)
             module["work_orders"] = {
                 "enabled": True,
-                "manual_coating": manual_coating_progress(payload, cutting_enabled=self.config.cutting_workflow_enabled),
+                "manual_coating": coating,
+                "conveyor_handoff": handoff_view(payload, coating) if self.config.conveyor_handoff_enabled else None,
                 "updated_at": payload.get("lastUpdatedAt") or payload.get("lastSnapshotLoggedAt") or module["work_orders"].get("updated_at"),
                 "controls": {
                     "tolerance_ms": _duration_ms(

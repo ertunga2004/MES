@@ -38,6 +38,16 @@ Kaplama kayıtları mevcut çalışma durumu dosyasında iş emri, operatör ad�
 
 Bu akış iki istasyonu yan yana kabul eder. Bant kesildiğinde kaplamaya hazır sayılır. Ayrı parti teslimi, bekleme alanı ve taşıma süresi bu sürümde kullanılmaz. İlk kesim kaydından sonra iş emrinin hedef adedi ve birimi sabitlenir. Başka bir akışla kayıt alınmış emirleri karıştırmamak için doğrudan aktarıma yeni bir iş emriyle başla. Kesim ve kaplama konveyör üretimine veya OEE'ye eklenmez. Aynı isteğin tekrarı yeni kayıt üretmez.
 
+### Kiosk Tasarla
+
+Sunucu bilgisayarında MES ana ekranındaki **Kiosk Tasarla** bağlantısını aç. Sunucuyu başlatmadan önce `MES_WEB_KIOSK_DESIGN_PASSWORD` ortam değişkenine seçtiğin mühendis parolasını ata. Girişte kullanıcı adı `muhendis`. Tarayıcı giriş ekranı için ASCII karakterlerden oluşan bir parola seç.
+
+1. **Yeni kiosk** ile bir ad, adres adı ve operatör talimatı yaz. Onay, metin, sayı veya seçim adımlarını ekle. İstersen iş süresi sayacı, mevcut iş emri hedefi ve sonuç kaydını aç. **Bölüm ekle** ile operatörün okuyacağı ek metin yazabilirsin.
+2. **Taslağı kaydet** ile değişikliği sakla. Operatör ekranında göstermek için **Yayınla** düğmesini kullan. Operatörün yerel adresi `http://127.0.0.1:8080/istasyon/<adres-adı>` olur.
+3. Mevcut MES'te bir iş emrini etkinleştir. Operatör kendi adını girip işi başlatabilir ve adımları doldurabilir. Yeni yayın, başladıktan sonra açık işin talimatlarını veya zorunlu adımlarını değiştirmez. Bir sonraki iş güncel yayını kullanır.
+
+Tasarım ve operatör işlemleri bu sürümde sunucu bilgisayarında yapılır. İstasyon kayıtları mevcut MES iş emrine bağlı saklanır. Konveyör komutu, konveyör üretim adedi ve OEE sonucu bu kayıtlardan etkilenmez.
+
 ## Aktif API
 
 - `GET /health`

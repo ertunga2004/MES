@@ -120,6 +120,7 @@ def default_runtime_state() -> dict[str, Any]:
     return {
         "version": 5,
         "manualCoatingRecords": {},
+        "stationKiosks": {},
         "cuttingWorkflow": empty_cutting_workflow(),
         "shiftSelected": "SHIFT-A",
         "performanceMode": "TARGET",
@@ -1389,6 +1390,8 @@ def _sanitize_reused_items_after_load(state: dict[str, Any]) -> None:
 def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     candidate = payload if isinstance(payload, dict) else {}
     base = default_runtime_state()
+    if isinstance(candidate.get("stationKiosks"), dict):
+        base["stationKiosks"] = candidate["stationKiosks"]
     records = candidate.get("manualCoatingRecords")
     if isinstance(records, dict):
         base["manualCoatingRecords"] = records
@@ -3042,6 +3045,14 @@ class OeeRuntimeStateManager:
 
     def write_state(self, state: dict[str, Any]) -> None:
         write_runtime_state_file(self.path, state)
+
+    @_state_locked
+    def edit_station_kiosks(self, operation: Any) -> dict[str, Any]:
+        state = self.read_state()
+        result, changed = operation(state)
+        if changed:
+            self.write_state(state)
+        return result
 
     @_state_locked
     def record_manual_coating(

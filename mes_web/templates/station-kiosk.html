@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>İstasyon · MES</title>
+  <link rel="stylesheet" href="/static/kiosk.css">
+  <link rel="stylesheet" href="/static/station-kiosk.css">
+  <script type="module" src="/static/station-kiosk.js"></script>
+</head>
+<body>
+  <main class="kiosk-shell operator-shell">
+    <header class="topbar">
+      <div><p class="eyebrow">ATÖLYE MES</p><h1 id="station-title">İstasyon</h1></div>
+      <span id="version" class="progress-pill"></span>
+    </header>
+    <section class="card station-card station-stack" aria-label="İstasyon işi">
+      <div><p class="section-label">İş emri</p><h2 id="order">Yükleniyor</h2><p id="target" class="muted" hidden></p></div>
+      <p id="instructions" class="preserve-lines" hidden></p>
+      <div id="extra-sections" class="station-stack"></div>
+      <p id="timer" class="station-timer" hidden></p>
+      <form id="start" class="station-stack" hidden>
+        <label>Operatör adı ve soyadı<input name="operator" maxlength="100" autocomplete="name" required></label>
+        <button type="submit" class="station-primary">İşi başlat</button>
+      </form>
+      <form id="work" class="station-stack" hidden>
+        <p id="worker" class="muted"></p>
+        <div id="work-steps" class="station-stack"></div>
+        <label id="work-result" hidden>İşin sonucu<select name="result"></select></label>
+        <button type="submit" class="station-primary">İşi tamamla</button>
+      </form>
+      <p id="feedback" class="station-feedback" role="status"></p>
+    </section>
+  </main>
+</body>
+</html>

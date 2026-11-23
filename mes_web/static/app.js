@@ -1265,6 +1265,9 @@ function renderWorkOrderReasonPanel() {
   }
 }
 
+const kioskDesignerLink = document.getElementById("kiosk-designer-link");
+if (kioskDesignerLink && ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname)) kioskDesignerLink.hidden = false;
+
 function renderWorkOrders(snapshot) {
   const workOrders = snapshot.work_orders || {};
   const summary = workOrders.summary || {};

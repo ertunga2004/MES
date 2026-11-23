@@ -13,6 +13,7 @@ from pydantic import BaseModel, StrictInt, StrictStr
 from .command_policy import is_local_only_command
 from .config import AppConfig
 from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
+from .kiosk_designer import create_kiosk_router
 from .manual_coating import manual_coating_progress
 from .masterdata import load_kiosk_masterdata
 from .oee_state import WorkOrderTransitionReasonRequired, build_work_order_snapshot
@@ -711,6 +712,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="MES Web", version="0.1.0")
     static_dir = Path(config.static_dir)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    app.include_router(create_kiosk_router(static_dir, lambda: (config, oee_state_manager), _require_local_coating))
 
     def sync_work_order_runtime(state: dict[str, Any] | None = None) -> None:
         runtime_state = state if isinstance(state, dict) else oee_state_manager.read_state()

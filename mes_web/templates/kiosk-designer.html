@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kiosk Tasarla · MES</title>
+  <link rel="stylesheet" href="/static/kiosk.css">
+  <link rel="stylesheet" href="/static/station-kiosk.css">
+  <script type="module" src="/static/kiosk-designer.js"></script>
+</head>
+<body>
+  <main class="kiosk-shell">
+    <header class="topbar">
+      <div><p class="eyebrow">ATÖLYE MES</p><h1>Kiosk Tasarla</h1></div>
+      <a class="station-link" href="/">MES ana ekranı</a>
+    </header>
+    <div class="designer-grid">
+      <aside aria-label="Kiosk listesi" class="card station-card station-stack">
+        <h2>Kiosklar</h2>
+        <button type="button" id="new-kiosk" class="secondary-button">Yeni kiosk</button>
+        <div id="catalog" class="station-stack"></div>
+      </aside>
+      <section class="card station-card station-stack" aria-labelledby="design-heading">
+        <div><h2 id="design-heading">Yeni kiosk</h2><p class="muted" id="design-status"></p></div>
+        <form id="design-form" class="station-stack">
+          <div class="designer-fields">
+            <label>Kiosk adı<input name="title" maxlength="60" required placeholder="Örn. Görsel Kontrol"></label>
+            <label>Adres adı<input name="slug" pattern="[a-z][a-z0-9\-]{1,39}" maxlength="40" required placeholder="Örn. gorsel-kontrol"></label>
+          </div>
+          <label>Operatör talimatı<textarea name="instructions" rows="3" maxlength="1500"></textarea></label>
+          <fieldset class="station-stack station-block">
+            <legend>Ekranda ne olsun?</legend>
+            <label class="station-check"><input name="timer" type="checkbox"> İş süresi sayacı</label>
+            <label class="station-check"><input name="show_target" type="checkbox"> İş emri hedefi</label>
+            <label class="station-check"><input name="record_result" type="checkbox"> Sonuç kaydı</label>
+            <label id="result-options" hidden>Sonuç seçenekleri, her satıra bir tane<textarea name="result_options" rows="3" placeholder="Uygun&#10;Yeniden işlem"></textarea></label>
+          </fieldset>
+          <div class="station-row"><h3>Akış adımları</h3><button class="secondary-button" type="button" id="add-step">Adım ekle</button></div>
+          <div id="steps" class="station-stack"></div>
+          <div class="station-row"><h3>Ek bilgi</h3><button class="secondary-button" type="button" id="add-section">Bölüm ekle</button></div>
+          <div id="sections" class="station-stack"></div>
+          <div class="station-row">
+            <button class="secondary-button" type="submit" value="save">Taslağı kaydet</button>
+            <button class="station-primary" type="submit" value="publish">Yayınla</button>
+          </div>
+        </form>
+        <div class="station-stack" id="published-info" hidden>
+          <a id="operator-link" class="station-link" target="_blank" rel="noopener">Operatör ekranını aç</a>
+          <p id="active-info" class="muted"></p>
+          <p id="finished-info" class="muted" hidden></p>
+        </div>
+        <p id="feedback" class="station-feedback" role="status"></p>
+      </section>
+    </div>
+  </main>
+  <template id="step-template">
+    <fieldset class="station-stack station-block">
+      <legend>Adım</legend>
+      <div class="designer-fields">
+        <label>Adım adı<input name="step_label" required maxlength="100"></label>
+        <label>Alan türü<select name="step_kind"><option value="check">Onay kutusu</option><option value="text">Metin</option><option value="number">Sayı</option><option value="choice">Seçim</option></select></label>
+      </div>
+      <label data-options hidden>Seçenekler, her satıra bir tane<textarea name="step_options" rows="2"></textarea></label>
+      <label class="station-check"><input name="step_required" type="checkbox" checked> Zorunlu</label>
+      <div class="station-row step-buttons">
+        <button class="secondary-button" type="button" data-action="up">Yukarı</button>
+        <button class="secondary-button" type="button" data-action="down">Aşağı</button>
+        <button class="secondary-button" type="button" data-action="remove">Adımı sil</button>
+      </div>
+    </fieldset>
+  </template>
+  <template id="section-template">
+    <fieldset class="station-stack station-block">
+      <legend>Ek bölüm</legend>
+      <label>Bölüm başlığı<input name="section_title" required maxlength="80"></label>
+      <label>Bölüm içeriği<textarea name="section_body" required rows="3" maxlength="1500"></textarea></label>
+      <button class="secondary-button" type="button">Bölümü sil</button>
+    </fieldset>
+  </template>
+</body>
+</html>

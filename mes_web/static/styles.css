@@ -13,6 +13,8 @@
   --shadow: 0 20px 45px rgba(0, 0, 0, 0.28);
 }
 
+#kiosk-designer-link[hidden] { display: none; }
+
 * {
   box-sizing: border-box;
 }

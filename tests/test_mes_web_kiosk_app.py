@@ -61,7 +61,7 @@ class _FakeRuntimeService:
 
 
 class KioskAppTests(unittest.TestCase):
-    def _build_client(self, host="127.0.0.1"):
+    def _build_client(self, host="127.0.0.1", cutting_enabled=False):
         if TestClient is None or app_module is None:
             self.skipTest("fastapi is not installed")
         temp_dir = tempfile.TemporaryDirectory()
@@ -76,6 +76,7 @@ class KioskAppTests(unittest.TestCase):
                 "MES_WEB_OEE_RUNTIME_STATE_PATH": str(state_path),
                 "MES_WEB_EXCEL_WORKBOOK_PATH": str(workbook_path),
                 "MES_WEB_EXCEL_TEMPLATE_PATH": str(template_path),
+                "MES_WEB_CUTTING_WORKFLOW_ENABLED": "1" if cutting_enabled else "0",
             },
             clear=False,
         ):
@@ -165,12 +166,88 @@ class KioskAppTests(unittest.TestCase):
     def test_manual_coating_starts_with_no_order_and_is_local_only(self) -> None:
         client, _config, _manager, _store, _runtime = self._build_client()
         self.assertIsNone(client.get("/api/manual-coating").json()["progress"])
+        self.assertEqual(client.get("/giyotin").status_code, 404)
         remote, *_ = self._build_client(host="192.0.2.10")
         self.assertEqual(remote.get("/kaplama").status_code, 403)
         self.assertEqual(remote.get("/api/manual-coating").status_code, 403)
         self.assertEqual(remote.post("/api/manual-coating", json={
             "order_id": "IE-10", "order_key": "", "operator": "Ayşe", "quantity": 5, "request_id": "batch-1",
         }).status_code, 403)
+
+    def test_cutting_workflow_requires_the_full_lot_before_coating(self) -> None:
+        client, config, manager, _store, runtime = self._build_client(cutting_enabled=True)
+        manager.import_work_orders([{"orderId": "IE-10", "stockCode": "BOX", "quantity": 10}])
+        manager.start_work_order("IE-10")
+        cutting = "/api/cutting-workflow"
+        coating = "/api/manual-coating"
+        self.assertEqual(client.get("/giyotin").status_code, 200)
+        progress = client.get(coating).json()["progress"]
+        batch = {"order_id": "IE-10", "order_key": progress["order_key"], "operator": "Ayşe"}
+
+        def cutting_action(request_id, action, **fields):
+            return client.post(cutting, json={**batch, "request_id": request_id, "action": action, **fields})
+
+        self.assertFalse(progress["can_record"])
+        first = cutting_action("cut-1", "cut", quantity=5)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["progress"]["cutting"]["cut_qty"], 5)
+        self.assertTrue(cutting_action("cut-1", "cut", quantity=5).json()["duplicate"])
+        with self.assertRaisesRegex(ValueError, "CUTTING_ORDER_TARGET_LOCKED"):
+            manager.import_work_orders([{"orderId": "IE-10", "stockCode": "BOX", "quantity": 12}])
+        self.assertEqual(client.get(coating).json()["progress"]["target_qty"], 10)
+        self.assertEqual(cutting_action("park-early", "park").status_code, 409)
+        self.assertEqual(client.post(coating, json={**batch, "request_id": "coat-early", "quantity": 5}).status_code, 409)
+
+        self.assertEqual(cutting_action("cut-2", "cut", quantity=5).status_code, 200)
+        parked = cutting_action("park-1", "park").json()["progress"]["cutting"]
+        self.assertEqual(parked["status"], "parked")
+        self.assertTrue(parked["lot_id"])
+        self.assertTrue(cutting_action("park-1", "park").json()["duplicate"])
+        self.assertFalse(client.get(coating).json()["progress"]["can_record"])
+        self.assertEqual(cutting_action("pickup-wrong", "pickup", lot_id="WRONG").status_code, 409)
+        pickup = cutting_action("pickup-1", "pickup", lot_id=parked["lot_id"])
+        self.assertEqual(pickup.status_code, 200, pickup.text)
+        self.assertTrue(pickup.json()["progress"]["can_record"])
+        self.assertTrue(cutting_action("pickup-1", "pickup", lot_id=parked["lot_id"]).json()["duplicate"])
+
+        coated = client.post(coating, json={**batch, "request_id": "coat-1", "quantity": 5})
+        self.assertEqual(coated.status_code, 200, coated.text)
+        self.assertEqual(coated.json()["progress"]["completed_qty"], 5)
+        self.assertEqual(manager.read_state()["manualCoatingRecords"]["coat-1"]["lot_id"], parked["lot_id"])
+        dashboard = client.get(f"/api/modules/{config.module_id}/dashboard").json()["work_orders"]
+        self.assertEqual(dashboard["manual_coating"]["cutting"]["status"], "picked_up")
+        self.assertEqual(manager.read_state()["workOrders"]["ordersById"]["IE-10"]["completedQty"], 0)
+        self.assertEqual(runtime.mqtt_client.published, [])
+
+    def test_cutting_wip_has_one_place_and_can_recover_after_an_order_switch(self) -> None:
+        client, _config, manager, _store, _runtime = self._build_client(cutting_enabled=True)
+        manager.import_work_orders([
+            {"orderId": "IE-1", "stockCode": "BOX", "quantity": 10},
+            {"orderId": "IE-2", "stockCode": "BOX", "quantity": 10},
+        ])
+        manager.start_work_order("IE-1")
+        url = "/api/cutting-workflow"
+
+        def active_batch():
+            current = client.get("/api/manual-coating").json()["progress"]
+            return {"order_id": current["order_id"], "order_key": current["order_key"], "operator": "Ayşe"}
+
+        batch_one = active_batch()
+        self.assertEqual(client.post(url, json={**batch_one, "request_id": "cut-a", "action": "cut", "quantity": 10}).status_code, 200)
+        parked = client.post(url, json={**batch_one, "request_id": "park-a", "action": "park"}).json()["wip"]
+        manager.rollback_active_work_order()
+        manager.start_work_order("IE-2")
+        batch_two = active_batch()
+        self.assertEqual(client.post(url, json={**batch_two, "request_id": "cut-b", "action": "cut", "quantity": 10}).status_code, 200)
+        blocked = client.post(url, json={**batch_two, "request_id": "park-b", "action": "park"})
+        self.assertEqual(blocked.json()["detail"], "CUTTING_WIP_OCCUPIED")
+        self.assertEqual(client.post(url, json={**batch_two, "request_id": "pickup-b", "action": "pickup", "lot_id": parked["lot_id"]}).status_code, 409)
+        withdrawn = client.post(url, json={**batch_one, "request_id": "withdraw-a", "action": "withdraw", "lot_id": parked["lot_id"]})
+        self.assertEqual(withdrawn.status_code, 200, withdrawn.text)
+        self.assertIsNone(withdrawn.json()["wip"])
+        successor = client.post(url, json={**batch_two, "request_id": "park-b", "action": "park"})
+        self.assertEqual(successor.status_code, 200, successor.text)
+        self.assertEqual(successor.json()["wip"]["order_id"], "IE-2")
 
     def test_kiosk_bootstrap_returns_idle_big_action_and_operator_list(self) -> None:
         client, config, _manager, _store, _runtime_service = self._build_client()

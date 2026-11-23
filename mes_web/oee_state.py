@@ -11,6 +11,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any
 
+from .cutting_workflow import apply_cutting_action, cutting_batch, empty_cutting_workflow, waiting_lot
 from .ferp_labels import FerpLabelRegistryError, validate_label_payload
 from .manual_coating import manual_coating_order_key, manual_coating_progress
 from .parsers import (
@@ -119,6 +120,7 @@ def default_runtime_state() -> dict[str, Any]:
     return {
         "version": 5,
         "manualCoatingRecords": {},
+        "cuttingWorkflow": empty_cutting_workflow(),
         "shiftSelected": "SHIFT-A",
         "performanceMode": "TARGET",
         "targetQty": 14,
@@ -1390,6 +1392,11 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     records = candidate.get("manualCoatingRecords")
     if isinstance(records, dict):
         base["manualCoatingRecords"] = records
+    workflow = candidate.get("cuttingWorkflow")
+    if isinstance(workflow, dict):
+        for key in base["cuttingWorkflow"]:
+            if isinstance(workflow.get(key), dict):
+                base["cuttingWorkflow"][key] = workflow[key]
 
     selected = str(candidate.get("shiftSelected") or base["shiftSelected"]).upper()
     base["shiftSelected"] = selected if selected in SHIFT_PRESETS else base["shiftSelected"]
@@ -3038,16 +3045,18 @@ class OeeRuntimeStateManager:
 
     @_state_locked
     def record_manual_coating(
-        self, *, request_id: str, order_id: str, order_key: str, operator: str, quantity: int
+        self, *, request_id: str, order_id: str, order_key: str, operator: str, quantity: int, cutting_enabled: bool = False
     ) -> dict[str, Any]:
         state = self.read_state()
         records = state["manualCoatingRecords"]
-        progress = manual_coating_progress(state)
+        progress = manual_coating_progress(state, cutting_enabled=cutting_enabled)
         batch = {
             "order_id": order_id, "order_key": order_key,
             "operator": operator, "quantity": quantity,
         }
         previous = records.get(request_id)
+        if request_id in state["cuttingWorkflow"]["receipts"]:
+            raise ValueError("COATING_REQUEST_CONFLICT")
         if previous is not None:
             if any(previous[key] != value for key, value in batch.items()):
                 raise ValueError("COATING_REQUEST_CONFLICT")
@@ -3055,12 +3064,27 @@ class OeeRuntimeStateManager:
 
         if not progress or (order_id, order_key) != (progress["order_id"], progress["order_key"]):
             raise ValueError("COATING_ORDER_CHANGED")
+        if cutting_enabled and progress["cutting"]["status"] != "picked_up":
+            raise ValueError("COATING_LOT_REQUIRED")
         if not progress["can_record"] or not 0 < quantity <= progress["remaining_qty"]:
             raise ValueError("COATING_QUANTITY_UNAVAILABLE")
 
         records[request_id] = {**batch, "recorded_at": datetime.now(timezone.utc).isoformat()}
+        if cutting_enabled:
+            records[request_id]["lot_id"] = progress["cutting"]["lot_id"]
         self.write_state(state)
-        return {"duplicate": False, "progress": manual_coating_progress(state)}
+        return {"duplicate": False, "progress": manual_coating_progress(state, cutting_enabled=cutting_enabled)}
+
+    @_state_locked
+    def record_cutting_action(self, request_id: str, action: dict[str, Any]) -> dict[str, Any]:
+        state = self.read_state()
+        if request_id in state["manualCoatingRecords"]:
+            raise ValueError("CUTTING_REQUEST_CONFLICT")
+        progress = manual_coating_progress(state, cutting_enabled=True)
+        duplicate = apply_cutting_action(state, progress, request_id, action)
+        if not duplicate:
+            self.write_state(state)
+        return {"duplicate": duplicate, "progress": manual_coating_progress(state, cutting_enabled=True), "wip": waiting_lot(state)}
 
     @_state_locked
     def deactivate_active_shift_on_startup(self, *, now: datetime | None = None) -> bool:
@@ -3795,6 +3819,14 @@ class OeeRuntimeStateManager:
             )
             existing = existing_orders.get(order_id)
             merged["manualCoatingKey"] = manual_coating_order_key(existing) if existing else uuid.uuid4().hex
+            if existing and cutting_batch(state, order_id, merged["manualCoatingKey"]):
+                changes_unit = (merged["unit"].casefold() or "adet") != (existing["unit"].casefold() or "adet")
+                supplies_target = any(key in prepared_order for key in ("qty", "quantity", "miktar", "lblMMFB0_QTY"))
+                changes_target = merged["quantity"] != existing["quantity"] or (
+                    supplies_target and normalized["quantity"] != existing["quantity"]
+                )
+                if changes_target or changes_unit:
+                    raise ValueError("CUTTING_ORDER_TARGET_LOCKED")
             if isinstance(existing, dict) and str(existing.get("status") or "") in {"active", "completed"}:
                 merged["status"] = str(existing.get("status") or merged["status"])
                 merged["startedAt"] = str(existing.get("startedAt") or merged["startedAt"])

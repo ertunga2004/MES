@@ -46,6 +46,7 @@ class AppConfig:
     host: str = "127.0.0.1"
     port: int = 8080
     module_id: str = "konveyor_main"
+    cutting_workflow_enabled: bool = False
     module_type: str = "conveyor"
     module_title: str = "Konveyor Ana Hat"
     ui_phase: str = "live_ops"
@@ -192,6 +193,7 @@ class AppConfig:
             host=os.getenv("MES_WEB_HOST", "127.0.0.1"),
             port=int(os.getenv("MES_WEB_PORT", "8080")),
             module_id=os.getenv("MES_WEB_MODULE_ID", "konveyor_main"),
+            cutting_workflow_enabled=_env_bool("MES_WEB_CUTTING_WORKFLOW_ENABLED", False),
             module_type=os.getenv("MES_WEB_MODULE_TYPE", "conveyor"),
             module_title=os.getenv("MES_WEB_MODULE_TITLE", "Konveyor Ana Hat"),
             ui_phase=os.getenv("MES_WEB_UI_PHASE", "live_ops"),

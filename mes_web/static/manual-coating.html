@@ -13,7 +13,7 @@
     <header class="topbar">
       <div>
         <p class="eyebrow">ATÖLYE MES</p>
-        <h1>Manuel kaplama</h1>
+        <h1 id="station-title">Manuel kaplama</h1>
       </div>
     </header>
     <section class="card coating-card" aria-labelledby="order">
@@ -22,16 +22,22 @@
       <output class="coating-count" id="count" aria-live="polite">–</output>
       <progress id="progress" aria-label="Kaplama ilerlemesi" max="1" value="0"></progress>
       <p id="order-status" class="muted"></p>
+      <p id="waiting-lot" class="muted" hidden></p>
       <form id="coating-form">
         <label class="field" for="operator">
           <span>Operatör adı ve soyadı</span>
           <input id="operator" maxlength="100" autocomplete="name" required>
         </label>
-        <label class="field" for="quantity">
-          <span>Kaplanan parça adedi</span>
+        <label class="field" for="quantity" id="quantity-field">
+          <span id="quantity-label">Kaplanan parça adedi</span>
           <input id="quantity" type="number" inputmode="numeric" min="1" step="1" required>
         </label>
+        <label class="field" for="lot-id" id="lot-field" hidden>
+          <span>Fiziksel parti kodu</span>
+          <input id="lot-id" maxlength="32" spellcheck="false" autocomplete="off" autocapitalize="characters">
+        </label>
         <button class="secondary-button" id="save" type="submit" disabled>Kaplamayı kaydet</button>
+        <button class="secondary-button" id="withdraw" type="submit" value="withdraw" formnovalidate hidden>Partiyi bekleme alanından geri çek</button>
       </form>
       <p id="notice" role="status" class="coating-notice"></p>
     </section>

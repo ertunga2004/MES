@@ -1271,7 +1271,6 @@ function renderWorkOrders(snapshot) {
   const controls = workOrders.controls || {};
   const activeOrder = workOrders.active_order;
   const cutting = workOrders.manual_coating?.cutting;
-  const waitingLot = workOrders.cutting_wip;
   const acceptancePending = Boolean(activeOrder && (activeOrder.acceptance_pending || activeOrder.status === "pending_approval"));
   const completed = [...(workOrders.completed || [])].sort(
     (left, right) => String(right.completed_at || right.auto_completed_at || "").localeCompare(String(left.completed_at || left.auto_completed_at || "")) || String(right.order_id || "").localeCompare(String(left.order_id || ""))
@@ -1320,13 +1319,7 @@ function renderWorkOrders(snapshot) {
       <strong>${summary.last_completed_order_id || "-"}</strong>
       <small>${formatTime(summary.last_completed_at)}</small>
     </article>
-    ${waitingLot ? `<article class="work-order-metric-card">
-      <span>Bekleme alanı</span>
-      <strong>${formatNumber(waitingLot.cut_qty)} adet</strong>
-      <small data-wip-lot></small>
-    </article>` : ""}
   `;
-  if (waitingLot) els.workOrderSummary.querySelector("[data-wip-lot]").textContent = `${waitingLot.order_id} · ${waitingLot.lot_id}`;
 
   if (!activeOrder) {
     els.workOrderActive.innerHTML = `<p class="empty-state">Aktif is emri yok. Operator kuyruktaki siradaki emri secebilir.</p>`;
@@ -1370,9 +1363,9 @@ function renderWorkOrders(snapshot) {
         ` : ""}
         ${workOrders.manual_coating?.unit_supported ? `
           <p class="work-order-row-meta">
-            ${cutting ? `<span>Giyotin ${formatNumber(cutting.cut_qty)} / ${formatNumber(workOrders.manual_coating.target_qty)}</span>
-              <span>${{ cutting: "Kesim", parked: "Bekleme alanında", picked_up: "Kaplamaya teslim edildi" }[cutting.status] || ""}</span>` : ""}
-            <span>Manuel kaplama ${formatNumber(workOrders.manual_coating.completed_qty)} / ${formatNumber(workOrders.manual_coating.target_qty)}</span>
+            ${cutting ? `<span>Giyotin ${formatNumber(cutting.cut_tapes)} / ${formatNumber(cutting.target_tapes)} bant parçası</span>
+              <span>Kaplamaya hazır ${formatNumber(cutting.available_boxes)} kutu</span>` : ""}
+            <span>Manuel kaplama ${formatNumber(workOrders.manual_coating.completed_qty)} / ${formatNumber(workOrders.manual_coating.target_qty)}${cutting ? " kutu" : ""}</span>
             ${workOrders.manual_coating.awaiting_handoff ? "<span>Hat teslimi bekleniyor</span>" : ""}
           </p>
         ` : ""}

@@ -12,7 +12,6 @@ from pydantic import BaseModel, StrictInt, StrictStr
 
 from .command_policy import is_local_only_command
 from .config import AppConfig
-from .cutting_workflow import waiting_lot
 from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
 from .manual_coating import manual_coating_progress
 from .masterdata import load_kiosk_masterdata
@@ -42,9 +41,8 @@ class ManualCoatingBatch(LocalStationRequest):
 
 
 class CuttingRequest(LocalStationRequest):
-    action: Literal["cut", "park", "pickup", "withdraw"]
-    quantity: StrictInt | None = None
-    lot_id: StrictStr = ""
+    action: Literal["cut"] = "cut"
+    quantity: StrictInt
 
 
 def _require_local_coating(request: Request) -> None:
@@ -860,8 +858,7 @@ def create_app() -> FastAPI:
     async def get_manual_coating(request: Request) -> dict[str, Any]:
         _require_local_coating(request)
         state = oee_state_manager.read_state()
-        enabled = config.cutting_workflow_enabled
-        return {"progress": manual_coating_progress(state, cutting_enabled=enabled), "wip": waiting_lot(state) if enabled else None}
+        return {"progress": manual_coating_progress(state, cutting_enabled=config.cutting_workflow_enabled)}
 
     @app.post("/api/manual-coating")
     async def post_manual_coating(request: Request, batch: ManualCoatingBatch) -> dict[str, Any]:
@@ -892,15 +889,12 @@ def create_app() -> FastAPI:
         operator = _local_station_operator(request, batch)
         if not config.cutting_workflow_enabled:
             raise HTTPException(status_code=404, detail="CUTTING_DISABLED")
-        lot_id = batch.lot_id.strip().upper()
-        if batch.action == "cut" and (batch.quantity is None or batch.quantity <= 0):
+        if batch.quantity <= 0:
             raise HTTPException(status_code=422, detail="CUTTING_INVALID_QUANTITY")
-        if batch.action in {"pickup", "withdraw"} and not lot_id:
-            raise HTTPException(status_code=422, detail="CUTTING_LOT_REQUIRED")
         try:
             result = oee_state_manager.record_cutting_action(batch.request_id, {
                 "operation": batch.action, "order_id": batch.order_id, "order_key": batch.order_key,
-                "operator": operator, "lot_id": lot_id, "quantity": batch.quantity,
+                "operator": operator, "quantity": batch.quantity,
             })
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

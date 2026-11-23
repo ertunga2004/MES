@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .cutting_workflow import cutting_batch
+from .cutting_workflow import TAPES_PER_BOX, cutting_batch
 
 def manual_coating_order_key(order: dict[str, Any]) -> str:
     return order.get("manualCoatingKey") or f"legacy:{order['queuedAt']}"
@@ -35,14 +35,19 @@ def manual_coating_progress(state: dict[str, Any], *, cutting_enabled: bool = Fa
         "awaiting_handoff": active and complete and order["productionQty"] == 0,
         "can_record": active and unit_supported and completed < target,
     }
-    if cutting_enabled:
-        batch = cutting_batch(state, order_id, order_key)
-        status = batch.get("status", "cutting")
-        cut_qty = batch.get("cut_qty", 0)
+    batch = cutting_batch(state, order_id, order_key)
+    if cutting_enabled or "cut_tapes" in batch:
+        legacy_blocked = "cut_tapes" not in batch and (bool(batch) or completed > 0)
+        cut_tapes = batch.get("cut_tapes", 0)
+        available_boxes = max(0, min(target, cut_tapes // TAPES_PER_BOX) - completed)
         progress["cutting"] = {
-            "status": status, "cut_qty": cut_qty, "lot_id": batch.get("lot_id", ""),
+            "target_tapes": target * TAPES_PER_BOX,
+            "cut_tapes": cut_tapes,
+            "unpaired_tapes": cut_tapes % TAPES_PER_BOX,
+            "available_boxes": available_boxes,
             "order_open": active and unit_supported and target > 0,
+            "legacy_blocked": legacy_blocked,
         }
-        progress["can_record"] &= status == "picked_up" and completed < cut_qty
-        progress["remaining_qty"] = max(0, min(target, cut_qty) - completed)
+        progress["can_record"] &= not legacy_blocked and available_boxes > 0
+        progress["remaining_qty"] = available_boxes
     return progress

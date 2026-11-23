@@ -11,7 +11,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any
 
-from .cutting_workflow import apply_cutting_action, cutting_batch, empty_cutting_workflow, waiting_lot
+from .cutting_workflow import TAPES_PER_BOX, apply_cutting_action, cutting_batch, empty_cutting_workflow
 from .ferp_labels import FerpLabelRegistryError, validate_label_payload
 from .manual_coating import manual_coating_order_key, manual_coating_progress
 from .parsers import (
@@ -3064,14 +3064,12 @@ class OeeRuntimeStateManager:
 
         if not progress or (order_id, order_key) != (progress["order_id"], progress["order_key"]):
             raise ValueError("COATING_ORDER_CHANGED")
-        if cutting_enabled and progress["cutting"]["status"] != "picked_up":
-            raise ValueError("COATING_LOT_REQUIRED")
         if not progress["can_record"] or not 0 < quantity <= progress["remaining_qty"]:
             raise ValueError("COATING_QUANTITY_UNAVAILABLE")
 
         records[request_id] = {**batch, "recorded_at": datetime.now(timezone.utc).isoformat()}
-        if cutting_enabled:
-            records[request_id]["lot_id"] = progress["cutting"]["lot_id"]
+        if "cutting" in progress:
+            records[request_id]["tapes_used"] = quantity * TAPES_PER_BOX
         self.write_state(state)
         return {"duplicate": False, "progress": manual_coating_progress(state, cutting_enabled=cutting_enabled)}
 
@@ -3084,7 +3082,7 @@ class OeeRuntimeStateManager:
         duplicate = apply_cutting_action(state, progress, request_id, action)
         if not duplicate:
             self.write_state(state)
-        return {"duplicate": duplicate, "progress": manual_coating_progress(state, cutting_enabled=True), "wip": waiting_lot(state)}
+        return {"duplicate": duplicate, "progress": manual_coating_progress(state, cutting_enabled=True)}
 
     @_state_locked
     def deactivate_active_shift_on_startup(self, *, now: datetime | None = None) -> bool:

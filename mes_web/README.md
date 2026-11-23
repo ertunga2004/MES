@@ -28,15 +28,15 @@ Sunucu bilgisayarında `http://127.0.0.1:8080/kaplama` adresini aç. Mevcut MES'
 
 Kaplama kayıtları mevcut çalışma durumu dosyasında iş emri, operatör adı, miktar, zaman ve istek kimliğiyle saklanır. Aynı isteğin tekrarı yeni kayıt üretmez. Kaplama kaydı konveyör komutu göndermez ve hattın üretim miktarını ya da OEE sonucunu artırmaz. Bu ilk sürümün kaplama işlemleri sunucu bilgisayarında kullanılabilir. İstasyon tabletinin eşleştirilmesi ayrıca bağlanacaktır.
 
-### Giyotin ve bekleme alanı
+### Giyotin ve doğrudan kaplama
 
 İki istasyonlu akışı, aktif tek istasyonlu kaplama işini bitirdikten sonra sunucuyu `MES_WEB_CUTTING_WORKFLOW_ENABLED=1` ile başlatarak aç. PowerShell'de başlatma öncesinde `$env:MES_WEB_CUTTING_WORKFLOW_ENABLED = "1"` kullan. Ayar kapalıyken tek istasyonlu kaplama akışı kullanılabilir.
 
-1. MES'te adet birimli bir iş emrini etkinleştir. Sunucu bilgisayarında `http://127.0.0.1:8080/giyotin` adresinden kesilen adedi kaydet. Bu ekran sadece operatör kaydı alır.
-2. İş emrinin tüm adedi kesildiğinde fiziksel partiye gösterilen kodu yaz ve partiyi bekleme alanına bırak. Alan aynı anda bir parti alır. Yanlış bırakılan parti giyotin ekranından koduyla geri çekilebilir.
-3. `http://127.0.0.1:8080/kaplama` ekranında fiziksel parti üzerindeki kodu girip teslim al. Ardından kaplanan adedi kaydet. Yönetici ekranının **İş Emirleri** sekmesi kesim, bekleme alanı ve kaplama ilerlemesini gösterir.
+1. MES'te kutu adedi üzerinden bir iş emrini etkinleştir. Sunucu bilgisayarında `http://127.0.0.1:8080/giyotin` adresinden kesilen bant parçası sayısını kaydet. 10 kutuluk emir, 20 bant parçası hedefi gösterir.
+2. `http://127.0.0.1:8080/kaplama` ekranında ilk iki bant hazır olduğunda bir kutu için kaplama kaydı açılır. Her yeni bant çifti bir kutuya yeter. Tek kalan bant parçası, bir sonraki kesimi bekler.
+3. Kaplanan kutu sayısını kaydet. Her kutu iki hazır bant parçası kullanır. Yönetici ekranının **İş Emirleri** sekmesi kesilen bant, kaplamaya hazır kutu ve kaplanan kutu miktarlarını ayrı gösterir.
 
-İlk akışta iş emri hedefinin tamamı tek parti olarak devredilir. Örneğin 5/10 kesim kaplamayı açmaz. İlk kesim kaydından sonra iş emrinin hedef adedi ve birimi sabitlenir. Kesim veya parti devri konveyör üretimine veya OEE'ye eklenmez. Her işlem bir istek kimliğiyle saklanır ve aynı isteğin tekrarı yeni kayıt üretmez.
+Bu akış iki istasyonu yan yana kabul eder. Bant kesildiğinde kaplamaya hazır sayılır. Ayrı parti teslimi, bekleme alanı ve taşıma süresi bu sürümde kullanılmaz. İlk kesim kaydından sonra iş emrinin hedef adedi ve birimi sabitlenir. Başka bir akışla kayıt alınmış emirleri karıştırmamak için doğrudan aktarıma yeni bir iş emriyle başla. Kesim ve kaplama konveyör üretimine veya OEE'ye eklenmez. Aynı isteğin tekrarı yeni kayıt üretmez.
 
 ## Aktif API
 

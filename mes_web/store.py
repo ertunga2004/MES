@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import AppConfig
-from .cutting_workflow import waiting_lot
 from .manual_coating import manual_coating_progress
 from .oee_state import build_live_snapshot, build_work_order_snapshot, read_runtime_state_file, shift_options
 from .parsers import (
@@ -827,7 +826,6 @@ class DashboardStore:
             module["work_orders"] = {
                 "enabled": True,
                 "manual_coating": manual_coating_progress(payload, cutting_enabled=self.config.cutting_workflow_enabled),
-                "cutting_wip": waiting_lot(payload) if self.config.cutting_workflow_enabled else None,
                 "updated_at": payload.get("lastUpdatedAt") or payload.get("lastSnapshotLoggedAt") or module["work_orders"].get("updated_at"),
                 "controls": {
                     "tolerance_ms": _duration_ms(

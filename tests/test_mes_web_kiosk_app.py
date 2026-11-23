@@ -61,7 +61,7 @@ class _FakeRuntimeService:
 
 
 class KioskAppTests(unittest.TestCase):
-    def _build_client(self):
+    def _build_client(self, host="127.0.0.1"):
         if TestClient is None or app_module is None:
             self.skipTest("fastapi is not installed")
         temp_dir = tempfile.TemporaryDirectory()
@@ -97,9 +97,80 @@ class KioskAppTests(unittest.TestCase):
             active_patch.start()
             self.addCleanup(active_patch.stop)
         app = app_module.create_app()
-        client = TestClient(app)
+
+        async def app_with_client(scope, receive, send):
+            await app({**scope, "client": (host, 50000)}, receive, send)
+
+        client = TestClient(app_with_client, base_url="http://127.0.0.1:8080")
         self.addCleanup(client.close)
         return client, config, manager, store, runtime_service
+
+    def test_manual_coating_counts_partial_batches_without_counting_line_output(self) -> None:
+        client, config, manager, _store, runtime = self._build_client()
+        manager.import_work_orders([{"orderId": "IE-10", "stockCode": "BOX", "quantity": 10}])
+        manager.start_work_order("IE-10")
+        url = "/api/manual-coating"
+        self.assertEqual(client.get("/kaplama").status_code, 200)
+        progress = client.get(url).json()["progress"]
+        self.assertEqual((progress["completed_qty"], progress["target_qty"]), (0, 10))
+        batch = {
+            "order_id": "IE-10", "order_key": progress["order_key"],
+            "operator": "Ayşe", "quantity": 5, "request_id": "batch-1",
+        }
+
+        foreign = client.post(url, json=batch, headers={"Origin": "https://other.example"})
+        self.assertEqual(foreign.status_code, 403)
+        missing_type = client.post(url, content=(
+            '{"request_id":"batch-1","order_id":"IE-10","order_key":"","operator":"Test","quantity":5}'
+        ))
+        self.assertIn(missing_type.status_code, {415, 422})
+        self.assertEqual(manager.read_state()["manualCoatingRecords"], {})
+
+        response = client.post(url, json=batch, headers={"Origin": "http://127.0.0.1:8080"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["progress"]["completed_qty"], 5)
+        self.assertFalse(response.json()["progress"]["complete"])
+        manager.import_work_orders([{"orderId": "IE-10", "stockCode": "BOX", "quantity": 10, "queuedAt": "2026-01-01"}])
+        self.assertTrue(client.post(url, json=batch).json()["duplicate"])
+        self.assertEqual(client.get(url).json()["progress"]["completed_qty"], 5)
+        self.assertEqual(client.post(url, json={**batch, "quantity": 4}).status_code, 409)
+        self.assertEqual(client.post(url, json={**batch, "request_id": "excess", "quantity": 6}).status_code, 409)
+        self.assertEqual(client.post(url, json={**batch, "request_id": "invalid", "quantity": True}).status_code, 422)
+        self.assertEqual(client.post(url, json={**batch, "request_id": "wrong", "order_id": "IE-old"}).status_code, 409)
+
+        dashboard = client.get(f"/api/modules/{config.module_id}/dashboard").json()
+        self.assertEqual(dashboard["work_orders"]["manual_coating"]["completed_qty"], 5)
+        next_batch = client.post(url, json={**batch, "request_id": "batch-2"}).json()["progress"]
+        self.assertEqual(next_batch["completed_qty"], 10)
+        self.assertTrue(next_batch["complete"])
+        state = manager.read_state()
+        self.assertEqual(len(state["manualCoatingRecords"]), 2)
+        self.assertEqual(state["workOrders"]["ordersById"]["IE-10"]["completedQty"], 0)
+        self.assertEqual(state["workOrders"]["ordersById"]["IE-10"]["status"], "active")
+        self.assertEqual(runtime.mqtt_client.published, [])
+
+        manager.reset_work_orders()
+        manager.import_work_orders([{"orderId": "IE-10", "stockCode": "BOX", "quantity": 10, "queuedAt": "2026-01-01"}])
+        manager.start_work_order("IE-10")
+        self.assertEqual(client.get(url).json()["progress"]["completed_qty"], 0)
+        self.assertTrue(client.post(url, json=batch).json()["duplicate"])
+        self.assertEqual(client.post(url, json={**batch, "request_id": "stale-order"}).status_code, 409)
+
+        manager.import_work_orders([{"orderId": "IE-10", "stockCode": "BOX", "quantity": 10, "unit": "KG"}])
+        progress = client.get(url).json()["progress"]
+        self.assertFalse(progress["unit_supported"])
+        response = client.post(url, json={**batch, "request_id": "wrong-unit", "order_key": progress["order_key"]})
+        self.assertEqual(response.status_code, 409)
+
+    def test_manual_coating_starts_with_no_order_and_is_local_only(self) -> None:
+        client, _config, _manager, _store, _runtime = self._build_client()
+        self.assertIsNone(client.get("/api/manual-coating").json()["progress"])
+        remote, *_ = self._build_client(host="192.0.2.10")
+        self.assertEqual(remote.get("/kaplama").status_code, 403)
+        self.assertEqual(remote.get("/api/manual-coating").status_code, 403)
+        self.assertEqual(remote.post("/api/manual-coating", json={
+            "order_id": "IE-10", "order_key": "", "operator": "Ayşe", "quantity": 5, "request_id": "batch-1",
+        }).status_code, 403)
 
     def test_kiosk_bootstrap_returns_idle_big_action_and_operator_list(self) -> None:
         client, config, _manager, _store, _runtime_service = self._build_client()

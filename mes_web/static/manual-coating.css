@@ -1,0 +1,47 @@
+.coating-shell {
+  max-width: 720px;
+}
+
+.coating-card {
+  display: grid;
+  gap: .75rem;
+  margin-top: 1rem;
+  padding: clamp(1.25rem, 3vw, 2rem);
+}
+
+.coating-card h2,
+.coating-card p {
+  margin: 0;
+}
+
+.coating-count {
+  font-size: clamp(2rem, 6vw, 3rem);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.coating-card progress {
+  width: 100%;
+  height: 1rem;
+  accent-color: #2b9d79;
+}
+
+#coating-form {
+  display: grid;
+  gap: 1rem;
+  margin-top: .5rem;
+}
+
+#coating-form input {
+  min-height: 46px;
+  padding: .65rem .8rem;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  font: inherit;
+}
+
+.coating-notice {
+  min-height: 1.4em;
+}

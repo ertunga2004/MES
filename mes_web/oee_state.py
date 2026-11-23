@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .ferp_labels import FerpLabelRegistryError, validate_label_payload
+from .manual_coating import manual_coating_order_key, manual_coating_progress
 from .parsers import (
     normalize_color,
     parse_mega_event_from_log,
@@ -117,6 +118,7 @@ class WorkOrderTransitionReasonRequired(ValueError):
 def default_runtime_state() -> dict[str, Any]:
     return {
         "version": 5,
+        "manualCoatingRecords": {},
         "shiftSelected": "SHIFT-A",
         "performanceMode": "TARGET",
         "targetQty": 14,
@@ -1239,6 +1241,7 @@ def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = Non
         "matchKey": _text_or_default(entry.get("matchKey") or current.get("matchKey"), color or product_code or stock_code or order_id),
         "status": status,
         "queuedAt": _text_or_default(entry.get("queuedAt") or current.get("queuedAt"), queued_at),
+        "manualCoatingKey": _text_or_default(current.get("manualCoatingKey") or entry.get("manualCoatingKey")),
         "startedAt": _text_or_default(entry.get("startedAt") or current.get("startedAt")),
         "autoCompletedAt": _text_or_default(entry.get("autoCompletedAt") or current.get("autoCompletedAt")),
         "completedAt": _text_or_default(entry.get("completedAt") or current.get("completedAt")),
@@ -1384,6 +1387,9 @@ def _sanitize_reused_items_after_load(state: dict[str, Any]) -> None:
 def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     candidate = payload if isinstance(payload, dict) else {}
     base = default_runtime_state()
+    records = candidate.get("manualCoatingRecords")
+    if isinstance(records, dict):
+        base["manualCoatingRecords"] = records
 
     selected = str(candidate.get("shiftSelected") or base["shiftSelected"]).upper()
     base["shiftSelected"] = selected if selected in SHIFT_PRESETS else base["shiftSelected"]
@@ -3031,6 +3037,32 @@ class OeeRuntimeStateManager:
         write_runtime_state_file(self.path, state)
 
     @_state_locked
+    def record_manual_coating(
+        self, *, request_id: str, order_id: str, order_key: str, operator: str, quantity: int
+    ) -> dict[str, Any]:
+        state = self.read_state()
+        records = state["manualCoatingRecords"]
+        progress = manual_coating_progress(state)
+        batch = {
+            "order_id": order_id, "order_key": order_key,
+            "operator": operator, "quantity": quantity,
+        }
+        previous = records.get(request_id)
+        if previous is not None:
+            if any(previous[key] != value for key, value in batch.items()):
+                raise ValueError("COATING_REQUEST_CONFLICT")
+            return {"duplicate": True, "progress": progress}
+
+        if not progress or (order_id, order_key) != (progress["order_id"], progress["order_key"]):
+            raise ValueError("COATING_ORDER_CHANGED")
+        if not progress["can_record"] or not 0 < quantity <= progress["remaining_qty"]:
+            raise ValueError("COATING_QUANTITY_UNAVAILABLE")
+
+        records[request_id] = {**batch, "recorded_at": datetime.now(timezone.utc).isoformat()}
+        self.write_state(state)
+        return {"duplicate": False, "progress": manual_coating_progress(state)}
+
+    @_state_locked
     def deactivate_active_shift_on_startup(self, *, now: datetime | None = None) -> bool:
         state = self.read_state()
         if not state["shift"]["active"]:
@@ -3762,6 +3794,7 @@ class OeeRuntimeStateManager:
                 queued_at=str((existing_orders.get(order_id) or {}).get("queuedAt") or queued_at),
             )
             existing = existing_orders.get(order_id)
+            merged["manualCoatingKey"] = manual_coating_order_key(existing) if existing else uuid.uuid4().hex
             if isinstance(existing, dict) and str(existing.get("status") or "") in {"active", "completed"}:
                 merged["status"] = str(existing.get("status") or merged["status"])
                 merged["startedAt"] = str(existing.get("startedAt") or merged["startedAt"])

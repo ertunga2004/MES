@@ -1360,6 +1360,12 @@ function renderWorkOrders(snapshot) {
           <span>Operator onayi bekleniyor</span>
         </div>
         ` : ""}
+        ${workOrders.manual_coating?.unit_supported ? `
+          <p class="work-order-row-meta">
+            <span>Manuel kaplama ${formatNumber(workOrders.manual_coating.completed_qty)} / ${formatNumber(workOrders.manual_coating.target_qty)}</span>
+            ${workOrders.manual_coating.awaiting_handoff ? "<span>Hat teslimi bekleniyor</span>" : ""}
+          </p>
+        ` : ""}
         ${workOrderProgressBar(activeOrder)}
         ${renderWorkOrderRequirements(activeOrder)}
         <div class="work-order-kpi-grid">

@@ -22,6 +22,12 @@
 
 Kiosk ve teknisyen ekranlari browser tabanlidir. MQTT kullanmaz; `mes_web` ile REST + WebSocket uzerinden konusur.
 
+### Manuel kaplama
+
+Sunucu bilgisayarında `http://127.0.0.1:8080/kaplama` adresini aç. Mevcut MES'te adet birimli bir iş emrini etkinleştir. Operatör kendi adını ve kaplanan parça sayısını girip kaydeder. Etkin iş emri 10 adet ise 5 parçalık kayıt kaplama ilerlemesini **5 / 10** olarak gösterir. Yönetici ekranındaki aktif iş emri kartında aynı ilerleme salt okunur gösterilir.
+
+Kaplama kayıtları mevcut çalışma durumu dosyasında iş emri, operatör adı, miktar, zaman ve istek kimliğiyle saklanır. Aynı isteğin tekrarı yeni kayıt üretmez. Kaplama kaydı konveyör komutu göndermez ve hattın üretim miktarını ya da OEE sonucunu artırmaz. Bu ilk sürümün kaplama işlemleri sunucu bilgisayarında kullanılabilir. İstasyon tabletinin eşleştirilmesi ayrıca bağlanacaktır.
+
 ## Aktif API
 
 - `GET /health`

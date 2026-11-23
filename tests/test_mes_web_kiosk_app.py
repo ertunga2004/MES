@@ -15,7 +15,7 @@ except ModuleNotFoundError:  # pragma: no cover - environment-specific optional 
 
 from mes_web.config import AppConfig
 from mes_web.oee_state import OeeRuntimeStateManager, default_runtime_state
-from mes_web.runtime import SnapshotHub
+from mes_web.runtime import RuntimeService, SnapshotHub
 from mes_web.store import DashboardStore
 
 
@@ -61,7 +61,7 @@ class _FakeRuntimeService:
 
 
 class KioskAppTests(unittest.TestCase):
-    def _build_client(self, host="127.0.0.1", cutting_enabled=False):
+    def _build_client(self, host="127.0.0.1", cutting_enabled=False, kiosk_password=""):
         if TestClient is None or app_module is None:
             self.skipTest("fastapi is not installed")
         temp_dir = tempfile.TemporaryDirectory()
@@ -77,6 +77,7 @@ class KioskAppTests(unittest.TestCase):
                 "MES_WEB_EXCEL_WORKBOOK_PATH": str(workbook_path),
                 "MES_WEB_EXCEL_TEMPLATE_PATH": str(template_path),
                 "MES_WEB_CUTTING_WORKFLOW_ENABLED": "1" if cutting_enabled else "0",
+                "MES_WEB_KIOSK_DESIGN_PASSWORD": kiosk_password,
             },
             clear=False,
         ):
@@ -105,6 +106,108 @@ class KioskAppTests(unittest.TestCase):
         client = TestClient(app_with_client, base_url="http://127.0.0.1:8080")
         self.addCleanup(client.close)
         return client, config, manager, store, runtime_service
+
+    def test_kiosk_designer_pins_running_work_to_a_published_revision(self) -> None:
+        client, _config, manager, _store, runtime = self._build_client(kiosk_password="test-kiosk-only")
+        manager.import_work_orders([{"orderId": "IE-10", "stockCode": "BOX", "quantity": 10}])
+        manager.start_work_order("IE-10")
+        auth = ("muhendis", "test-kiosk-only")
+        designer = "/api/kiosk-designs/kontrol"
+        board = "/api/station-kiosks/kontrol"
+        first = {
+            "title": "Görsel Kontrol", "instructions": "Yüzeyi kontrol et.",
+            "timer": True, "show_target": True, "result_options": ["Sağlam", "Yeniden işlem"],
+            "steps": [{"label": "Yüzey kontrol edildi", "kind": "check", "required": True, "options": []}],
+            "sections": [{"title": "Hatırlatma", "body": "Parti etiketini kontrol et."}],
+        }
+        self.assertEqual(client.get("/kiosk-tasarla").status_code, 401)
+        self.assertEqual(client.get("/kiosk-tasarla", auth=auth).status_code, 200)
+        self.assertEqual(client.put(designer, json={"revision": 0, "design": first}).status_code, 401)
+        draft = client.put(designer, auth=auth, json={"revision": 0, "design": first})
+        self.assertEqual(draft.status_code, 200, draft.text)
+        revision = draft.json()["revision"]
+        self.assertEqual(client.put(designer, auth=auth, json={"revision": 0, "design": first}).json()["revision"], revision)
+        self.assertEqual(client.get(board).status_code, 404)
+        self.assertEqual(client.get("/istasyon/kontrol").status_code, 404)
+        self.assertEqual(client.post(f"{designer}/publish", auth=auth, json={"revision": revision}).json()["published"], 1)
+        self.assertEqual(client.get("/istasyon/kontrol").status_code, 200)
+        original = client.get(board).json()
+        self.assertEqual(original["order"]["quantity"], 10)
+        start = {"run_id": "test-run-1", "operator": "Deneme Operatörü", "order_id": "IE-10", "order_key": original["order"]["key"], "version": 1}
+        self.assertEqual(client.post(f"{board}/start", json=start).status_code, 200)
+        self.assertEqual(client.post(f"{board}/start", json=start).status_code, 200)
+        second = {**first, "instructions": "Yeni talimat", "steps": [{"label": "Ölçü", "kind": "number", "required": True, "options": []}]}
+        revised = client.put(designer, auth=auth, json={"revision": revision, "design": second}).json()["revision"]
+        self.assertEqual(client.post(f"{designer}/publish", auth=auth, json={"revision": revision}).status_code, 409)
+        self.assertEqual(client.post(f"{designer}/publish", auth=auth, json={"revision": revised}).json()["published"], 2)
+        self.assertEqual(client.get(board).json()["design"]["instructions"], first["instructions"])
+        self.assertEqual(client.get(board).json()["active"]["version"], 1)
+        finish = {"run_id": "test-run-1", "values": [False], "result": "Sağlam"}
+        self.assertEqual(client.post(f"{board}/finish", json=finish).status_code, 422)
+        self.assertEqual(client.post(f"{board}/finish", json={**finish, "values": [True]}).status_code, 200)
+        self.assertEqual(client.post(f"{board}/finish", json={**finish, "values": [True]}).status_code, 200)
+        self.assertEqual(client.get(board).json()["version"], 2)
+        self.assertEqual(client.get("/api/kiosk-designs", auth=auth).json()[0]["last_completed"]["result"], "Sağlam")
+        self.assertEqual(len(manager.read_state()["stationKiosks"]["kontrol"]["completed"]), 1)
+        self.assertEqual(manager.read_state()["workOrders"]["ordersById"]["IE-10"]["completedQty"], 0)
+        self.assertEqual(runtime.mqtt_client.published, [])
+
+    def test_kiosk_designer_rejects_remote_editor_and_station_access(self) -> None:
+        client, *_ = self._build_client(host="192.0.2.20", kiosk_password="test-kiosk-only")
+        auth = ("muhendis", "test-kiosk-only")
+        self.assertEqual(client.get("/kiosk-tasarla", auth=auth).status_code, 403)
+        self.assertEqual(client.get("/api/station-kiosks/kontrol").status_code, 403)
+
+    def test_open_kiosk_work_survives_runtime_restart(self) -> None:
+        client, config, manager, _store, _runtime = self._build_client(kiosk_password="test-kiosk-only")
+        manager.apply_control("shift_start")
+        manager.import_work_orders([{"orderId": "IE-10", "stockCode": "BOX", "quantity": 10}])
+        manager.start_work_order("IE-10")
+        design_url = "/api/kiosk-designs/kontrol"
+        board_url = "/api/station-kiosks/kontrol"
+        auth = ("muhendis", "test-kiosk-only")
+        design = {"title": "Kontrol", "instructions": "İlk talimat", "timer": True,
+                  "steps": [{"label": "Kontrol et", "kind": "check"}]}
+        self.assertEqual(client.put(design_url, auth=auth, json={"revision": 0, "design": design}).status_code, 200)
+        self.assertEqual(client.post(f"{design_url}/publish", auth=auth, json={"revision": 1}).status_code, 200)
+        board = client.get(board_url).json()
+        opened = client.post(f"{board_url}/start", json={
+            "run_id": "restart-test", "operator": "Deneme Operatörü", "order_id": "IE-10",
+            "order_key": board["order"]["key"], "version": 1,
+        })
+        self.assertEqual(opened.status_code, 200, opened.text)
+        active_before = opened.json()["active"]
+        self.assertEqual(client.put(design_url, auth=auth, json={
+            "revision": 1, "design": {**design, "instructions": "İkinci talimat"},
+        }).status_code, 200)
+        self.assertEqual(client.post(f"{design_url}/publish", auth=auth, json={"revision": 2}).status_code, 200)
+        client.close()
+
+        fresh_store = DashboardStore(config)
+        fresh_hub = SnapshotHub(fresh_store, coalesce_ms=config.ws_coalesce_ms)
+        restarted_runtime = RuntimeService(config, fresh_store, fresh_hub)
+        self.assertIsNot(restarted_runtime.oee_manager, manager)
+        with (
+            patch.multiple(app_module, store=fresh_store, hub=fresh_hub, runtime_service=restarted_runtime,
+                           oee_state_manager=restarted_runtime.oee_manager),
+            patch.multiple(restarted_runtime.mqtt_client, start=lambda: True, stop=lambda: None),
+            patch.multiple(restarted_runtime.excel_sink, start=lambda: None, stop=lambda: None,
+                           record_work_order_state=lambda _state, _time: None),
+        ):
+            restarted_app = app_module.create_app()
+
+            async def local_app(scope, receive, send):
+                await restarted_app({**scope, "client": ("127.0.0.1", 50000)}, receive, send)
+
+            with TestClient(local_app, base_url="http://127.0.0.1:8080") as restarted:
+                current = restarted.get(board_url).json()
+                self.assertEqual(current["active"], active_before)
+                self.assertEqual(current["design"]["instructions"], "İlk talimat")
+                self.assertFalse(restarted_runtime.oee_manager.read_state()["shift"]["active"])
+                finished = restarted.post(f"{board_url}/finish", json={"run_id": "restart-test", "values": [True]})
+                self.assertEqual(finished.status_code, 200, finished.text)
+                self.assertEqual(finished.json()["version"], 2)
+                self.assertEqual(finished.json()["design"]["instructions"], "İkinci talimat")
 
     def test_manual_coating_counts_partial_batches_without_counting_line_output(self) -> None:
         client, config, manager, _store, runtime = self._build_client()

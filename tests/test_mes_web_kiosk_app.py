@@ -15,7 +15,7 @@ except ModuleNotFoundError:  # pragma: no cover - environment-specific optional 
 
 from mes_web.config import AppConfig
 from mes_web.oee_state import OeeRuntimeStateManager, default_runtime_state
-from mes_web.runtime import SnapshotHub
+from mes_web.runtime import RuntimeService, SnapshotHub
 from mes_web.store import DashboardStore
 
 
@@ -157,6 +157,57 @@ class KioskAppTests(unittest.TestCase):
         auth = ("muhendis", "test-kiosk-only")
         self.assertEqual(client.get("/kiosk-tasarla", auth=auth).status_code, 403)
         self.assertEqual(client.get("/api/station-kiosks/kontrol").status_code, 403)
+
+    def test_open_kiosk_work_survives_runtime_restart(self) -> None:
+        client, config, manager, _store, _runtime = self._build_client(kiosk_password="test-kiosk-only")
+        manager.apply_control("shift_start")
+        manager.import_work_orders([{"orderId": "IE-10", "stockCode": "BOX", "quantity": 10}])
+        manager.start_work_order("IE-10")
+        design_url = "/api/kiosk-designs/kontrol"
+        board_url = "/api/station-kiosks/kontrol"
+        auth = ("muhendis", "test-kiosk-only")
+        design = {"title": "Kontrol", "instructions": "İlk talimat", "timer": True,
+                  "steps": [{"label": "Kontrol et", "kind": "check"}]}
+        self.assertEqual(client.put(design_url, auth=auth, json={"revision": 0, "design": design}).status_code, 200)
+        self.assertEqual(client.post(f"{design_url}/publish", auth=auth, json={"revision": 1}).status_code, 200)
+        board = client.get(board_url).json()
+        opened = client.post(f"{board_url}/start", json={
+            "run_id": "restart-test", "operator": "Deneme Operatörü", "order_id": "IE-10",
+            "order_key": board["order"]["key"], "version": 1,
+        })
+        self.assertEqual(opened.status_code, 200, opened.text)
+        active_before = opened.json()["active"]
+        self.assertEqual(client.put(design_url, auth=auth, json={
+            "revision": 1, "design": {**design, "instructions": "İkinci talimat"},
+        }).status_code, 200)
+        self.assertEqual(client.post(f"{design_url}/publish", auth=auth, json={"revision": 2}).status_code, 200)
+        client.close()
+
+        fresh_store = DashboardStore(config)
+        fresh_hub = SnapshotHub(fresh_store, coalesce_ms=config.ws_coalesce_ms)
+        restarted_runtime = RuntimeService(config, fresh_store, fresh_hub)
+        self.assertIsNot(restarted_runtime.oee_manager, manager)
+        with (
+            patch.multiple(app_module, store=fresh_store, hub=fresh_hub, runtime_service=restarted_runtime,
+                           oee_state_manager=restarted_runtime.oee_manager),
+            patch.multiple(restarted_runtime.mqtt_client, start=lambda: True, stop=lambda: None),
+            patch.multiple(restarted_runtime.excel_sink, start=lambda: None, stop=lambda: None,
+                           record_work_order_state=lambda _state, _time: None),
+        ):
+            restarted_app = app_module.create_app()
+
+            async def local_app(scope, receive, send):
+                await restarted_app({**scope, "client": ("127.0.0.1", 50000)}, receive, send)
+
+            with TestClient(local_app, base_url="http://127.0.0.1:8080") as restarted:
+                current = restarted.get(board_url).json()
+                self.assertEqual(current["active"], active_before)
+                self.assertEqual(current["design"]["instructions"], "İlk talimat")
+                self.assertFalse(restarted_runtime.oee_manager.read_state()["shift"]["active"])
+                finished = restarted.post(f"{board_url}/finish", json={"run_id": "restart-test", "values": [True]})
+                self.assertEqual(finished.status_code, 200, finished.text)
+                self.assertEqual(finished.json()["version"], 2)
+                self.assertEqual(finished.json()["design"]["instructions"], "İkinci talimat")
 
     def test_manual_coating_counts_partial_batches_without_counting_line_output(self) -> None:
         client, config, manager, _store, runtime = self._build_client()

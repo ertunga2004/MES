@@ -46,7 +46,9 @@ Sunucu bilgisayarında MES ana ekranındaki **Kiosk Tasarla** bağlantısını a
 2. **Taslağı kaydet** ile değişikliği sakla. Operatör ekranında göstermek için **Yayınla** düğmesini kullan. Operatörün yerel adresi `http://127.0.0.1:8080/istasyon/<adres-adı>` olur.
 3. Mevcut MES'te bir iş emrini etkinleştir. Operatör kendi adını girip işi başlatabilir ve adımları doldurabilir. Yeni yayın, başladıktan sonra açık işin talimatlarını veya zorunlu adımlarını değiştirmez. Bir sonraki iş güncel yayını kullanır.
 
-Tasarım ve operatör işlemleri bu sürümde sunucu bilgisayarında yapılır. İstasyon kayıtları mevcut MES iş emrine bağlı saklanır. Konveyör komutu, konveyör üretim adedi ve OEE sonucu bu kayıtlardan etkilenmez.
+Tasarım ve operatör işlemleri bu sürümde sunucu bilgisayarında yapılır. Yayınlanan kiosk, yapılandırılabilir bir operatör ekranıdır. Yeni kiosk yayınlamak üretim rotası, makine bağlantısı veya OEE hesabı oluşturmaz. İstasyon kayıtları mevcut MES iş emrine bağlı saklanır. Konveyör komutu, konveyör üretim adedi ve OEE sonucu bu kayıtlardan etkilenmez.
+
+Yayınlar ve açık işler mevcut MES durum dosyasına yazılır. Sunucu aynı durum dosyasıyla (`MES_WEB_OEE_RUNTIME_STATE_PATH`) açıldığında operatör, iş emri, başlangıç zamanı ve kullanılan kiosk sürümü korunur. Operatörün henüz tamamlamadığı adım girişleri aynı tarayıcı sekmesinde saklanır. Mevcut Giyotin ve Manuel Kaplama ekranları iki bant parçası bir kutu kuralıyla ayrı olarak çalışmaya devam eder.
 
 ## Aktif API
 

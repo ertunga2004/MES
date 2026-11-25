@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, StrictInt, StrictStr
 
@@ -21,6 +21,8 @@ from .oee_state import WorkOrderTransitionReasonRequired, build_work_order_snaps
 from .parsers import normalize_color
 from .runtime import RuntimeService, SnapshotHub
 from .store import DashboardStore, parse_iso_text, utc_now_text
+from .station_access import DESIGNERS, listener_station, workspace_url
+from .station_workspace import StationWorkspace
 from .windows_asyncio import install_windows_connection_reset_filter
 
 
@@ -720,6 +722,7 @@ def create_app() -> FastAPI:
     static_dir = Path(config.static_dir)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     app.include_router(create_kiosk_router(static_dir, lambda: (config, oee_state_manager), _require_local_coating))
+    workspace = StationWorkspace(app, static_dir, config)
 
     def sync_work_order_runtime(state: dict[str, Any] | None = None) -> None:
         runtime_state = state if isinstance(state, dict) else oee_state_manager.read_state()
@@ -835,7 +838,16 @@ def create_app() -> FastAPI:
         return {"status": "ok", "time": utc_now_text()}
 
     @app.get("/")
-    async def index() -> FileResponse:
+    async def index(request: Request, tab: str = "") -> Response:
+        station = listener_station(request)
+        if station:
+            return workspace.tablet_page(request, station)
+        if tab.startswith("operations/"):
+            return workspace.tablet_page(request, tab.removeprefix("operations/"))
+        if tab == "monitoring":
+            return workspace.monitor_page(request)
+        if tab == "designer":
+            return workspace.designer_redirect(request)
         return FileResponse(
             static_dir / "index.html",
             headers={
@@ -960,6 +972,35 @@ def create_app() -> FastAPI:
                 "Expires": "0",
             },
         )
+
+    @app.get("/atolye-onizleme")
+    async def atolye_onizleme(request: Request, tab: str = "", istasyon: str = "bantlama") -> Response:
+        if tab == 'tablet':
+            return workspace.tablet_page(request, istasyon)
+        if tab == 'monitor':
+            return workspace.monitor_page(request)
+        if workspace.access.identity(request)['role'] in {'anonymous', 'invalid'}:
+            return RedirectResponse('/mes-oturum?alan=designer', status_code=303, headers={"Cache-Control": "no-store"})
+        workspace.access.authorize(request, DESIGNERS)
+        return FileResponse(
+            static_dir.parent / "templates" / "atolye-onizleme.html",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
+
+    @app.get("/tablet-ekrani")
+    async def legacy_tablet(request: Request, istasyon: str | None = None) -> Response:
+        if istasyon is None:
+            return RedirectResponse('/', headers={"Cache-Control": "no-store"})
+        workspace.access.tablet(request, istasyon)
+        return RedirectResponse(workspace_url(f'operations/{istasyon}'), headers={"Cache-Control": "no-store"})
+
+    @app.get("/calisan-izleme")
+    async def legacy_monitor() -> Response:
+        return RedirectResponse(workspace_url('monitoring'), headers={"Cache-Control": "no-store"})
 
     @app.get("/api/modules")
     async def list_modules() -> list[dict[str, Any]]:

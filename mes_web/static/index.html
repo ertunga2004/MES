@@ -4,7 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MES Kontrol Paneli</title>
-    <link rel="stylesheet" href="/static/styles.css?v=at-zeze-kiosk-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=at-zeze-tablet-3" />
+    <link rel="stylesheet" href="/static/digital-twin.css?v=4" />
   </head>
   <body>
     <div class="app-shell">
@@ -26,7 +27,9 @@
         <button class="tab-button is-active" data-tab="operations" type="button">Operasyon</button>
         <button class="tab-button" data-tab="work-orders" type="button">Is Emirleri</button>
         <button class="tab-button" data-tab="oee" type="button">OEE</button>
-        <a class="tab-button" href="/kiosk-tasarla" id="kiosk-designer-link" hidden>Kiosk Tasarla</a>
+        <a class="tab-button" href="/atolye-onizleme" id="kiosk-designer-link" hidden>Kiosk Tasarımcı</a>
+        <button class="tab-button" data-tab="digital-twin" type="button"><span aria-hidden="true">🏭</span> Dijital İkiz</button>
+        <a class="tab-button" href="/?module=konveyor_main&amp;tab=monitoring" id="employee-monitor-link">Çalışan İzleme</a>
       </nav>
 
       <main class="tab-shell">
@@ -320,9 +323,89 @@
             <div id="work-order-transition-log" class="work-order-log-grid"></div>
           </section>
         </section>
+        <section id="tab-digital-twin" class="digital-twin tab-panel hidden" aria-labelledby="digital-twin-title">
+          <div class="panel-head digital-twin-heading">
+            <h2 id="digital-twin-title">Dijital İkiz Simülasyonu</h2>
+            <span class="runtime-badge digital-twin-badge">ÖRNEK VERİ</span>
+          </div>
+
+          <div class="digital-twin-layout">
+            <section class="panel digital-twin-diagram-panel" aria-labelledby="digital-twin-diagram-title">
+              <div class="panel-head">
+                <h3 id="digital-twin-diagram-title">3B üretim hattı</h3>
+                <span class="panel-note" data-twin-line></span>
+              </div>
+              <div class="digital-twin-viewport">
+                <canvas id="digital-twin-canvas" tabindex="0" aria-label="Döndürülebilen 3B konveyör, robot, sensörler ve paketleme hattı" hidden></canvas>
+                <figure class="digital-twin-diagram" data-twin-diagram>
+                  <figcaption>Konveyör</figcaption>
+                  <ol>
+                    <li>Sensör <small>SENS-01</small></li>
+                    <li>Ara stok <small>BUF-01</small></li>
+                    <li>Robot <small>ARM-01</small></li>
+                  </ol>
+                </figure>
+              </div>
+              <div class="digital-twin-views" role="group" aria-label="Kamera açıları" hidden>
+                <button class="tab-button" data-twin-view="overview" type="button" aria-pressed="true">Genel</button>
+                <button class="tab-button" data-twin-view="front" type="button" aria-pressed="false">Ön</button>
+                <button class="tab-button" data-twin-view="top" type="button" aria-pressed="false">Üst</button>
+                <button class="tab-button" data-twin-view="robot" type="button" aria-pressed="false">Robot</button>
+              </div>
+              <p class="panel-note digital-twin-note" data-twin-scene-status role="status">3B model yükleniyor…</p>
+            </section>
+
+            <section class="panel digital-twin-sidebar" aria-labelledby="digital-twin-telemetry-title">
+              <h3 id="digital-twin-telemetry-title">Telemetri önizlemesi</h3>
+              <dl class="digital-twin-metrics">
+                <div><dt>Hız</dt><dd data-twin-value="speed">—</dd></div>
+                <div><dt>Sıcaklık</dt><dd data-twin-value="temperature">—</dd></div>
+                <div><dt>Doluluk</dt><dd data-twin-value="fillLevel">—</dd></div>
+                <div><dt>Sayaç</dt><dd data-twin-value="count">—</dd></div>
+              </dl>
+              <p class="panel-note digital-twin-note" data-twin-status role="status"></p>
+
+              <div class="digital-twin-controls">
+                <label for="digital-twin-scenario">Senaryo</label>
+                <select id="digital-twin-scenario" disabled>
+                  <option value="">Senaryolar</option>
+                </select>
+                <fieldset class="digital-twin-playback" disabled>
+                  <legend>Zaman kontrolü</legend>
+                  <button class="tab-button" type="button" data-twin-play>Oynat</button>
+                  <button class="tab-button" type="button" data-twin-pause disabled>Durdur</button>
+                  <label class="digital-twin-rate" for="digital-twin-speed">
+                    Hız
+                    <select id="digital-twin-speed">
+                      <option value="1">1x</option>
+                      <option value="5">5x</option>
+                      <option value="10">10x</option>
+                    </select>
+                  </label>
+                </fieldset>
+                <div class="digital-twin-time" hidden>
+                  <span class="panel-note" data-twin-playback-status role="status"></span>
+                  <span class="panel-note" data-twin-time aria-label="Senaryo süresi"></span>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <section class="panel" aria-labelledby="digital-twin-kpi-title">
+            <div class="panel-head">
+              <h3 id="digital-twin-kpi-title">Performans göstergeleri</h3>
+            </div>
+            <dl class="digital-twin-kpis">
+              <div><dt>OEE</dt><dd>—</dd></div>
+              <div><dt>Verimlilik</dt><dd>—</dd></div>
+              <div><dt>Kalite</dt><dd>—</dd></div>
+              <div><dt>Enerji</dt><dd>—</dd></div>
+            </dl>
+          </section>
+        </section>
       </main>
     </div>
 
-    <script src="/static/app.js?v=at-zeze-handoff-1"></script>
+    <script src="/static/app.js?v=digital-twin-2"></script>
   </body>
 </html>

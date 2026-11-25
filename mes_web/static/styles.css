@@ -117,6 +117,7 @@ body {
 
 .tab-bar {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 18px;
 }
@@ -130,6 +131,8 @@ body {
   font-weight: 700;
   cursor: pointer;
 }
+
+#employee-monitor-link { text-decoration: none; }
 
 .tab-button.is-active {
   color: var(--text-main);

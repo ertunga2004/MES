@@ -118,10 +118,11 @@ const els = {
   runtimeBadge: document.getElementById("runtime-badge"),
   snapshotAt: document.getElementById("snapshot-at"),
   connectionBanner: document.getElementById("connection-banner"),
-  tabButtons: Array.from(document.querySelectorAll(".tab-button")),
+  tabButtons: Array.from(document.querySelectorAll(".tab-button[data-tab]")),
   operationsTab: document.getElementById("tab-operations"),
   workOrdersTab: document.getElementById("tab-work-orders"),
   oeeTab: document.getElementById("tab-oee"),
+  digitalTwinTab: document.getElementById("tab-digital-twin"),
   overviewMeta: document.getElementById("overview-meta"),
   connectionCards: document.getElementById("connection-cards"),
   systemGrid: document.getElementById("system-grid"),
@@ -814,19 +815,21 @@ function setRuntime(nextRuntime) {
 }
 
 function setActiveTab(tabName) {
-  if (tabName === "oee") {
-    state.activeTab = "oee";
-  } else if (tabName === "work-orders") {
-    state.activeTab = "work-orders";
-  } else {
-    state.activeTab = "operations";
-  }
+  state.activeTab = ["oee", "work-orders", "digital-twin"].includes(tabName) ? tabName : "operations";
   els.tabButtons.forEach((button) => {
     button.classList.toggle("is-active", button.dataset.tab === state.activeTab);
   });
   els.operationsTab.classList.toggle("hidden", state.activeTab !== "operations");
   els.workOrdersTab.classList.toggle("hidden", state.activeTab !== "work-orders");
   els.oeeTab.classList.toggle("hidden", state.activeTab !== "oee");
+  const showDigitalTwin = state.activeTab === "digital-twin";
+  els.digitalTwinTab.classList.toggle("hidden", !showDigitalTwin);
+  if (showDigitalTwin) {
+    import("/static/digital-twin.js?v=2").catch(() => {
+      els.digitalTwinTab.querySelector("[data-twin-status]").textContent = "Örnek veri yüklenemedi.";
+      els.digitalTwinTab.querySelector("[data-twin-scene-status]").textContent = "3B model önizlemesi başlatılamadı.";
+    });
+  }
 
   const params = new URLSearchParams(window.location.search);
   params.set("module", state.moduleId);
@@ -1266,7 +1269,12 @@ function renderWorkOrderReasonPanel() {
 }
 
 const kioskDesignerLink = document.getElementById("kiosk-designer-link");
-if (kioskDesignerLink && ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname)) kioskDesignerLink.hidden = false;
+fetch("/api/workspace/identity", { cache: "no-store" })
+  .then(response => response.ok ? response.json() : {})
+  .then(({ role }) => {
+    if (kioskDesignerLink) kioskDesignerLink.hidden = !["admin", "engineer"].includes(role);
+  })
+  .catch(() => {});
 
 function renderWorkOrders(snapshot) {
   const workOrders = snapshot.work_orders || {};

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{title}} · MES</title>
+  <link rel="stylesheet" href="/static/kiosk.css">
+  <link rel="stylesheet" href="/static/styles.css?v=at-zeze-tablet-3">
+  <link rel="stylesheet" href="/static/atolye-tablets.css?v=3">
+</head>
+<body class="station-page" data-mode="{{mode}}" data-station="{{station}}">
+  <header class="topbar station-topbar">
+    <h1>{{title}}</h1>
+  </header>
+  <main class="kiosk-shell" id="station-workspace"><p class="station-loading" role="status">İstasyon verisi yükleniyor…</p></main>
+  <script type="module" src="/static/atolye-tablets.mjs?v=3"></script>
+</body>
+</html>

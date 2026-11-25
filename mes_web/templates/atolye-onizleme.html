@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kiosk Tasarımcı · MES</title>
+  <link rel="stylesheet" href="/static/kiosk.css">
+  <link rel="stylesheet" href="/static/atolye-onizleme.css?v=3">
+</head>
+<body class="preview-shell">
+  <header class="preview-header">
+    <div class="preview-brand">
+      <span class="preview-icon" aria-hidden="true">🏭</span>
+      <div>
+        <h1>Kiosk Tasarımcı</h1>
+        <p class="preview-subtitle">İstasyon tabletleri için şablon, kart ve kontrol listeleri</p>
+      </div>
+    </div>
+    <div class="preview-banner" role="status">
+      <span class="badge amber">ÖRNEK VERİ</span>
+      <span class="preview-note">Yayınlanan şablonlar örnek tablet çalışma alanına uygulanır.</span>
+    </div>
+  </header>
+  <nav class="tab-bar" aria-label="Önizleme sayfaları">
+    <a class="tab-button" href="/">MES Kontrol Paneli</a>
+    <a class="tab-button" href="/?module=konveyor_main&amp;tab=monitoring">Çalışan İzleme</a>
+  </nav>
+
+  <main class="preview-main">
+    <section id="panel-designer" class="tab-panel is-active" aria-label="Kiosk Tasarla">
+      <div class="designer-grid">
+        <!-- Sol: Katalog -->
+        <aside class="designer-catalog card">
+          <div class="card-heading">
+            <h2>İstasyon şablonları</h2>
+          </div>
+          <div class="card-body" id="kiosk-catalog">
+            <p class="muted">Şablonlar yükleniyor…</p>
+          </div>
+        </aside>
+
+        <!-- Orta: Düzenleyici -->
+        <section class="designer-editor card">
+          <div class="card-heading">
+            <h2 id="editor-title">Yeni kiosk için şablon seçin</h2>
+            <span class="badge gray" id="editor-status"></span>
+          </div>
+          <div class="card-body" id="kiosk-editor">
+            <div class="template-selector" id="template-selector">
+              <h3>Şablon Seçin</h3>
+              <div class="template-grid" id="template-grid"></div>
+            </div>
+            <form id="kiosk-design-form" class="hidden" data-template="">
+              <!-- Form içeriği JS ile doldurulacak -->
+            </form>
+            <p id="designer-feedback" role="status"></p>
+          </div>
+        </section>
+
+        <!-- Sağ: Önizleme -->
+        <section class="designer-preview card">
+          <div class="card-heading">
+            <h2>Tablet Önizlemesi</h2>
+            <span class="badge teal">Canlı Önizleme</span>
+          </div>
+          <div class="card-body">
+            <div class="preview-frame" id="kiosk-preview">
+              <div class="kiosk-preview-screen">
+                <p class="muted">Şablon seçerek önizleme başlatın.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+    <section id="tablet-pair-panel" class="card" hidden>
+      <div class="card-heading"><h2>Tablet eşleştirme</h2></div>
+      <div class="card-body">
+        <form id="tablet-pair-code-form">
+          <label>İstasyon<select name="station" required></select></label>
+          <button class="button" type="submit">Tek kullanımlık kod oluştur</button>
+        </form>
+        <p class="muted">Tablette MES sunucusunun ilgili istasyon portunda <code>/tablet-eslestir</code> sayfasını açın. Kod 10 dakika geçerlidir.</p>
+        <output id="tablet-pair-code" aria-live="polite"></output>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="preview-footer">
+    <p>ATÖLYE MES · Örnek veri</p>
+  </footer>
+  <script type="module" src="/static/atolye-onizleme.js?v=4"></script>
+</body>
+</html>

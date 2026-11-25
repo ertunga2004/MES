@@ -300,3 +300,31 @@ Windows loglarinda `WinError 121`:
 cd C:\Users\acer\Documents\.CODE\codex\MES
 python -m unittest discover -s tests -p "test_mes_web_*.py"
 ```
+## İstasyona bağlı tablet ve çalışan izleme
+
+| Adres | Erişim |
+|---|---|
+| `/?module=konveyor_main&tab=operations/bantlama` | Bantlama’ya eşleşmiş tablet veya admin. `bantlama` yerine diğer istasyon kodları kullanılabilir. |
+| `/?module=konveyor_main&tab=monitoring` | Şef, mühendis ve admin. İstasyon bilgileri salt okunur. |
+| `/atolye-onizleme` | Mühendis ve admin. İstasyon şablonları tasarlanır ve yayınlanır. |
+| `/mes-oturum` | Personel girişi. |
+| `/tablet-eslestir` | Tek kullanımlık kodla tabletin istasyona bağlanması. |
+
+Ana panel `18780` üzerinde çalışırken her tablet kendi portunun `/` adresinden açılır. `MES_WEB_PORT=18780` ile `python -m mes_web` dokuz adresi tek uygulama olarak başlatır. Başka bir ana panel portu kullanılıyorsa istasyon portlarını `MES_WEB_STATION_PORTS_ENABLED=1` ile açabilirsiniz.
+
+| Port | İstasyon |
+|---|---|
+| `18781` | Bantlama |
+| `18782` | Paketleme |
+| `18783` | Giyotin |
+| `18784` | Kaplama |
+| `18785` | Konveyör |
+| `18786` | Tekniker |
+| `18787` | Kalite |
+| `18788` | Malzeme |
+
+Admin, Kiosk Tasarımcı’dan bir istasyon için kod oluşturur. Tablette MES sunucusunun ilgili portundaki `/tablet-eslestir` adresi açılır ve kod girilir. Kod 10 dakika kullanılabilir. Eşleşme 30 günlük, HttpOnly ve istasyon kimliği imzalı bir çerezle korunur. Her istasyon portu kendi ekranını ve işlem API’sini açar. Tablete diğer istasyonlar ve yönetim yolları sunucudan `403` döndürür. Tablet bilgisayarında tam ekran tarayıcı ve işletim sistemi kilidi cihazın kiosk ayarlarıyla sağlanır.
+
+Dağıtımda HTTPS kullanılır. `admin` için `MES_WEB_WORKSPACE_ADMIN_PASSWORD`, `sef` için `MES_WEB_WORKSPACE_SUPERVISOR_PASSWORD`, `muhendis` için mevcut `MES_WEB_KIOSK_DESIGN_PASSWORD` kullanılır. `MES_WEB_WORKSPACE_SESSION_SECRET` yeniden başlatmalar arasında oturum imzasını korur. `MES_WEB_WORKSPACE_STATE_PATH` ayrı bir SQLite dosyasını işaret ederse şablonlar ve örnek istasyon kayıtları yeniden başlatmalarda saklanır. Eşleştirme kodu, üretildiği sunucu sürecinde kullanılır.
+
+Yeni istasyon yüzeyleri ayrı örnek veri üzerinde çalışır. İzleme sayfası ortak örnek durumu üç saniye arayla okur. OEE değeri örnek göstergedir. Kaplama ve Bantlama, örnek akışları göstermek için ayrı ekranlarla sunulur.

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{title}} · MES</title>
+  <link rel="stylesheet" href="/static/styles.css?v=at-zeze-tablet-3">
+  <link rel="stylesheet" href="/static/atolye-tablets.css?v=3">
+</head>
+<body class="station-page">
+  <main class="app-shell workspace-entry">
+    <section class="panel" aria-labelledby="entry-title">
+      <h1 id="entry-title">{{title}}</h1>
+      <form class="tablet-form" id="workspace-entry" data-mode="{{mode}}"></form>
+      <p id="workspace-error" class="workspace-error" role="status"></p>
+    </section>
+  </main>
+  <script type="module" src="/static/mes-workspace-auth.mjs"></script>
+</body>
+</html>

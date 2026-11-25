@@ -1,0 +1,224 @@
+{
+  "name": "MES konveyör test telemetrisi",
+  "description": "Kaynak çalışma kitaplarının hat/vardiya/üretim yapısı ve runtime alanlarına göre hazırlanmış sentetik senaryo dizisi. Gerçek kayıt değildir.",
+  "sourceBasis": {
+    "workbooks": [
+      "MES_Konveyor_Veritabani_17-06-2026.xlsx",
+      "MES_Konveyor_Veritabani_30-06-2026.xlsx"
+    ],
+    "runtimeState": "oee_runtime_state.json",
+    "runtimeFields": [
+      "speed",
+      "running",
+      "temperature",
+      "count",
+      "fillLevel"
+    ],
+    "line": "KNV-01",
+    "stationExamples": [
+      "SENS-01",
+      "BUF-01",
+      "ARM-01"
+    ],
+    "colors": [
+      "red",
+      "yellow",
+      "blue"
+    ],
+    "note": "Excel olay, üretim tamamlama ve OEE şeması ile runtime canlı durum alanları referans alınmıştır; ölçümler sentetiktir."
+  },
+  "scenarios": [
+    {
+      "id": "normal_run",
+      "from": 2,
+      "to": 7,
+      "expect": "Üretim ve hazne doluluğu artar, sıcaklık normal aralıkta."
+    },
+    {
+      "id": "planned_pause",
+      "from": 8,
+      "to": 9,
+      "expect": "Hat durur, üretim sayısı sabit kalır."
+    },
+    {
+      "id": "recovery",
+      "from": 10,
+      "to": 13,
+      "expect": "Hat yeniden çalışır, hız ve doluluk değişir."
+    },
+    {
+      "id": "temperature_warning",
+      "from": 14,
+      "to": 17,
+      "expect": "Sıcaklık 70 °C eşiğini aşar ve hat durur."
+    },
+    {
+      "id": "restart",
+      "from": 18,
+      "to": 19,
+      "expect": "Sıcaklık düşerken üretim devam eder."
+    }
+  ],
+  "samples": [
+    {
+      "timestamp": "2026-06-30T10:00:00+00:00",
+      "speed": 0.0,
+      "running": false,
+      "temperature": 41.8,
+      "count": 0,
+      "fillLevel": 0
+    },
+    {
+      "timestamp": "2026-06-30T10:00:30+00:00",
+      "speed": 0.0,
+      "running": false,
+      "temperature": 42.1,
+      "count": 0,
+      "fillLevel": 0
+    },
+    {
+      "timestamp": "2026-06-30T10:01:00+00:00",
+      "speed": 0.35,
+      "running": true,
+      "temperature": 42.7,
+      "count": 1,
+      "fillLevel": 8
+    },
+    {
+      "timestamp": "2026-06-30T10:01:30+00:00",
+      "speed": 0.55,
+      "running": true,
+      "temperature": 43.2,
+      "count": 4,
+      "fillLevel": 22
+    },
+    {
+      "timestamp": "2026-06-30T10:02:00+00:00",
+      "speed": 0.65,
+      "running": true,
+      "temperature": 44.1,
+      "count": 8,
+      "fillLevel": 40
+    },
+    {
+      "timestamp": "2026-06-30T10:02:30+00:00",
+      "speed": 0.72,
+      "running": true,
+      "temperature": 45.6,
+      "count": 13,
+      "fillLevel": 58
+    },
+    {
+      "timestamp": "2026-06-30T10:03:00+00:00",
+      "speed": 0.65,
+      "running": true,
+      "temperature": 47.3,
+      "count": 19,
+      "fillLevel": 74
+    },
+    {
+      "timestamp": "2026-06-30T10:03:30+00:00",
+      "speed": 0.5,
+      "running": true,
+      "temperature": 50.8,
+      "count": 24,
+      "fillLevel": 88
+    },
+    {
+      "timestamp": "2026-06-30T10:04:00+00:00",
+      "speed": 0.0,
+      "running": false,
+      "temperature": 52.4,
+      "count": 24,
+      "fillLevel": 88
+    },
+    {
+      "timestamp": "2026-06-30T10:04:30+00:00",
+      "speed": 0.0,
+      "running": false,
+      "temperature": 53.1,
+      "count": 24,
+      "fillLevel": 86
+    },
+    {
+      "timestamp": "2026-06-30T10:05:00+00:00",
+      "speed": 0.45,
+      "running": true,
+      "temperature": 51.2,
+      "count": 25,
+      "fillLevel": 65
+    },
+    {
+      "timestamp": "2026-06-30T10:05:30+00:00",
+      "speed": 0.65,
+      "running": true,
+      "temperature": 52.7,
+      "count": 31,
+      "fillLevel": 47
+    },
+    {
+      "timestamp": "2026-06-30T10:06:00+00:00",
+      "speed": 0.8,
+      "running": true,
+      "temperature": 56.4,
+      "count": 39,
+      "fillLevel": 26
+    },
+    {
+      "timestamp": "2026-06-30T10:06:30+00:00",
+      "speed": 0.9,
+      "running": true,
+      "temperature": 62.8,
+      "count": 48,
+      "fillLevel": 9
+    },
+    {
+      "timestamp": "2026-06-30T10:07:00+00:00",
+      "speed": 0.65,
+      "running": true,
+      "temperature": 69.2,
+      "count": 54,
+      "fillLevel": 0
+    },
+    {
+      "timestamp": "2026-06-30T10:07:30+00:00",
+      "speed": 0.4,
+      "running": true,
+      "temperature": 72.1,
+      "count": 57,
+      "fillLevel": 0
+    },
+    {
+      "timestamp": "2026-06-30T10:08:00+00:00",
+      "speed": 0.0,
+      "running": false,
+      "temperature": 73.4,
+      "count": 57,
+      "fillLevel": 0
+    },
+    {
+      "timestamp": "2026-06-30T10:08:30+00:00",
+      "speed": 0.0,
+      "running": false,
+      "temperature": 65.8,
+      "count": 57,
+      "fillLevel": 0
+    },
+    {
+      "timestamp": "2026-06-30T10:09:00+00:00",
+      "speed": 0.55,
+      "running": true,
+      "temperature": 58.3,
+      "count": 60,
+      "fillLevel": 12
+    },
+    {
+      "timestamp": "2026-06-30T10:09:30+00:00",
+      "speed": 0.65,
+      "running": true,
+      "temperature": 54.7,
+      "count": 68,
+      "fillLevel": 28
+    }
+  ]
+}

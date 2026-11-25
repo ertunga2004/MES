@@ -22,6 +22,14 @@ CARD_SOURCES = {
     "after": {"fixed"}, "extra": {"fixed"},
 }
 
+KIOSK_SLUG = re.compile(r"[a-z][a-z0-9-]{1,39}")
+RESERVED_KIOSK_SLUGS = frozenset({
+    "admin", "api", "bantlama", "calisan", "docs", "employee-observer", "giyotin",
+    "health", "istasyon", "kaplama", "kiosk", "kiosk-tasarla", "muhendis", "mühendis",
+    "operator", "operatör", "paketleme", "redoc", "static", "technician", "tekniker",
+    "teknisyen", "ws", "yonetici", "yönetici",
+})
+
 PositiveQuantity = conint(strict=True, ge=1, le=1_000_000_000)
 Quantity = conint(strict=True, ge=0, le=1_000_000_000)
 NonnegativeInt = conint(strict=True, ge=0)
@@ -175,7 +183,8 @@ def _get_kiosk(state: dict[str, Any], slug: str, published: bool = False) -> dic
 
 def _draft_view(slug: str, kiosk: dict[str, Any]) -> dict[str, Any]:
     completed = max(kiosk["completed"].values(), key=lambda run: run["finished_at"], default=None)
-    return {"slug": slug, "path": f"/istasyon/{slug}", "draft": {**DESIGN_DEFAULTS, **kiosk["draft"]}, "revision": kiosk["revision"],
+    path = f"/{slug}" if _has_short_path(slug) else f"/istasyon/{slug}"
+    return {"slug": slug, "path": path, "draft": {**DESIGN_DEFAULTS, **kiosk["draft"]}, "revision": kiosk["revision"],
             "published": kiosk["published"], "published_revision": kiosk["published_revision"],
             "active": kiosk["active"], "last_completed": completed}
 
@@ -209,6 +218,22 @@ def _board(state: dict[str, Any], slug: str, cutting_enabled: bool = False) -> d
             "line_shift_active": state["shift"]["active"] if design["station"] == "conveyor" else None}
 
 
+def _has_short_path(slug: str) -> bool:
+    return slug not in RESERVED_KIOSK_SLUGS and KIOSK_SLUG.fullmatch(slug) is not None
+
+
+def _observer_board(board: dict[str, Any]) -> dict[str, Any]:
+    active = board["active"]
+    order = board["order"]
+    active_fields = ("operator", "started_at", "paused_at", "waiting_seconds", "values", "result", "quantity", "reports")
+    return {
+        **board,
+        "active": {field: active[field] for field in active_fields if field in active} if active else None,
+        "order": {field: value for field, value in order.items() if field != "key"} if order else None,
+        "parked": [{field: value for field, value in row.items() if field != "run_id"} for row in board["parked"]],
+    }
+
+
 def _completed_values(values: list[Any], design: dict[str, Any], result: str, *, finishing: bool = True) -> list[Any]:
     steps = design["steps"] if _shows_card(design, "steps") else []
     if len(values) != len(steps):
@@ -236,11 +261,13 @@ def _completed_values(values: list[Any], design: dict[str, Any], result: str, *,
     return checked
 
 
-def create_kiosk_router(static_dir, get_context, require_local) -> APIRouter:
+def create_kiosk_router(static_dir, get_context, require_local, require_operator=None) -> APIRouter:
     router = APIRouter()
+    operator_access = require_operator if require_operator is not None else require_local
     basic = HTTPBasic(auto_error=False, realm="MES Kiosk Tasarla")
     templates = static_dir.parent / "templates"
     html_headers = {"Cache-Control": "no-store", "Content-Security-Policy": "frame-ancestors 'none'"}
+    observer_headers = {"Cache-Control": "no-store", "Content-Security-Policy": "frame-ancestors 'self'"}
 
     def engineer(request: Request, credentials: HTTPBasicCredentials | None = Depends(basic)) -> None:
         require_local(request)
@@ -276,7 +303,7 @@ def create_kiosk_router(static_dir, get_context, require_local) -> APIRouter:
 
     @router.put("/api/kiosk-designs/{slug}", dependencies=[Depends(engineer), Depends(require_json)])
     def save_draft(slug: str, payload: Draft) -> dict[str, Any]:
-        if not re.fullmatch(r"[a-z][a-z0-9-]{1,39}", slug):
+        if not KIOSK_SLUG.fullmatch(slug):
             raise HTTPException(422, "KIOSK_INVALID_ADDRESS")
         design = _clean_design(payload.design)
 
@@ -284,6 +311,8 @@ def create_kiosk_router(static_dir, get_context, require_local) -> APIRouter:
             kiosks = state["stationKiosks"]
             kiosk = kiosks.get(slug)
             if kiosk is None:
+                if not _has_short_path(slug):
+                    raise HTTPException(422, "KIOSK_INVALID_ADDRESS")
                 if payload.revision != 0:
                     raise HTTPException(409, "KIOSK_DRAFT_CHANGED")
                 kiosk = kiosks[slug] = {"revision": 0, "published": 0, "published_revision": 0,
@@ -318,18 +347,37 @@ def create_kiosk_router(static_dir, get_context, require_local) -> APIRouter:
 
     @router.get("/istasyon/{slug}")
     def operator_page(slug: str, request: Request) -> FileResponse:
-        require_local(request)
+        operator_access(request)
         _get_kiosk(read_state(), slug, published=True)
         return FileResponse(templates / "station-kiosk.html", headers=html_headers)
 
+    @router.get("/calisan/kiosk/{slug}")
+    def observer_page(slug: str, request: Request) -> FileResponse:
+        require_local(request)
+        _get_kiosk(read_state(), slug, published=True)
+        return FileResponse(templates / "station-kiosk.html", headers=observer_headers)
+
+    @router.get("/api/employee-observer/kiosks")
+    def observer_catalog(request: Request) -> list[dict[str, str]]:
+        require_local(request)
+        return [
+            {"slug": slug, "title": kiosk["versions"][str(kiosk["published"])]["title"], "path": f"/calisan/kiosk/{slug}"}
+            for slug, kiosk in sorted(read_state()["stationKiosks"].items()) if kiosk["published"]
+        ]
+
+    @router.get("/api/employee-observer/kiosks/{slug}")
+    def observer_board(slug: str, request: Request) -> dict[str, Any]:
+        require_local(request)
+        return _observer_board(board(read_state(), slug))
+
     @router.get("/api/station-kiosks/{slug}")
     def operator_board(slug: str, request: Request) -> dict[str, Any]:
-        require_local(request)
+        operator_access(request)
         return board(read_state(), slug)
 
     @router.post("/api/station-kiosks/{slug}/start")
     def start_run(slug: str, payload: StartRun, request: Request) -> dict[str, Any]:
-        require_local(request)
+        operator_access(request)
         require_json(request)
         operator = _text(payload.operator, 100, True)
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", payload.run_id):
@@ -357,7 +405,7 @@ def create_kiosk_router(static_dir, get_context, require_local) -> APIRouter:
 
     @router.post("/api/station-kiosks/{slug}/update")
     def update_run(slug: str, payload: UpdateRun, request: Request) -> dict[str, Any]:
-        require_local(request)
+        operator_access(request)
         require_json(request)
 
         def apply(state):
@@ -418,7 +466,7 @@ def create_kiosk_router(static_dir, get_context, require_local) -> APIRouter:
 
     @router.post("/api/station-kiosks/{slug}/pickup")
     def pickup_run(slug: str, payload: PickupRun, request: Request) -> dict[str, Any]:
-        require_local(request)
+        operator_access(request)
         require_json(request)
         operator = _text(payload.operator, 100, True)
 
@@ -442,7 +490,7 @@ def create_kiosk_router(static_dir, get_context, require_local) -> APIRouter:
 
     @router.post("/api/station-kiosks/{slug}/finish")
     def finish_run(slug: str, payload: FinishRun, request: Request) -> dict[str, Any]:
-        require_local(request)
+        operator_access(request)
         require_json(request)
 
         def apply(state):
@@ -467,5 +515,23 @@ def create_kiosk_router(static_dir, get_context, require_local) -> APIRouter:
             return board(state, slug), True
 
         return edit(apply)
+
+    return router
+
+
+def create_kiosk_alias_router(static_dir, get_context, require_local, require_operator=None) -> APIRouter:
+    """Include after the fixed application routes so an alias never shadows them."""
+    router = APIRouter()
+    operator_access = require_operator if require_operator is not None else require_local
+    template = static_dir.parent / "templates" / "station-kiosk.html"
+    headers = {"Cache-Control": "no-store", "Content-Security-Policy": "frame-ancestors 'none'"}
+
+    @router.get("/{slug}", include_in_schema=False)
+    def operator_alias(slug: str, request: Request) -> FileResponse:
+        if not _has_short_path(slug):
+            raise HTTPException(404, "KIOSK_NOT_FOUND")
+        operator_access(request)
+        _get_kiosk(get_context()[1].read_state(), slug, published=True)
+        return FileResponse(template, headers=headers)
 
     return router

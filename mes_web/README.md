@@ -20,6 +20,14 @@
 - `GET /technician/{device_id}`
   - teknisyen icin canli ariza cagri ve gecmis ekrani
 
+### İstasyon izleme ve operatör ekranları
+
+Ana ekrandaki **İstasyon** sekmesinden Bantlama, Paketleme, Tekniker, Mühendis, Giyotin, Kaplama, Konveyör Operatörü ve yayımlanan özel kiosklar seçilerek izlenir. Bu görünüm salt okunurdur. Sabit istasyonlar kendi sekmelerinde `/bantlama`, `/paketleme`, `/tekniker` veya `/muhendis` adresinde çalışır. Bantlama, Paketleme ve Tekniker operatörü ad soyad girerek vardiyasını açar. Mühendis ekranında kullanıcı adı `muhendis` ve `MES_WEB_KIOSK_DESIGN_PASSWORD` kullanılır. Yayımlanmış bir özel kiosk `/boyama` gibi kısa bir adresle açılabilir. Mevcut `/istasyon/boyama` adresi de çalışır.
+
+Bantlama ve Paketleme aynı MES iş emrine bağlıdır. Gerçek hat akışında Bantlama'nın sağlam kutu teslimi mevcut kaplama ve konveyör teslim kayıtlarını kullanır. Tek kutunun fiziksel eşleşmesini operatör doğrular. Eşleşmiş ve uygun hat çıkışı tamamlanınca kutu Paketleme'de işleme hazır olur. Vardiya, teknik bildirimler ve koli takibi istasyon kayıtlarına yazılır. Hat komutunu ve OEE sayımını mevcut hat akışı yönetir.
+
+Yerel geliştirme için `MES_WEB_EMPLOYEE_SIMULATION_ENABLED=1` seçilebilir. Bu modda konveyör geçişi örnek olarak gösterilir. Kayıtları gerçek hat modundan ayrı tutulur. Tablet ağına açılacağı zaman güvenilir yerel ağda `MES_WEB_HOST=0.0.0.0` ile birlikte `MES_WEB_EMPLOYEE_TABLETS_ENABLED=1` kullanılır. Bu ayar ağdaki istemcilere istasyon adreslerini açar ve ana ekran ile izleme API'lerini MES bilgisayarıyla sınırlar. Kiosk tasarımı da MES bilgisayarından açılır.
+
 Kiosk ve teknisyen ekranlari browser tabanlidir. MQTT kullanmaz; `mes_web` ile REST + WebSocket uzerinden konusur.
 
 ### Manuel kaplama

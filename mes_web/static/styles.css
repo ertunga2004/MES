@@ -117,6 +117,7 @@ body {
 
 .tab-bar {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 18px;
 }
@@ -186,6 +187,56 @@ body {
 
 .panel-note {
   color: var(--text-soft);
+}
+
+.employee-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.employee-toolbar h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.employee-toolbar p,
+.employee-dashboard-status {
+  color: var(--text-soft);
+}
+
+.employee-toolbar p {
+  margin: 6px 0 0;
+}
+
+.employee-toolbar label {
+  display: grid;
+  gap: 6px;
+  min-width: min(14rem, 100%);
+  width: min(100%, 16rem);
+}
+
+.employee-toolbar select {
+  min-height: 44px;
+  width: 100%;
+  padding: 8px 10px;
+  color: var(--text-main);
+  background: var(--bg-top);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.employee-frame {
+  display: block;
+  width: 100%;
+  height: max(34rem, 72vh);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  background: var(--bg-top);
 }
 
 .overview-meta {

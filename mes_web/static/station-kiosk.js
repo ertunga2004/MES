@@ -1,8 +1,13 @@
 import { kioskRequest } from "./kiosk-request.js";
 import { option, renderCards, renderParked, renderStep, updateClocks } from "./kiosk-cards.js?v=2";
 
-const slug = window.location.pathname.split("/").pop();
-const url = `/api/station-kiosks/${encodeURIComponent(slug)}`;
+const path = window.location.pathname.split("/").filter(Boolean);
+const slug = decodeURIComponent(path.at(-1) || "");
+const isObserver = path[0] === "calisan" && path[1] === "kiosk";
+const url = `${isObserver ? "/api/employee-observer/kiosks" : "/api/station-kiosks"}/${encodeURIComponent(slug)}`;
+const operationControls = document.getElementById("station-operation-controls");
+if (!isObserver) operationControls.replaceWith(operationControls.content.cloneNode(true));
+const observerContent = document.getElementById("observer-content");
 const start = document.getElementById("start");
 const work = document.getElementById("work");
 const steps = document.getElementById("work-steps");
@@ -13,7 +18,7 @@ const support = document.getElementById("operator-support");
 const idleCards = document.getElementById("station-cards-idle");
 const workCards = document.getElementById("station-cards-work");
 const parkedFallback = document.getElementById("parked-fallback");
-const finishButton = work.querySelector('button[type="submit"]');
+const finishButton = work?.querySelector('button[type="submit"]');
 const legacyResult = document.getElementById("work-result");
 let board;
 let identity;
@@ -22,11 +27,56 @@ let refreshing = false;
 let writeGeneration = 0;
 
 function updateTimer() {
-  updateClocks(workCards, board?.active);
+  updateClocks(isObserver ? observerContent : workCards, board?.active);
   if (timer.hidden || !board?.active) return;
   const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(board.active.started_at)) / 1000));
   timer.textContent = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
     .map(value => String(value).padStart(2, "0")).join(":");
+}
+
+function readOnlyCards(root, active) {
+  for (const input of root.querySelectorAll("button, input, select, textarea")) {
+    const index = input.dataset.stepIndex;
+    if (index !== undefined || input.name === "result") {
+      const value = index !== undefined ? active?.values?.[index] : active?.result;
+      const output = document.createElement("strong");
+      output.textContent = typeof value === "boolean" ? (value ? "Onaylandı" : "Bekliyor") : (value ?? "—");
+      input.replaceWith(output);
+    } else {
+      (input.closest("label") || input).remove();
+    }
+  }
+  for (const card of root.querySelectorAll(".kiosk-layout-card")) {
+    if (card.children.length === 1) card.remove();
+  }
+  return root;
+}
+
+function renderObserver(design, configured) {
+  const active = board.active;
+  document.getElementById("observer-mode").hidden = false;
+  const worker = document.getElementById("observer-worker");
+  worker.hidden = false;
+  worker.textContent = active ? `Operatör ${active.operator}` : "Açık iş yok";
+  observerContent.hidden = false;
+  observerContent.replaceChildren();
+  if (configured) {
+    observerContent.append(readOnlyCards(renderCards(design, board), active));
+  } else if (active) {
+    const visibleSteps = document.createElement("div");
+    visibleSteps.className = "station-stack";
+    visibleSteps.append(...design.steps.map(renderStep));
+    observerContent.append(readOnlyCards(visibleSteps, active));
+    if (active.result) {
+      const result = document.createElement("p");
+      result.textContent = `Sonuç: ${active.result}`;
+      observerContent.append(result);
+    }
+  }
+  if (!configured || !observerContent.querySelector('[data-card="wip"]')) {
+    observerContent.append(...renderParked(board.parked || [], active || {}));
+  }
+  updateTimer();
 }
 
 function draftKey(runId) {
@@ -62,12 +112,13 @@ function restoreWork(active) {
 }
 
 function render(next) {
-  const sameWork = next.active && next.active.run_id === board?.active?.run_id &&
+  const sameWork = !isObserver && next.active && next.active.run_id === board?.active?.run_id &&
     next.active.revision === board.active.revision;
   board = next;
   const active = board.active;
   const design = board.design;
-  const nextIdentity = JSON.stringify([board.version, active?.run_id, active?.revision, board.order, board.waiting, board.line_shift_active, board.parked]);
+  const nextIdentity = JSON.stringify([board.version, isObserver ? active : [active?.run_id, active?.revision],
+    board.order, board.waiting, board.line_shift_active, board.parked]);
   if (identity === nextIdentity) return;
   identity = nextIdentity;
   const pendingInputs = sameWork
@@ -86,8 +137,6 @@ function render(next) {
   shell.classList.toggle("has-custom-cards", configured);
   shell.dataset.shiftPosition = design.shift_position;
   document.querySelector(".operator-order").hidden = configured;
-  idleCards.hidden = !configured || Boolean(active);
-  workCards.hidden = !configured || !active;
   document.getElementById("order").textContent = board.order?.id || "Aktif iş emri bekleniyor";
   const stationState = document.getElementById("station-state");
   stationState.hidden = design.template !== "status";
@@ -117,6 +166,12 @@ function render(next) {
   }
   support.hidden = configured || (!design.instructions && !design.sections.length && timer.hidden && !design.before && !design.after);
   shell.classList.toggle("has-support", !support.hidden);
+  if (isObserver) {
+    renderObserver(design, configured);
+    return;
+  }
+  idleCards.hidden = !configured || Boolean(active);
+  workCards.hidden = !configured || !active;
   updateTimer();
   start.hidden = Boolean(active) || !board.order;
   work.hidden = !active;
@@ -178,20 +233,20 @@ async function write(form, action, payload, message) {
   }
 }
 
-start.addEventListener("submit", event => {
+start?.addEventListener("submit", event => {
   event.preventDefault();
   if (busy || !board?.order || board.active) return;
   write(start, "start", { run_id: crypto.randomUUID(), operator: start.elements.operator.value,
     order_id: board.order.id, order_key: board.order.key, version: board.version }, "İş başlatıldı.");
 });
 
-work.addEventListener("submit", event => {
+work?.addEventListener("submit", event => {
   event.preventDefault();
   if (busy || !board?.active) return;
   write(work, "finish", { run_id: board.active.run_id, revision: board.active.revision ?? 0, ...enteredWork() }, "İş tamamlandı.");
 });
 
-work.addEventListener("click", event => {
+work?.addEventListener("click", event => {
   const operation = event.target.closest('button[type="button"][data-run-action]')?.dataset.runAction;
   if (!operation || busy || !board?.active) return;
   const { run_id, revision = 0 } = board.active;
@@ -214,14 +269,14 @@ work.addEventListener("click", event => {
   write(work, "update", payload, messages[operation]);
 });
 
-document.getElementById("operator-shell").addEventListener("click", event => {
+if (!isObserver) shell.addEventListener("click", event => {
   const control = event.target.closest('[data-run-action="pickup"]');
   if (!control || busy || board?.active) return;
   const row = control.closest(".station-block");
   write(row, "pickup", { run_id: control.dataset.runId, operator: row.querySelector("input").value }, "Bekleyen iş açıldı.");
 });
 
-work.addEventListener("input", () => {
+work?.addEventListener("input", () => {
   if (!board?.active) return;
   try { sessionStorage.setItem(draftKey(board.active.run_id), JSON.stringify({ ...enteredWork(), revision: board.active.revision ?? 0 })); }
   catch { /* Work can still be completed without a local draft. */ }

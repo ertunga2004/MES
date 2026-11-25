@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Atölye MES · İstasyon</title>
+  <link rel="stylesheet" href="/static/employee/base.css">
+  <link rel="stylesheet" href="/static/employee/styles.css">
+  <link rel="stylesheet" href="/static/employee/workspace.css">
+</head>
+<body class="standalone-workspace">
+  <a class="skip-link" href="#content">İçeriğe geç</a>
+  <header class="workspace-header" id="employee-header">
+    <div class="workspace-brand" id="employee-brand"></div>
+    <div class="header-meta">
+      <span id="source-mode"></span>
+      <span id="connection-status" role="status"></span>
+      <time id="server-time" class="mono"></time>
+      <button id="retry-action" type="button" class="button" data-action="retry-request" hidden>Son isteğin sonucunu doğrula</button>
+    </div>
+    <div class="identity" id="employee-identity" hidden></div>
+  </header>
+  <div id="mode-banner"></div>
+  <main id="content" tabindex="-1"><p>İstasyon açılıyor…</p></main>
+  <footer class="workspace-footer" id="employee-footer"><span>ATÖLYE MES / YEREL SUNUCU</span></footer>
+  <dialog id="modal"></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/static/employee/app.mjs"></script>
+</body>
+</html>

@@ -48,6 +48,8 @@ class AppConfig:
     module_id: str = "konveyor_main"
     cutting_workflow_enabled: bool = False
     conveyor_handoff_enabled: bool = False
+    employee_tablets_enabled: bool = False
+    employee_simulation_enabled: bool = False
     kiosk_design_password: str = field(default="", repr=False)
     module_type: str = "conveyor"
     module_title: str = "Konveyor Ana Hat"
@@ -197,6 +199,8 @@ class AppConfig:
             module_id=os.getenv("MES_WEB_MODULE_ID", "konveyor_main"),
             cutting_workflow_enabled=_env_bool("MES_WEB_CUTTING_WORKFLOW_ENABLED", False),
             conveyor_handoff_enabled=_env_bool("MES_WEB_CONVEYOR_HANDOFF_ENABLED", False),
+            employee_tablets_enabled=_env_bool("MES_WEB_EMPLOYEE_TABLETS_ENABLED", False),
+            employee_simulation_enabled=_env_bool("MES_WEB_EMPLOYEE_SIMULATION_ENABLED", False),
             kiosk_design_password=os.getenv("MES_WEB_KIOSK_DESIGN_PASSWORD", ""),
             module_type=os.getenv("MES_WEB_MODULE_TYPE", "conveyor"),
             module_title=os.getenv("MES_WEB_MODULE_TITLE", "Konveyor Ana Hat"),

@@ -6,7 +6,7 @@
   <title>İstasyon · MES</title>
   <link rel="stylesheet" href="/static/kiosk.css">
   <link rel="stylesheet" href="/static/station-kiosk.css?v=kiosk-cards-2">
-  <script type="module" src="/static/station-kiosk.js?v=kiosk-cards-2"></script>
+  <script type="module" src="/static/station-kiosk.js?v=kiosk-observer-1"></script>
 </head>
 <body class="configurable-kiosk">
   <main class="kiosk-shell operator-shell" id="operator-shell">
@@ -27,6 +27,10 @@
         <p id="after" class="preserve-lines" hidden></p>
       </aside>
       <div class="operator-controls station-stack">
+        <p id="observer-mode" class="section-label" hidden>Salt okunur izleme</p>
+        <p id="observer-worker" class="muted" hidden></p>
+        <div id="observer-content" class="station-stack" hidden></div>
+        <template id="station-operation-controls">
         <form id="start" class="station-stack" hidden>
           <label>Operatör adı ve soyadı<input name="operator" maxlength="100" autocomplete="name" required></label>
           <button type="submit" class="station-primary">İşi başlat</button>
@@ -40,6 +44,7 @@
           <label id="work-result" hidden>İşin sonucu<select name="result"></select></label>
           <button type="submit" class="station-primary">İşi tamamla</button>
         </form>
+        </template>
         <p id="feedback" class="station-feedback" role="status"></p>
       </div>
     </section>

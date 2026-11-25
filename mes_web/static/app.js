@@ -79,9 +79,14 @@ const OEE_TREND_CHART = {
   gridValues: [100, 75, 50, 25, 0],
 };
 
+function tabFromLocation() {
+  if (window.location.hash === "#employees") return "employees";
+  return new URLSearchParams(window.location.search).get("tab") || "operations";
+}
+
 const state = {
   moduleId: new URLSearchParams(window.location.search).get("module") || DEFAULT_MODULE_ID,
-  activeTab: new URLSearchParams(window.location.search).get("tab") || "operations",
+  activeTab: tabFromLocation(),
   runtime: "bootstrapping",
   snapshot: null,
   ws: null,
@@ -118,10 +123,11 @@ const els = {
   runtimeBadge: document.getElementById("runtime-badge"),
   snapshotAt: document.getElementById("snapshot-at"),
   connectionBanner: document.getElementById("connection-banner"),
-  tabButtons: Array.from(document.querySelectorAll(".tab-button")),
+  tabButtons: Array.from(document.querySelectorAll(".tab-button[data-tab]")),
   operationsTab: document.getElementById("tab-operations"),
   workOrdersTab: document.getElementById("tab-work-orders"),
   oeeTab: document.getElementById("tab-oee"),
+  employeesTab: document.getElementById("tab-employees"),
   overviewMeta: document.getElementById("overview-meta"),
   connectionCards: document.getElementById("connection-cards"),
   systemGrid: document.getElementById("system-grid"),
@@ -814,24 +820,23 @@ function setRuntime(nextRuntime) {
 }
 
 function setActiveTab(tabName) {
-  if (tabName === "oee") {
-    state.activeTab = "oee";
-  } else if (tabName === "work-orders") {
-    state.activeTab = "work-orders";
-  } else {
-    state.activeTab = "operations";
-  }
+  state.activeTab = ["operations", "work-orders", "oee", "employees"].includes(tabName) ? tabName : "operations";
   els.tabButtons.forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.tab === state.activeTab);
+    const current = button.dataset.tab === state.activeTab;
+    button.classList.toggle("is-active", current);
+    button.setAttribute("aria-pressed", String(current));
   });
   els.operationsTab.classList.toggle("hidden", state.activeTab !== "operations");
   els.workOrdersTab.classList.toggle("hidden", state.activeTab !== "work-orders");
   els.oeeTab.classList.toggle("hidden", state.activeTab !== "oee");
+  els.employeesTab.classList.toggle("hidden", state.activeTab !== "employees");
+  employeeDashboard.setVisible(state.activeTab === "employees");
 
   const params = new URLSearchParams(window.location.search);
   params.set("module", state.moduleId);
   params.set("tab", state.activeTab);
-  window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+  const hash = window.location.hash === "#employees" && state.activeTab !== "employees" ? "" : window.location.hash;
+  window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}${hash}`);
 }
 
 function renderOverview(snapshot) {
@@ -1989,6 +1994,8 @@ async function sendWorkOrderInventoryRemove(matchKey) {
 els.tabButtons.forEach((button) => {
   button.addEventListener("click", () => setActiveTab(button.dataset.tab));
 });
+window.addEventListener("hashchange", () => setActiveTab(tabFromLocation()));
+window.addEventListener("popstate", () => setActiveTab(tabFromLocation()));
 
 els.presetButtons.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-command]");

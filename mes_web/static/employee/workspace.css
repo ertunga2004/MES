@@ -1,0 +1,7 @@
+.embedded-employee #employee-header,
+.embedded-employee #employee-footer,
+.embedded-employee #mode-banner,
+.embedded-employee > .skip-link { display: none; }
+.embedded-employee main#content { min-height: 0; padding: 1rem; }
+.employee-handoff .card-body { display: grid; gap: .75rem; }
+.employee-handoff .inline-actions { flex-wrap: wrap; }

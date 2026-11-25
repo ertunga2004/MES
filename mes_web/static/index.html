@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MES Kontrol Paneli</title>
-    <link rel="stylesheet" href="/static/styles.css?v=at-zeze-kiosk-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=at-zeze-employees-1" />
   </head>
   <body>
     <div class="app-shell">
@@ -22,10 +22,11 @@
 
       <div id="connection-banner" class="connection-banner hidden"></div>
 
-      <nav class="tab-bar">
+      <nav class="tab-bar" aria-label="Kontrol paneli bölümleri">
         <button class="tab-button is-active" data-tab="operations" type="button">Operasyon</button>
         <button class="tab-button" data-tab="work-orders" type="button">Is Emirleri</button>
         <button class="tab-button" data-tab="oee" type="button">OEE</button>
+        <button class="tab-button" data-tab="employees" type="button" aria-controls="tab-employees">İstasyon</button>
         <a class="tab-button" href="/kiosk-tasarla" id="kiosk-designer-link" hidden>Kiosk Tasarla</a>
       </nav>
 
@@ -320,9 +321,33 @@
             <div id="work-order-transition-log" class="work-order-log-grid"></div>
           </section>
         </section>
+        <section id="tab-employees" class="panel tab-panel employee-panel hidden" aria-labelledby="employee-dashboard-title">
+          <div class="employee-toolbar">
+            <div>
+              <h2 id="employee-dashboard-title">İstasyonları izle</h2>
+              <p>İşlemleri çalışanlar kendi istasyon ekranlarında yapar.</p>
+            </div>
+            <label for="employee-dashboard-select">
+              İstasyon seç
+              <select id="employee-dashboard-select">
+                <option value="/calisan/izle/taping">Bantlama</option>
+                <option value="/calisan/izle/cutting">Giyotin</option>
+                <option value="/calisan/izle/coating">Kaplama</option>
+                <option value="/calisan/izle/conveyor">Konveyör Operatörü</option>
+                <option value="/calisan/izle/packing">Paketleme</option>
+                <option value="/calisan/izle/technician">Tekniker</option>
+                <option value="/calisan/izle/engineer">Mühendis</option>
+                <optgroup id="employee-custom-kiosks" label="Yayımlanan kiosklar" hidden></optgroup>
+              </select>
+            </label>
+          </div>
+          <p id="employee-dashboard-status" class="employee-dashboard-status" role="status" hidden></p>
+          <iframe id="employee-dashboard-frame" class="employee-frame" title="Bantlama izleme paneli" referrerpolicy="no-referrer" sandbox="allow-same-origin allow-scripts"></iframe>
+        </section>
       </main>
     </div>
 
-    <script src="/static/app.js?v=at-zeze-handoff-1"></script>
+    <script src="/static/employee-dashboard.js?v=at-zeze-employees-1"></script>
+    <script src="/static/app.js?v=at-zeze-employees-1"></script>
   </body>
 </html>

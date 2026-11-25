@@ -123,6 +123,7 @@ def default_runtime_state() -> dict[str, Any]:
         "manualCoatingRecords": {},
         "conveyorHandoffs": {},
         "stationKiosks": {},
+        "employeeStations": {},
         "cuttingWorkflow": empty_cutting_workflow(),
         "shiftSelected": "SHIFT-A",
         "performanceMode": "TARGET",
@@ -1396,6 +1397,8 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
         base["conveyorHandoffs"] = candidate["conveyorHandoffs"]
     if isinstance(candidate.get("stationKiosks"), dict):
         base["stationKiosks"] = candidate["stationKiosks"]
+    if isinstance(candidate.get("employeeStations"), dict):
+        base["employeeStations"] = candidate["employeeStations"]
     records = candidate.get("manualCoatingRecords")
     if isinstance(records, dict):
         base["manualCoatingRecords"] = records

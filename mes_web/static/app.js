@@ -1,3 +1,7 @@
+import { bindPlantPanels } from './plant-panels.mjs?v=1';
+import { bindAnyLogic } from './anylogic-panel.mjs?v=1';
+import { esc } from './atolye-onizleme-core.js?v=5';
+
 const DEFAULT_MODULE_ID = "konveyor_main";
 const RECONNECT_DELAYS = [1000, 2000, 5000, 10000, 15000];
 
@@ -124,6 +128,9 @@ const els = {
   workOrdersTab: document.getElementById("tab-work-orders"),
   oeeTab: document.getElementById("tab-oee"),
   digitalTwinTab: document.getElementById("tab-digital-twin"),
+  systemTab: document.getElementById("tab-system-status"),
+  cameraTab: document.getElementById("tab-camera-records"),
+  anylogicTab: document.getElementById("tab-anylogic"),
   overviewMeta: document.getElementById("overview-meta"),
   connectionCards: document.getElementById("connection-cards"),
   systemGrid: document.getElementById("system-grid"),
@@ -816,13 +823,21 @@ function setRuntime(nextRuntime) {
 }
 
 function setActiveTab(tabName) {
-  state.activeTab = ["oee", "work-orders", "digital-twin"].includes(tabName) ? tabName : "operations";
+  state.activeTab = ["oee", "work-orders", "digital-twin", "system-status", "camera-records", "anylogic"].includes(tabName) ? tabName : "operations";
+  document.body.dataset.tab = state.activeTab;
   els.tabButtons.forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.tab === state.activeTab);
+    const selected = button.dataset.tab === state.activeTab;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-pressed", String(selected));
   });
   els.operationsTab.classList.toggle("hidden", state.activeTab !== "operations");
   els.workOrdersTab.classList.toggle("hidden", state.activeTab !== "work-orders");
   els.oeeTab.classList.toggle("hidden", state.activeTab !== "oee");
+  els.systemTab.classList.toggle("hidden", state.activeTab !== "system-status");
+  els.cameraTab.classList.toggle("hidden", state.activeTab !== "camera-records");
+  els.anylogicTab.classList.toggle("hidden", state.activeTab !== "anylogic");
+  plantPanels.activate(state.activeTab);
+  anylogicPanel.activate(state.activeTab === "anylogic");
   const showDigitalTwin = state.activeTab === "digital-twin";
   els.digitalTwinTab.classList.toggle("hidden", !showDigitalTwin);
   if (showDigitalTwin) {
@@ -1004,10 +1019,10 @@ function renderLogs(snapshot) {
       (entry) => `
         <article class="log-entry">
           <div class="log-meta">
-            <span>${entry.source}</span>
+            <span>${esc(entry.source)}</span>
             <span>${formatTime(entry.received_at)}</span>
           </div>
-          <pre>${entry.message}</pre>
+          <pre>${esc(entry.message)}</pre>
         </article>
       `
     )
@@ -1632,6 +1647,7 @@ function render(snapshot) {
   renderLogs(snapshot);
   renderWorkOrders(snapshot);
   renderOee(snapshot);
+  plantPanels.snapshot();
 }
 
 async function fetchDashboard() {
@@ -2195,4 +2211,6 @@ async function bootstrap() {
   }
 }
 
+const plantPanels = bindPlantPanels({ moduleId: state.moduleId, getSnapshot: () => state.snapshot, getRuntime: () => state.runtime });
+const anylogicPanel = bindAnyLogic(els.anylogicTab);
 bootstrap();

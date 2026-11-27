@@ -3,6 +3,8 @@ from pathlib import Path
 import secrets
 import tempfile
 import unittest
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -93,6 +95,17 @@ class StationWorkspaceTests(unittest.TestCase):
         rejected = self.admin.post('/api/workspace/pair-codes/bantlama', json={}, headers={'Origin': 'https://other.example'})
         self.assertEqual(rejected.status_code, 403)
 
+    def test_anylogic_routes_keep_simulation_controls_in_staff_workspace(self):
+        url = '/api/workspace/anylogic'
+        supervisor = self.actor('sef')
+        tablet, _ = self.pair('bantlama')
+        self.assertEqual(tablet.get(url).status_code, 403)
+        self.assertFalse(supervisor.get(url).json()['can_control'])
+        self.assertEqual(supervisor.post(f'{url}/command', json={'action': 'start'}).status_code, 403)
+        self.assertEqual(self.admin.post(f'{url}/command', json={'action': 'start', 'scenario': 'T15'}).status_code, 422)
+        foreign = self.admin.post(f'{url}/command', json={'action': 'start'}, headers={'Origin': 'https://other.example'})
+        self.assertEqual(foreign.status_code, 403)
+
     def test_station_ports_open_only_their_assigned_station(self):
         root = self.admin.get('/')
         self.assertNotIn('tablet-workspace-link', root.text)
@@ -135,10 +148,14 @@ class StationWorkspaceTests(unittest.TestCase):
         bantlama, _ = self.pair('bantlama')
         konveyor, _ = self.pair('konveyor')
         paketleme, _ = self.pair('paketleme')
-        for tablet, station in ((giyotin, 'giyotin'), (bantlama, 'bantlama'), (konveyor, 'konveyor'), (paketleme, 'paketleme')):
+        kalite, _ = self.pair('kalite')
+        for tablet, station in ((giyotin, 'giyotin'), (bantlama, 'bantlama'), (konveyor, 'konveyor'),
+                                (paketleme, 'paketleme'), (kalite, 'kalite')):
             self.action(tablet, station, 'shift-start', operator='Örnek Operatör')
-        self.action(giyotin, 'giyotin', 'cut', 422, color='blue', count=2, lot='KESIM-TEST', length=100, result='good')
-        self.action(giyotin, 'giyotin', 'cut', color='blue', count=2, lot='KESIM-TEST', length=100, result='good', shield=True)
+        cut = dict(color='blue', count=2, lot='KESIM-TEST', length=100, result='good',
+                   orderId='WO-2026-0456', requestId='sample-chain-cut')
+        self.action(giyotin, 'giyotin', 'cut', 422, **cut)
+        self.action(giyotin, 'giyotin', 'cut', **cut, shield=True)
         self.action(bantlama, 'bantlama', 'start', box='KUTU-TEST', color='blue')
         self.action(bantlama, 'bantlama', 'shift-end', 409)
         self.action(bantlama, 'bantlama', 'finish', 409, activeBoxId='KUTU-TEST', outcome='good')
@@ -161,12 +178,107 @@ class StationWorkspaceTests(unittest.TestCase):
         fields = dict(box='KUTU-TEST', size='M', label='ETK-TEST', weight=120, count=1, protected=True)
         self.action(paketleme, 'paketleme', 'pack', 409, **fields)
         self.action(konveyor, 'konveyor', 'exit', box='KUTU-TEST')
+        review = dict(box='KUTU-TEST', instrument='Ölçüm', measured=12, tolerance='1', visual='good', reason='Tekrar kontrol')
+        self.action(kalite, 'kalite', 'classify', outcome='scrap', **review)
+        dashboard_path = '/api/workspace/monitoring/dashboard'
+        after_review = self.admin.get(dashboard_path).json()['stations']['bantlama']
+        self.assertEqual((after_review['total'], after_review['quality']['scrap']), (1, 1))
+        self.action(kalite, 'kalite', 'classify', outcome='good', **review)
         self.action(paketleme, 'paketleme', 'pack', **fields)
         monitor = self.actor('sef').get('/api/workspace/monitoring').json()
         self.assertEqual(len(monitor['stations']), 8)
         self.assertEqual(monitor['stations']['paketleme']['packed']['blue'], 11)
         self.assertEqual(monitor['stations']['tekniker']['faults'][0]['kind'], 'help')
         self.assertIsNone(monitor['stations']['bantlama']['shift'])
+        self.assertEqual(bantlama.get(dashboard_path).status_code, 403)
+        self.assertEqual(self.client().get(dashboard_path).status_code, 401)
+        daily = self.actor('sef').get(dashboard_path).json()['stations']
+        self.assertEqual(set(daily), {'bantlama', 'paketleme', 'giyotin', 'tekniker'})
+        self.assertEqual(daily['bantlama']['total'], 1)
+        self.assertEqual(daily['bantlama']['quality']['good'], 1)
+        self.assertEqual(daily['paketleme']['total'], 1)
+        self.assertEqual(daily['giyotin']['total'], 2)
+        self.assertEqual(daily['giyotin']['workers'][0]['count'], 2)
+        self.assertIsNone(daily['paketleme']['work']['activeMs'])
+        self.assertNotIn('Örnek Operatör', {row['operator'] for row in daily['tekniker']['workers']})
+
+    def test_monitoring_clips_day_and_excludes_overlapping_downtime_from_work(self):
+        supervisor = self.actor('sef')
+        bantlama, _ = self.pair('bantlama')
+        technician, _ = self.pair('tekniker')
+        url = '/api/workspace/monitoring/dashboard'
+        midnight = datetime(2026, 11, 26, 21, tzinfo=timezone.utc).timestamp()
+        minute = -10
+
+        def clock():
+            return midnight + minute * 60
+
+        def board():
+            return supervisor.get(url).json()['stations']
+
+        with patch('mes_web.station_workflow.time', SimpleNamespace(time=clock)), patch('mes_web.station_monitoring.time', clock):
+            self.action(bantlama, 'bantlama', 'shift-start', operator='Bantlama Operatörü')
+            self.assertEqual(board()['bantlama']['status'], 'idle')
+            box = 'KUTU-IZLEME'
+            self.action(bantlama, 'bantlama', 'start', box=box, color='blue')
+            minute = 5
+            self.assertEqual(board()['bantlama']['status'], 'running')
+            self.assertEqual(board()['bantlama']['work']['activeMs'], 300_000)
+            self.action(bantlama, 'bantlama', 'pause', activeBoxId=box, reason='Besleme bekliyor')
+            self.assertEqual(board()['bantlama']['status'], 'paused')
+            self.action(bantlama, 'bantlama', 'fault', description='Merdane kontrolü')
+
+            minute = 7
+            self.action(technician, 'tekniker', 'shift-start', operator='Bakım Teknikeri')
+            issue = self.admin.get('/api/workspace/monitoring').json()['faults'][0]['id']
+            self.action(technician, 'tekniker', 'accept', fault=issue)
+            self.assertEqual(board()['bantlama']['status'], 'maintenance')
+            self.assertEqual(board()['tekniker']['status'], 'running')
+            minute = 10
+            self.action(bantlama, 'bantlama', 'resume', activeBoxId=box)
+            minute = 12
+            self.action(technician, 'tekniker', 'resolve', fault=issue, category='Merdane', parts='Yok',
+                        intervention='Kontrol edildi', downtime=5, outcome='repaired', tested=True)
+            self.assertEqual(board()['bantlama']['status'], 'running')
+            minute = 15
+            self.action(bantlama, 'bantlama', 'finish', activeBoxId=box, outcome='rework', reason='Kontrol gerekli')
+            self.action(bantlama, 'bantlama', 'finish', 409, activeBoxId=box, outcome='rework', reason='Tekrar')
+            minute = 16
+            self.action(bantlama, 'bantlama', 'shift-end')
+            self.assertEqual(supervisor.get(url).json()['date'], '2026-11-27')
+            daily = board()
+            taping = daily['bantlama']
+            self.assertEqual((taping['total'], taping['quality']['rework'], taping['hourly'][0]), (1, 1, 1))
+            self.assertEqual(taping['status'], 'stopped')
+            self.assertEqual(taping['work'], {'activeMs': 480_000, 'stoppedMs': 120_000, 'maintenanceMs': 300_000,
+                                            'idleMs': 60_000, 'stopCount': 2, 'reasons': ['Besleme bekliyor', 'Merdane kontrolü']})
+            self.assertEqual((taping['workers'][0]['count'], taping['workers'][0]['activeMs']), (1, 480_000))
+            self.assertIsNotNone(taping['workers'][0]['end'])
+            self.assertEqual((daily['tekniker']['total'], daily['tekniker']['work']['activeMs']), (1, 300_000))
+            task = daily['tekniker']['tasks'][0]
+            self.assertEqual((task['id'], task['status'], task['activeMs']), (issue, 'resolved', 300_000))
+
+    def test_manual_cut_replay_preserves_quantity_and_source_across_restart(self):
+        self.action(self.admin, 'giyotin', 'shift-start', operator='Örnek Operatör')
+        fields = dict(color='blue', count=2, lot='KESIM-TEST', length=100, result='good', shield=True,
+                      orderId='WO-2026-0456', requestId='cut-request')
+        self.action(self.admin, 'giyotin', 'cut', 409, **{**fields, 'orderId': 'WO-2026-0457'})
+        first = self.action(self.admin, 'giyotin', 'cut', **fields)['board']
+        self.assertEqual(first['cut']['blue'], 36)
+        record = first['cutLog'][0]
+        self.assertEqual((record['orderId'], record['source']), ('WO-2026-0456', 'manual'))
+        self.assertTrue(record['recordedAt'].endswith('+00:00'))
+        self.assertNotIn('recordedAt', first['cutLog'][-1])
+
+        self.app = app_module.create_app()
+        admin = self.actor('admin')
+        replay = self.action(admin, 'giyotin', 'cut', **fields)['board']
+        self.assertEqual(replay['cut'], first['cut'])
+        self.assertEqual(replay['cutLog'], first['cutLog'])
+        self.action(admin, 'giyotin', 'cut', 409, **{**fields, 'count': 3})
+        scrap = self.action(admin, 'giyotin', 'cut', **{**fields, 'requestId': 'fire', 'result': 'scrap'})['board']
+        self.assertEqual(scrap['cut'], first['cut'])
+        self.assertEqual(scrap['cutLog'][0]['result'], 'scrap')
 
     def test_template_publication_is_shared_and_persists_across_apps(self):
         engineer = self.actor('muhendis')

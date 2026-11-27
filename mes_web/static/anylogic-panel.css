@@ -1,0 +1,24 @@
+#tab-anylogic [hidden] { display: none; }
+.anylogic-heading { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 10px; }
+.anylogic-heading h2 { margin: 0; font-size: 1.6rem; }
+.anylogic-heading p { margin: 5px 0 14px; color: var(--text-soft); font-size: .9rem; }
+.anylogic-form { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.anylogic-form label { flex: 1 1 190px; max-width: 330px; display: grid; gap: 5px; color: var(--text-soft); font-size: .83rem; }
+.anylogic-form select { width: 100%; min-width: 0; min-height: 44px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--panel-border); background: var(--bg-bottom); color: var(--text-main); color-scheme: dark; font: inherit; font-size: .94rem; }
+.anylogic-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.anylogic-actions button, #anylogic-report { min-height: 44px; }
+#anylogic-report { display: inline-flex; align-items: center; text-decoration: none; }
+.anylogic-actions button:disabled { opacity: .53; cursor: default; }
+.anylogic-form :focus-visible, #anylogic-report:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+#anylogic-feedback { margin: 5px 0 0; color: var(--text-soft); font-size: .86rem; }
+#anylogic-feedback:empty { display: none; }
+#anylogic-feedback[data-tone="error"], #anylogic-verdict[data-tone="error"] { color: var(--red); }
+#anylogic-verdict { margin: 12px 0 0; color: var(--green); font-size: .88rem; }
+.anylogic-stock { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 10px; margin-top: 12px; }
+.anylogic-stock article { padding: 9px 12px; border-radius: 10px; border: 1px solid var(--panel-border); }
+.anylogic-stock article div { display: flex; justify-content: space-between; gap: 9px; font-size: .85rem; }
+.anylogic-stock progress { width: 100%; height: 7px; margin: 7px 0 0; accent-color: var(--blue); }
+.anylogic-stock [data-color="red"] progress { accent-color: var(--red); }
+.anylogic-stock [data-color="yellow"] progress { accent-color: var(--yellow); }
+#anylogic-flow .plant-stage { flex-basis: 147px; }
+#anylogic-events td:first-child { white-space: nowrap; }

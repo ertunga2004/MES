@@ -1,14 +1,17 @@
 """Routes for the station-bound kiosk, staff dashboard and template designer."""
 
 from typing import Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
+from .anylogic_runner import AnyLogicRunner, SimulationError
 from .kiosk_designer import Section, Step, _clean_design, Design
 from .station_access import DESIGNERS, STAFF, STATIONS, STATION_PORTS, WorkspaceAccess, WorkspaceBoundary, listener_station, workspace_url
 from .station_workflow import StationWorkflow, require
+from .station_monitoring import monitoring_snapshot
 
 
 HEADERS = {'Cache-Control': 'no-store', 'Content-Security-Policy': "frame-ancestors 'none'"}
@@ -26,6 +29,13 @@ class PairCode(BaseModel):
 class StationAction(BaseModel):
     action: str = Field(min_length=1, max_length=32)
     fields: dict[str, Any] = Field(default_factory=dict, max_length=48)
+
+
+class AnyLogicCommand(BaseModel):
+    action: Literal['start', 'pause', 'resume', 'reset']
+    run_id: UUID | None = None
+    mode: Literal['TEST', 'SUREKLI'] = 'TEST'
+    scenario: str = Field(default='T07', pattern=r'^T(?:0[1-9]|1[0-4])$')
 
 
 class TemplateCard(BaseModel):
@@ -82,6 +92,7 @@ class StationWorkspace:
         self.static_dir = static_dir
         self.access = WorkspaceAccess(config.kiosk_design_password)
         self.workflow = StationWorkflow()
+        self.anylogic = runner = AnyLogicRunner(config.root_dir, config.oee_runtime_state_path)
         app.add_middleware(WorkspaceBoundary, access=self.access)
         router = APIRouter()
 
@@ -149,6 +160,34 @@ class StationWorkspace:
                                  'boxes': state['boxes'], 'faults': state['faults'], 'packed': state['packed'],
                                  'stations': {station: self.workflow.station_board(state, station) for station in STATIONS}}, headers=HEADERS)
 
+        @router.get('/api/workspace/monitoring/dashboard')
+        def monitor_dashboard(request: Request):
+            identity = self.access.authorize(request, STAFF)
+            return JSONResponse({'role': identity['role'], **monitoring_snapshot(self.workflow.read())}, headers=HEADERS)
+
+        @router.get('/api/workspace/anylogic')
+        def anylogic_status(request: Request):
+            role = self.access.authorize(request, STAFF)['role']
+            return JSONResponse({**runner.status(), 'can_control': role in DESIGNERS}, headers=HEADERS)
+
+        @router.post('/api/workspace/anylogic/command', dependencies=[Depends(json_write)])
+        def anylogic_command(request: Request, payload: AnyLogicCommand):
+            self.access.authorize(request, DESIGNERS)
+            try:
+                state = runner.command(payload.action, run_id=payload.run_id.hex if payload.run_id else None,
+                                       mode=payload.mode, scenario=payload.scenario)
+            except SimulationError as exc:
+                raise HTTPException(exc.status, str(exc)) from exc
+            return JSONResponse({**state, 'can_control': True}, headers=HEADERS)
+
+        @router.get('/api/workspace/anylogic/{run_id}/report')
+        def anylogic_report(request: Request, run_id: UUID):
+            self.access.authorize(request, STAFF)
+            path = runner.report(run_id)
+            if path is None:
+                raise HTTPException(404, 'Koşuya ait olay raporu bulunamadı.')
+            return FileResponse(path, media_type='text/csv', filename=f'anylogic-{run_id.hex[:8]}.csv', headers=HEADERS)
+
         @router.get('/api/workspace/templates')
         def templates(request: Request):
             self.access.authorize(request, DESIGNERS)
@@ -215,7 +254,7 @@ class StationWorkspace:
         if self.access.identity(request)['role'] in {'anonymous', 'invalid'}:
             return RedirectResponse('/mes-oturum', status_code=303, headers=HEADERS)
         self.access.authorize(request, STAFF)
-        return self.html('atolye-istasyon.html', {'title': 'Çalışan İzleme', 'mode': 'monitor', 'station': ''})
+        return self.html('calisan-izleme.html', {})
 
     def designer_redirect(self, request):
         if self.access.identity(request)['role'] in {'anonymous', 'invalid'}:

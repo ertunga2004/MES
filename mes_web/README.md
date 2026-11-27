@@ -330,3 +330,23 @@ Admin, Kiosk Tasarımcı’dan bir istasyon için kod oluşturur. Tablette MES s
 Dağıtımda HTTPS kullanılır. `admin` için `MES_WEB_WORKSPACE_ADMIN_PASSWORD`, `sef` için `MES_WEB_WORKSPACE_SUPERVISOR_PASSWORD`, `muhendis` için mevcut `MES_WEB_KIOSK_DESIGN_PASSWORD` kullanılır. `MES_WEB_WORKSPACE_SESSION_SECRET` yeniden başlatmalar arasında oturum imzasını korur. `MES_WEB_WORKSPACE_STATE_PATH` ayrı bir SQLite dosyasını işaret ederse şablonlar ve örnek istasyon kayıtları yeniden başlatmalarda saklanır. Eşleştirme kodu, üretildiği sunucu sürecinde kullanılır.
 
 Yeni istasyon yüzeyleri ayrı örnek veri üzerinde çalışır. İzleme sayfası ortak örnek durumu üç saniye arayla okur. OEE değeri örnek göstergedir. Kaplama ve Bantlama, örnek akışları göstermek için ayrı ekranlarla sunulur.
+
+### Sistem Durumu ve Kamera Kayıtları
+
+Kamera geçmişi ve sistem bağlantı olayları, OEE çalışma durumu dosyasının yanındaki `*.telemetry.sqlite3` dosyasına yazılır. Yerel önizleme kendi deneme klasöründeki depoyu kullanır. Kamera tablosu MQTT `/vision/events` kanalındaki çizgi geçişlerini ve açıkça bildirilen okuma hatalarını kaydeder. Takip başlangıcı ve kaybı kamera okuması sayılmaz. Okuma ayrıntısında ham mesaj, doğrulanmış eşleşme ve varsa ürün bilgisi bulunur. Günlük özet ve tarih/saat filtreleri Türkiye saatini kullanır.
+
+### AnyLogic senaryoları
+
+AnyLogic sekmesi `Excel_Test_Konveyor` modelinin yerel dışa aktarımıyla çalışır. Excel testi T01–T14 arasındaki kutu dizisini ve kamera sürelerini kullanır. Sentetik sürekli akış seçildiğinde model, Excel’den aldığı renk ve kamera sürelerine göre örnek giriş üretir. Modelin Excel testi renk depolarında biter. Her koşunun giriş ayarları, model kimliği ve CSV olay raporu yerel çalışma durumu klasöründeki `anylogic-runs` altında saklanır.
+
+Kurulu **AnyLogic 8.9 Professional** ve referans modelle yerel dışa aktarım hazırlamak için proje kökünde `python -B -m mes_web.prepare_anylogic <Excel_Test_Konveyor.alp>` çalıştırın. `AnyLogic_Test_Plani.xlsx` referans modelle aynı klasörde bulunur. Hazırlayıcı `.local/anylogic` altında kopya ve Java köprüsü oluşturur. [AnyLogic Java dışa aktarım belgesi](https://anylogic.help/anylogic/running/export-java-application.html)
+
+### Giyotin loglarının MES’e bağlanması
+
+Giyotin tabletinin kesim formu deneme iş emrine operatör girişi yazar. Aynı `requestId` ile aynı kayıt yeniden gelirse kesilen bant adedi bir kez artar. Kayda `manual` kaynağı ve MES kayıt zamanı eklenir. Eski ve örnek kayıtlar için kaynak ve zaman geriye dönük atanmaz.
+
+Zehra’dan ilk örnek için bir bıçaksız test oturumunun değiştirilmemiş seri veya MQTT logunu ve gözlem notunu alın. Normal çevrim, cihaz açılışı veya yeniden başlatma, bağlantı kesilip geri gelmesi ve varsa tekrar iletilen olay aynı örnekte görülebilir. Gözlem notuna beklenen başarılı çevrim adedini, cihaz ve yazılım sürümünü, saat dilimini ve her sayacın birimini ekleyin. MQTT kullanıldıysa konu adını ve ham mesajı birlikte saklayın.
+
+1. İlk karşılaştırmayı çevrimdışı bir örnek iş emrinde yapın. Cihaz ve oturum kimliği, tekil olay veya sıra numarası, cihaz zamanı ve MES’in alım zamanı, olay türü, miktar ve birim eşlemelerini ham kayıttan çıkarın. İş emri, renk ve kalite alanları cihazda yoksa doğrulandıkları MES veya operatör kaydını belirtin. Çevrim kaydı tek başına uygun bant miktarını kanıtlamaz.
+2. Aynı dosyayı iki kez oynatın. İkinci oynatımda çıktı ve WIP değişmemeli. Sayaç sıfırlanmasını, sıra boşluklarını ve emri belirlenemeyen olayları mutabakat için kaydedin.
+3. Eşleme doğrulanınca adaptörü aktif iş emri, tekrar koruması ve bant tüketimini yöneten MES kesim akışına bağlayın. Tablet de aynı MES kaydını okumalı. Tabletin deneme SQLite verisi fiziksel olay alıcısı olarak kullanılmaz. İlk entegrasyon testinde iki uygun bant bir kutuluk bant ihtiyacını karşılar, konveyör ve paket sayaçları kendi olaylarıyla ilerler.

@@ -6,6 +6,8 @@
     <title>MES Kontrol Paneli</title>
     <link rel="stylesheet" href="/static/styles.css?v=at-zeze-tablet-3" />
     <link rel="stylesheet" href="/static/digital-twin.css?v=5" />
+    <link rel="stylesheet" href="/static/plant-panels.css?v=1" />
+    <link rel="stylesheet" href="/static/anylogic-panel.css?v=1" />
   </head>
   <body>
     <div class="app-shell">
@@ -23,56 +25,78 @@
 
       <div id="connection-banner" class="connection-banner hidden"></div>
 
-      <nav class="tab-bar">
-        <button class="tab-button is-active" data-tab="operations" type="button">Operasyon</button>
-        <button class="tab-button" data-tab="work-orders" type="button">Is Emirleri</button>
+      <nav class="tab-bar" aria-label="MES panelleri">
         <button class="tab-button" data-tab="oee" type="button">OEE</button>
+        <button class="tab-button is-active" data-tab="operations" type="button">Operasyon</button>
+        <button class="tab-button" data-tab="digital-twin" type="button">Dijital İkiz</button>
+        <button class="tab-button" data-tab="system-status" type="button">Sistem Durumu</button>
+        <button class="tab-button" data-tab="camera-records" type="button">Kamera Kayıtları</button>
+        <button class="tab-button" data-tab="anylogic" type="button">AnyLogic</button>
+        <button class="tab-button" data-tab="work-orders" type="button">İş Emirleri</button>
         <a class="tab-button" href="/atolye-onizleme" id="kiosk-designer-link" hidden>Kiosk Tasarımcı</a>
-        <button class="tab-button" data-tab="digital-twin" type="button"><span aria-hidden="true">🏭</span> Dijital İkiz</button>
         <a class="tab-button" href="/?module=konveyor_main&amp;tab=monitoring" id="employee-monitor-link">Çalışan İzleme</a>
       </nav>
 
       <main class="tab-shell">
-        <section id="tab-operations" class="dashboard-grid tab-panel">
-          <section class="panel overview-panel panel-span-12">
-            <div id="overview-meta" class="overview-meta"></div>
-            <div id="connection-cards" class="connection-grid"></div>
-            <div class="count-strip">
-              <div class="panel-head count-strip-head">
-                <h2>Renk Sayaclari</h2>
-                <span class="panel-note">`AUTO|QUEUE=ENQ` olaylarindan turetilir</span>
+        <section id="tab-anylogic" class="dashboard-grid tab-panel hidden" aria-labelledby="anylogic-title">
+          <section class="panel panel-span-12 anylogic-control">
+            <header class="anylogic-heading">
+              <div><h2 id="anylogic-title">AnyLogic</h2><p>Konveyör modelinde Excel testlerini ve sentetik üretim akışını çalıştır.</p></div>
+              <span id="anylogic-engine" class="plant-led" data-tone="idle">Motor sorgulanıyor</span>
+            </header>
+            <div class="anylogic-form">
+              <label>Çalışma modu<select id="anylogic-mode"><option value="TEST">Excel testi</option><option value="SUREKLI">Sentetik sürekli akış</option></select></label>
+              <label>Excel senaryosu<select id="anylogic-scenario"></select></label>
+              <div class="anylogic-actions">
+                <button type="button" class="tab-button is-active" data-sim-action="start" disabled>Başlat</button>
+                <button type="button" class="tab-button" data-sim-action="pause" disabled>Duraklat</button>
+                <button type="button" class="tab-button" data-sim-action="resume" disabled>Devam et</button>
+                <button type="button" class="tab-button" data-sim-action="reset" disabled>Yeni koşu</button>
               </div>
-              <div id="count-cards" class="count-grid count-grid-compact"></div>
             </div>
+            <p id="anylogic-scenario-note" class="panel-note"></p>
+            <p id="anylogic-feedback" role="status"></p>
           </section>
-
-          <section class="panel">
-            <div class="panel-head">
-              <h2>Sistem Durumu</h2>
-              <span class="panel-note">MQTT `status` topic'inden beslenir</span>
-            </div>
-            <div id="system-grid" class="status-grid"></div>
+          <section class="panel panel-span-12">
+            <div class="panel-head"><h3>Koşu özeti</h3><span id="anylogic-run" class="panel-note"></span></div>
+            <div id="anylogic-kpis" class="plant-kpis plant-kpis-six"></div>
+            <p id="anylogic-verdict" hidden></p>
           </section>
-
-          <section class="panel">
-            <div class="panel-head">
-              <h2>Donanim Durumu</h2>
-              <span class="panel-note">Heartbeat ve bridge telemetry ozeti</span>
-            </div>
-            <div id="hardware-grid" class="status-grid"></div>
+          <section class="panel panel-span-12">
+            <div class="panel-head"><h3>Simülasyon akışı</h3></div>
+            <ol id="anylogic-flow" class="plant-flow" style="--stages: 6" aria-label="Simülasyon istasyon sırası" tabindex="0"></ol>
+            <div id="anylogic-stock" class="anylogic-stock"></div>
           </section>
-
-          <section id="vision-panel" class="panel panel-span-12">
-            <div class="panel-head">
-              <h2>Vision Durumu</h2>
-              <span class="panel-note">Pasif ingest ve capraz kontrol ozeti</span>
-            </div>
-            <div id="vision-grid" class="vision-grid"></div>
+          <section class="panel panel-span-12">
+            <div class="panel-head"><h3>Model olayları</h3><a class="tab-button" id="anylogic-report" download hidden>Olay CSV’si</a></div>
+            <div class="plant-table-wrap" tabindex="0" role="region" aria-label="Simülasyon olayları"><table class="plant-table">
+              <thead><tr><th scope="col">Model saati</th><th scope="col">Olay</th><th scope="col">Kutu</th><th scope="col">Renk</th><th scope="col">Ayrıntı</th></tr></thead>
+              <tbody id="anylogic-events"></tbody>
+            </table></div>
           </section>
-
-          <section class="panel command-panel panel-span-12">
+        </section>
+        <section id="tab-operations" class="dashboard-grid tab-panel">
+          <section class="panel panel-span-12">
+            <div class="panel-head"><h2>Anlık üretim özeti</h2><span class="panel-note" id="production-day"></span></div>
+            <div id="production-summary" class="plant-kpis plant-kpis-six"></div>
+          </section>
+          <section class="panel panel-span-12">
+            <div class="panel-head"><h2>Üretim akışı</h2><span class="panel-note">Konveyör ana hattı</span></div>
+            <div id="production-flow"></div>
+          </section>
+          <section class="panel"><div class="panel-head"><h2>Darboğaz ve kayıplar</h2></div><div id="production-losses" class="status-grid"></div></section>
+          <section class="panel"><div class="panel-head"><h2>Operasyonel uyarılar</h2></div><div id="production-alerts"></div></section>
+          <section class="panel panel-span-12">
+            <div class="panel-head"><h2>İş emri takibi</h2><span class="panel-note">Aktif ve son kapanan işler</span></div>
+            <div id="production-orders"></div>
+          </section>
+          <details class="panel panel-span-12 plant-disclosure">
+            <summary>Renk sayaçları <span class="panel-note">Hat girişinde sıraya alınan kutular</span></summary>
+            <div id="count-cards" class="count-grid count-grid-compact"></div>
+          </details>
+          <details class="panel command-panel panel-span-12 plant-disclosure">
+            <summary>Komut Paneli</summary>
             <div class="panel-head">
-              <h2>Komut Paneli</h2>
               <span id="command-mode" class="panel-note">-</span>
             </div>
             <div id="preset-buttons" class="button-grid"></div>
@@ -84,15 +108,61 @@
               </div>
             </form>
             <p id="command-feedback" class="command-feedback">Komutlar beklemede.</p>
-          </section>
+          </details>
+        </section>
 
-          <section class="panel logs-panel panel-span-12">
-            <div class="panel-head">
-              <h2>Canli Log</h2>
-              <span class="panel-note">Son 50 satir</span>
-            </div>
-            <div id="log-list" class="log-list"></div>
+        <section id="tab-system-status" class="dashboard-grid tab-panel hidden">
+          <section class="panel overview-panel panel-span-12">
+            <div class="panel-head"><h2>Genel sistem durumu</h2><span id="diagnostic-feedback" class="panel-note" role="status"></span></div>
+            <div id="diagnostic-summary" class="plant-kpis plant-kpis-six"></div>
+            <div id="overview-meta" class="overview-meta"></div>
+            <div id="connection-cards" class="connection-grid"></div>
           </section>
+          <section class="panel panel-span-12">
+            <div class="panel-head"><h2>Donanım durumu</h2><span class="panel-note">Son görülen cihaz telemetrisi</span></div>
+            <div id="diagnostic-devices"></div>
+          </section>
+          <section class="panel"><div class="panel-head"><h2>Kontrol verileri</h2><span class="panel-note">MQTT durum mesajı</span></div><div id="system-grid" class="status-grid"></div></section>
+          <section class="panel"><div class="panel-head"><h2>Donanım sinyalleri</h2></div><div id="hardware-grid" class="status-grid"></div></section>
+          <section id="vision-panel" class="panel panel-span-12">
+            <div class="panel-head"><h2>Kamera telemetrisi</h2><span class="panel-note">Görüntü işleme ve renk karşılaştırması</span></div>
+            <div id="vision-grid" class="vision-grid"></div>
+          </section>
+          <section class="panel panel-span-12">
+            <div class="panel-head">
+              <h2>Sistem olayları</h2><span class="panel-note">Son kayıtlar</span>
+            </div>
+            <div id="diagnostic-events"></div>
+          </section>
+          <details class="panel logs-panel panel-span-12 plant-disclosure">
+            <summary>Ham sistem logu</summary>
+            <div id="log-list" class="log-list"></div>
+          </details>
+        </section>
+
+        <section id="tab-camera-records" class="dashboard-grid tab-panel hidden">
+          <section class="panel panel-span-12">
+            <div class="panel-head"><h2>Kamera kayıtları</h2><span id="camera-source" class="panel-note">Bugünkü okumalar</span></div>
+            <div id="camera-summary" class="plant-kpis"></div>
+          </section>
+          <section class="panel panel-span-12">
+            <form id="camera-filters" class="plant-filters" aria-label="Kamera kayıtlarını filtrele">
+              <label class="plant-search">Kayıtlarda ara<input name="q" type="search" placeholder="Kamera, ürün, iş emri veya olay" /></label>
+              <label>İlk tarih<input name="date_from" type="date" /></label>
+              <label>Son tarih<input name="date_to" type="date" /></label>
+              <label>İlk saat<input name="time_from" type="time" /></label>
+              <label>Son saat<input name="time_to" type="time" /></label>
+              <label>Ürün kodu<input name="product" type="search" /></label>
+              <label>Barkod / QR<input name="code" type="search" /></label>
+              <label>İş emri<input name="order" type="search" /></label>
+              <label>Okuma sonucu<select name="result"><option value="">Tümü</option><option value="success">Başarılı</option><option value="failed">Başarısız</option><option value="uncertain">Doğrulanamadı</option></select></label>
+              <div class="plant-filter-actions"><button type="submit" class="tab-button is-active">Filtrele</button><button type="reset" class="tab-button">Temizle</button><a id="camera-export" class="tab-button" download>Kayıtları CSV indir</a></div>
+            </form>
+            <p id="camera-feedback" class="panel-note" role="status"></p>
+            <div id="camera-table"></div>
+            <div class="plant-pagination"><span id="camera-page-label"></span><button id="camera-prev" type="button" class="tab-button">Önceki</button><button id="camera-next" type="button" class="tab-button">Sonraki</button></div>
+          </section>
+          <dialog id="camera-detail" class="plant-dialog" aria-labelledby="camera-detail-title"><header><h2 id="camera-detail-title">Okuma ayrıntısı</h2><form method="dialog"><button class="tab-button">Kapat</button></form></header><div id="camera-detail-body"></div></dialog>
         </section>
 
         <section id="tab-oee" class="dashboard-grid tab-panel hidden">
@@ -455,6 +525,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=digital-twin-3"></script>
+    <script type="module" src="/static/app.js?v=anylogic-1"></script>
   </body>
 </html>

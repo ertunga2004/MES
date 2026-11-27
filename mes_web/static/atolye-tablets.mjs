@@ -104,16 +104,21 @@ function cutting(state) {
     const remaining = state.cut[color] - state.used[color];
     return `<tr><th scope="row">${colorMark(color)}</th><td>${state.cut[color]} / ${state.goals[color] * 2}</td><td>${readyPairs(state, color)}</td><td>${remaining % 2}</td></tr>`;
   }).join('');
-  const log = state.cutLog.slice(0, 12).map(row => `<div class="tablet-row"><div><strong>${esc(row.lot)}</strong>${colorMark(row.color)}</div><span>${row.count} bant${row.length ? ` · ${row.length} mm` : ''}</span>${pill(row.result === 'good' ? 'Uygun' : 'Red', row.result === 'good' ? 'green' : 'amber')}</div>`).join('');
+  const log = state.cutLog.slice(0, 12).map(row => {
+    const source = row.source === 'manual' ? 'Operatör girişi' : 'Örnek veya eski kayıt';
+    const time = row.recordedAt ? new Date(row.recordedAt).toLocaleString('tr-TR') : '';
+    const details = [source, row.orderId, time].filter(Boolean).join(' · ');
+    return `<div class="tablet-row"><div><strong>${esc(row.lot)}</strong>${colorMark(row.color)}<span>${esc(details)}</span></div><span>${row.count} bant${row.length ? ` · ${row.length} mm` : ''}</span>${pill(row.result === 'good' ? 'Uygun' : 'Fire', row.result === 'good' ? 'green' : 'amber')}</div>`;
+  }).join('');
   return `${workRef(state)}<div class="content-grid tablet-grid">
-    ${panel('Kesim kaydı', `<p class="tablet-muted">Her iki kesilmiş bant aynı renkte bir kutuya yeter.</p>${actionForm('cut', `<div class="tablet-fields">
+    ${panel('Elle kesim kaydı', `<p class="tablet-muted">Örnek reçetede bir kutu için aynı renkten iki uygun bant gerekir.</p>${actionForm('cut', `<div class="tablet-fields">
       <label>Bant rengi<select name="color" required>${options(colorEntries)}</select></label>
       <label>Kesilen bant adedi<input name="count" type="number" inputmode="numeric" min="1" max="10000" required></label>
       <label>Kesim partisi<input name="lot" maxlength="60" required></label>
       ${field('Ölçülen uzunluk (mm)', 'length', 'number', 'min="0.01" step="any"')}
-      <label>Kalite sonucu<select name="result" required>${options(goodOrReject)}</select></label>
+      <label>Kalite sonucu<select name="result" required>${options([['good', 'Uygun'], ['scrap', 'Fire']])}</select></label>
       </div>${checkField('Koruyucu kalkan kontrol edildi', 'shield')}`, 'Kesimi kaydet', { primary: true })}`)}
-    ${panel('Kesim ve bantlama durumu', `<div class="tablet-table-wrap"><table class="tablet-table"><thead><tr><th scope="col">Renk</th><th scope="col">Kesilen / Hedef</th><th scope="col">Hazır kutu</th><th scope="col">Tek bant</th></tr></thead><tbody>${rows}</tbody></table></div>`)}
+    ${panel('Kesim ve bantlama durumu', `<div class="tablet-table-wrap"><table class="tablet-table"><thead><tr><th scope="col">Renk</th><th scope="col">Uygun bant / Hedef</th><th scope="col">Bantla hazırlanabilecek kutu</th><th scope="col">Artan bant</th></tr></thead><tbody>${rows}</tbody></table></div>`)}
     ${panel('Son kesim kayıtları', `<div class="tablet-list">${log}</div>`, true)}
   </div>`;
 }
@@ -229,8 +234,8 @@ function materials(state) {
 const areas = {
   bantlama: { title: 'Bantlama', subtitle: 'Kutu hazırlığı, bantlama adımları ve konveyöre teslim', render: taping },
   paketleme: { title: 'Paketleme', subtitle: 'Doğrulanmış kutular, renk hedefleri ve müşteri kolisi', render: packing },
-  giyotin: { title: 'Giyotin', subtitle: 'Renge göre kesim kaydı ve bantlamaya hazır çiftler', render: cutting },
-  kaplama: { title: 'Kaplama', subtitle: 'Kimyasal lotu, tank, ölçümler ve kurutma kontrolü', render: coating },
+  giyotin: { title: 'Giyotin', subtitle: 'Elle kesim kaydı · Cihaz verisi henüz bağlanmadı', render: cutting },
+  kaplama: { title: 'Kaplama', subtitle: 'Bağımsız kimyasal kaplama denemesi', render: coating },
   konveyor: { title: 'Konveyör Operatörü', subtitle: 'Teslim edilen kutuyu hat ölçümüyle eşleştir ve çıkışı doğrula', render: conveyor },
   tekniker: { title: 'Tekniker', subtitle: 'İstasyon arızalarını kabul et, yanıtla ve tamamla', render: technician },
   kalite: { title: 'Kalite Kontrol', subtitle: 'Çıkışı doğrulanmış kutuların kalite sınıfları ve düzeltmeler', render: quality },
@@ -340,13 +345,14 @@ function mountWorkspace(root, readOnly, lockedStation) {
   let reading = false;
   let dirty = false;
   let tapingProgress = 0;
+  let pendingCut;
   let queue = Promise.resolve();
   const path = readOnly ? '/api/workspace/monitoring' : `/api/workspace/tablet/${lockedStation}`;
 
   root.innerHTML = `${readOnly ? `<div class="monitor-page-nav"><a class="tab-button" href="/">MES Kontrol Paneli</a><a class="tab-button" data-designer-link href="/atolye-onizleme" hidden>Kiosk Tasarımcı</a></div><div id="monitor-summary"></div>` : ''}
     <div class="station-toolbar">${readOnly ? `<label class="station-picker" for="station-select">İstasyon
       <select id="station-select">${Object.entries(areas).map(([id, area]) => `<option value="${id}"${id === current ? ' selected' : ''}>${area.title}</option>`).join('')}</select></label>
-      <span class="badge gray">Salt okunur izleme</span>` : ''}<p class="station-sample-note">Örnek veri</p></div>
+      <span class="badge gray">Salt okunur izleme</span>` : ''}<p class="station-sample-note"><strong>Deneme ortamı</strong> · Örnek iş emirleri ve operatör girişleri</p></div>
     <p class="tablet-feedback" role="status" aria-live="polite" tabindex="-1"></p>
     <div id="tablet-container"><p class="station-loading" role="status">İstasyon verisi yükleniyor…</p></div>${readOnly ? '<div id="monitor-records"></div>' : ''}`;
   const outlet = root.querySelector('#tablet-container');
@@ -414,7 +420,17 @@ function mountWorkspace(root, readOnly, lockedStation) {
 
   function submit(action, fields, form) {
     const button = form?.querySelector('button');
-    if (button?.disabled || button?.hidden || (pending && ['step', 'finish'].includes(action))) return;
+    if (button?.disabled || button?.hidden || (pending && ['step', 'finish', 'cut'].includes(action))) return;
+    if (action === 'cut') {
+      fields.orderId = stationState().orders[0].id;
+      const payload = JSON.stringify(fields);
+      if (pendingCut?.payload !== payload) {
+        const random = crypto.getRandomValues(new Uint8Array(16));
+        const requestId = Array.from(random, byte => byte.toString(16).padStart(2, '0')).join('');
+        pendingCut = { payload, requestId };
+      }
+      fields.requestId = pendingCut.requestId;
+    }
     const checkbox = action === 'step' ? form.querySelector('[data-taping-step]:enabled') : null;
     const stepFocus = document.activeElement === checkbox ? '[data-taping-step]:enabled' :
       document.activeElement === button ? '[data-action="stepper-advance"]' : null;
@@ -424,6 +440,7 @@ function mountWorkspace(root, readOnly, lockedStation) {
     queue = queue.then(async () => {
       try {
         const next = await requestData(`${path}/actions`, { action, fields });
+        if (action === 'cut') pendingCut = undefined;
         data = next.board;
         if (action === 'step') {
           tapingProgress = restoreTapingProgress(data);

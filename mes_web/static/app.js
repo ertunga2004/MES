@@ -1,5 +1,6 @@
 import { bindPlantPanels } from './plant-panels.mjs?v=1';
-import { bindAnyLogic } from './anylogic-panel.mjs?v=1';
+import { bindAnyLogic } from './anylogic-panel.mjs?v=4';
+import { bindSimulationMes } from './simulation-mes.mjs?v=5';
 import { esc } from './atolye-onizleme-core.js?v=5';
 
 const DEFAULT_MODULE_ID = "konveyor_main";
@@ -840,9 +841,11 @@ function setActiveTab(tabName) {
   anylogicPanel.activate(state.activeTab === "anylogic");
   const showDigitalTwin = state.activeTab === "digital-twin";
   els.digitalTwinTab.classList.toggle("hidden", !showDigitalTwin);
-  if (showDigitalTwin) {
-    import("/static/digital-twin.js?v=3").then(module => {
+  simulationMes.activate(state.activeTab);
+  if (showDigitalTwin && !digitalTwinModule) {
+    import("/static/digital-twin.js?v=6").then(module => {
       digitalTwinModule = module;
+      simulationMes.attachTwin(module);
       if (state.snapshot) module.acceptDashboardSnapshot(state.snapshot);
     }).catch(() => {
       els.digitalTwinTab.querySelector("[data-twin-status]").textContent = "Örnek veri yüklenemedi.";
@@ -1712,6 +1715,7 @@ function connectSocket() {
 }
 
 async function sendCommand(kind, value) {
+  if (document.body.dataset.mesSource === "anylogic") return;
   try {
     const response = await fetch(`/api/modules/${state.moduleId}/commands`, {
       method: "POST",
@@ -2212,5 +2216,6 @@ async function bootstrap() {
 }
 
 const plantPanels = bindPlantPanels({ moduleId: state.moduleId, getSnapshot: () => state.snapshot, getRuntime: () => state.runtime });
-const anylogicPanel = bindAnyLogic(els.anylogicTab);
+const simulationMes = bindSimulationMes({ moduleId: state.moduleId, selectTab: setActiveTab });
+const anylogicPanel = bindAnyLogic(els.anylogicTab, simulationMes.start);
 bootstrap();

@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/static/styles.css?v=at-zeze-tablet-3" />
     <link rel="stylesheet" href="/static/digital-twin.css?v=5" />
     <link rel="stylesheet" href="/static/plant-panels.css?v=1" />
-    <link rel="stylesheet" href="/static/anylogic-panel.css?v=1" />
+    <link rel="stylesheet" href="/static/anylogic-panel.css?v=5" />
   </head>
   <body>
     <div class="app-shell">
@@ -17,6 +17,12 @@
           <h1 id="module-title">Konveyor Ana Hat</h1>
           <p id="module-subtitle" class="subtitle">Canli operator paneli ve kalici veri kaydi.</p>
         </div>
+        <label class="mes-source-picker">MES veri kaynağı
+          <select id="mes-source">
+            <option value="physical">Fiziksel hat</option>
+            <option value="anylogic">AnyLogic simülasyonu</option>
+          </select>
+        </label>
         <div class="hero-status">
           <span id="runtime-badge" class="runtime-badge runtime-bootstrapping">Bootstrapping</span>
           <span id="snapshot-at" class="timestamp">Son snapshot: -</span>
@@ -47,6 +53,15 @@
             <div class="anylogic-form">
               <label>Çalışma modu<select id="anylogic-mode"><option value="TEST">Excel testi</option><option value="SUREKLI">Sentetik sürekli akış</option></select></label>
               <label>Excel senaryosu<select id="anylogic-scenario"></select></label>
+              <div class="anylogic-speed" role="group" aria-labelledby="anylogic-speed-label" aria-describedby="anylogic-speed-note">
+                <span id="anylogic-speed-label">Simülasyon hızı</span>
+                <div class="anylogic-speed-options">
+                  <button type="button" class="tab-button" data-sim-speed="1" aria-pressed="true" disabled>1×</button>
+                  <button type="button" class="tab-button" data-sim-speed="2" aria-pressed="false" disabled>2×</button>
+                  <button type="button" class="tab-button" data-sim-speed="5" aria-pressed="false" disabled>5×</button>
+                  <button type="button" class="tab-button" data-sim-speed="10" aria-pressed="false" disabled>10×</button>
+                </div>
+              </div>
               <div class="anylogic-actions">
                 <button type="button" class="tab-button is-active" data-sim-action="start" disabled>Başlat</button>
                 <button type="button" class="tab-button" data-sim-action="pause" disabled>Duraklat</button>
@@ -54,8 +69,16 @@
                 <button type="button" class="tab-button" data-sim-action="reset" disabled>Yeni koşu</button>
               </div>
             </div>
+            <p id="anylogic-speed-note" class="panel-note" hidden>
+              <span id="anylogic-speed-detail"></span>
+              <a id="anylogic-speed-preview" hidden>18880’deki hız panelini aç</a>
+            </p>
             <p id="anylogic-scenario-note" class="panel-note"></p>
             <p id="anylogic-feedback" role="status"></p>
+            <div class="mes-sim-links">
+              <button class="tab-button" type="button" data-sim-tab="operations">MES Operasyonunu izle</button>
+              <a class="tab-button" data-sim-link="digital-twin" href="/?module=konveyor_main&amp;tab=digital-twin&amp;source=anylogic" target="_blank" rel="noopener">Dijital İkizi yeni sekmede aç</a>
+            </div>
           </section>
           <section class="panel panel-span-12">
             <div class="panel-head"><h3>Koşu özeti</h3><span id="anylogic-run" class="panel-note"></span></div>
@@ -75,7 +98,8 @@
             </table></div>
           </section>
         </section>
-        <section id="tab-operations" class="dashboard-grid tab-panel">
+        <section id="tab-operations" class="dashboard-grid tab-panel" data-sim-surface>
+          <div class="dashboard-grid panel-span-12 mes-sim-panel simulation-dashboard" data-sim-view="operations" role="region" aria-label="Simülasyon operasyonu"></div>
           <section class="panel panel-span-12">
             <div class="panel-head"><h2>Anlık üretim özeti</h2><span class="panel-note" id="production-day"></span></div>
             <div id="production-summary" class="plant-kpis plant-kpis-six"></div>
@@ -165,7 +189,8 @@
           <dialog id="camera-detail" class="plant-dialog" aria-labelledby="camera-detail-title"><header><h2 id="camera-detail-title">Okuma ayrıntısı</h2><form method="dialog"><button class="tab-button">Kapat</button></form></header><div id="camera-detail-body"></div></dialog>
         </section>
 
-        <section id="tab-oee" class="dashboard-grid tab-panel hidden">
+        <section id="tab-oee" class="dashboard-grid tab-panel hidden" data-sim-surface>
+          <div class="dashboard-grid panel-span-12 mes-sim-panel simulation-dashboard" data-sim-view="oee" role="region" aria-label="Simülasyon performansı"></div>
           <section class="panel panel-span-12">
             <div class="panel-head">
               <h2>Vardiya Ayarlari</h2>
@@ -282,7 +307,8 @@
           </section>
         </section>
 
-        <section id="tab-work-orders" class="dashboard-grid tab-panel hidden">
+        <section id="tab-work-orders" class="dashboard-grid tab-panel hidden" data-sim-surface>
+          <section class="panel panel-span-12 mes-sim-panel" data-sim-view="work-orders" aria-label="Simülasyon senaryosu"></section>
           <section class="panel panel-span-12">
             <div class="panel-head">
               <h2>Is Emri Operasyon Ozet</h2>
@@ -397,8 +423,9 @@
           <div class="panel-head digital-twin-heading">
             <h2 id="digital-twin-title">Dijital İkiz Simülasyonu</h2>
             <div class="digital-twin-heading-actions">
-              <a class="tab-button" href="#digital-twin-kpi-title">Analize geç</a>
-              <span class="runtime-badge digital-twin-badge" data-twin-source-badge>ÖRNEK VERİ</span>
+              <a class="tab-button" href="#digital-twin-kpi-title" data-twin-physical-analysis>Analize geç</a>
+              <span class="runtime-badge digital-twin-badge" data-twin-source-badge data-twin-nonmodel>ÖRNEK VERİ</span>
+              <span class="runtime-badge digital-twin-badge is-live mes-sim-panel">ANYLOGIC</span>
             </div>
           </div>
 
@@ -430,19 +457,20 @@
 
             <section class="panel digital-twin-sidebar" aria-labelledby="digital-twin-telemetry-title">
               <h3 id="digital-twin-telemetry-title">Telemetri</h3>
-              <dl class="digital-twin-metrics">
+              <dl class="digital-twin-metrics" data-twin-nonmodel>
                 <div><dt>Hız</dt><dd data-twin-value="speed">—</dd></div>
                 <div><dt>Sıcaklık</dt><dd data-twin-value="temperature">—</dd></div>
                 <div><dt>Doluluk</dt><dd data-twin-value="fillLevel">—</dd></div>
                 <div><dt>Sayaç</dt><dd data-twin-value="count">—</dd></div>
               </dl>
-              <p class="panel-note digital-twin-note" data-twin-status role="status"></p>
+              <p class="panel-note digital-twin-note" data-twin-status data-twin-nonmodel role="status"></p>
 
-              <div class="digital-twin-controls">
+              <div class="digital-twin-controls" data-twin-nonmodel>
                 <label for="digital-twin-source">Veri kaynağı</label>
                 <select id="digital-twin-source">
                   <option value="demo">Örnek simülasyon</option>
                   <option value="live">Fiziksel hat · MES</option>
+                  <option value="anylogic" hidden>AnyLogic simülasyonu</option>
                 </select>
                 <div class="digital-twin-demo-controls" data-twin-demo-controls>
                   <label for="digital-twin-scenario">Senaryo</label>
@@ -471,10 +499,14 @@
                   </div>
                 </div>
               </div>
+              <div class="mes-sim-panel" data-sim-view="digital-twin" aria-label="Dijital ikiz model telemetrisi"></div>
+              <div class="mes-sim-links mes-sim-panel">
+                <button class="tab-button" type="button" data-sim-tab="anylogic">AnyLogic kontrollerine git</button>
+              </div>
             </section>
           </div>
 
-          <section class="panel" aria-labelledby="digital-twin-kpi-title">
+          <section class="panel" aria-labelledby="digital-twin-kpi-title" data-twin-physical-analysis>
             <div class="panel-head">
               <h3 id="digital-twin-kpi-title">Performans göstergeleri</h3>
               <p class="panel-note" data-twin-analysis-time></p>
@@ -487,7 +519,7 @@
             </dl>
             <p class="panel-note digital-twin-note" data-twin-analysis-source></p>
           </section>
-          <section class="panel" aria-labelledby="digital-twin-equipment-title">
+          <section class="panel" aria-labelledby="digital-twin-equipment-title" data-twin-physical-analysis>
             <div class="panel-head"><h3 id="digital-twin-equipment-title">Robot ve konveyör süreleri</h3></div>
             <dl class="digital-twin-equipment">
               <div><dt>Robot kol çalışması</dt><dd data-twin-kpi="robotWork">—</dd><small data-twin-robot-share>Çalışma oranı —</small></div>
@@ -498,7 +530,7 @@
               <div><dt>Ürünün duruşta beklemesi</dt><dd data-twin-kpi="stopped">—</dd><small data-twin-stop-note></small></div>
             </dl>
           </section>
-          <div class="digital-twin-analysis-grid">
+          <div class="digital-twin-analysis-grid" data-twin-physical-analysis>
             <section class="panel" data-twin-chart="kpi">
               <h3>OEE ve bileşenlerinin seyri</h3>
               <canvas aria-hidden="true"></canvas><p class="panel-note" data-twin-chart-status></p>
@@ -525,6 +557,6 @@
       </main>
     </div>
 
-    <script type="module" src="/static/app.js?v=anylogic-1"></script>
+    <script type="module" src="/static/app.js?v=anylogic-8"></script>
   </body>
 </html>

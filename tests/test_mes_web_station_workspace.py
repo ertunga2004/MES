@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import secrets
@@ -10,6 +11,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from mes_web import app as app_module
+from mes_web.anylogic_runner import AnyLogicRunner
 from mes_web.config import AppConfig
 from mes_web.station_access import STATION_PORTS
 
@@ -100,11 +102,46 @@ class StationWorkspaceTests(unittest.TestCase):
         supervisor = self.actor('sef')
         tablet, _ = self.pair('bantlama')
         self.assertEqual(tablet.get(url).status_code, 403)
+        self.assertEqual(tablet.get(f'{url}/frame').status_code, 403)
+        self.assertEqual(self.client().get(f'{url}/frame').status_code, 401)
+        frame_response = supervisor.get(f'{url}/frame')
+        self.assertEqual(frame_response.status_code, 200)
+        self.assertEqual(frame_response.headers['cache-control'], 'no-store')
+        self.assertIsNone(frame_response.json()['frame'])
         self.assertFalse(supervisor.get(url).json()['can_control'])
         self.assertEqual(supervisor.post(f'{url}/command', json={'action': 'start'}).status_code, 403)
+        self.assertEqual(supervisor.post(f'{url}/command', json={'action': 'speed', 'speed': 5}).status_code, 403)
         self.assertEqual(self.admin.post(f'{url}/command', json={'action': 'start', 'scenario': 'T15'}).status_code, 422)
+        self.assertEqual(self.admin.post(f'{url}/command', json={'action': 'start', 'speed': 3}).status_code, 422)
+        self.assertEqual(self.admin.post(f'{url}/command', json={'action': 'speed'}).status_code, 422)
+        self.assertEqual(self.admin.post(f'{url}/command', json={'action': 'speed', 'speed': 10}).status_code, 409)
         foreign = self.admin.post(f'{url}/command', json={'action': 'start'}, headers={'Origin': 'https://other.example'})
         self.assertEqual(foreign.status_code, 403)
+
+    def test_anylogic_frame_uses_active_engine_run_and_never_replays_a_retired_run(self):
+        folder = Path(self.folder.name)
+        runner = AnyLogicRunner(folder, folder / 'runtime.json')
+        runner.process = SimpleNamespace(poll=lambda: None)
+        runner.active = {'id': 'app-run'}
+        runner.engine_run_id = 'current-engine-run'
+        runner.engine_state = 'paused'
+        runner.engine_speed = 5
+        live = runner.runs / 'app-run' / 'live'
+        live.mkdir(parents=True)
+        frame = {'schemaVersion': 1, 'type': 'anylogic-state', 'runId': 'old-engine-run', 'seq': 4, 'simTime': 2}
+        path = live / 'live-state.json'
+        path.write_text(json.dumps(frame), encoding='utf-8')
+        self.assertIsNone(runner.frame()['frame'])
+        frame['runId'] = runner.engine_run_id
+        path.write_text(json.dumps(frame), encoding='utf-8')
+        self.assertEqual(runner.frame(), {'run': runner.active, 'state': 'paused', 'speed': 5, 'frame': {'seq': 4, 'simTime': 2}})
+        self.assertEqual(runner._snapshot({'state': 'paused', 'modelTime': 3})['modelTime'], 2)
+        path.write_text('{', encoding='utf-8')
+        self.assertEqual(runner.frame()['frame']['seq'], 4)
+        runner.engine_run_id = 'new-engine-run'
+        self.assertIsNone(runner.frame()['frame'])
+        runner.process = None
+        self.assertIsNone(runner.frame()['frame'])
 
     def test_station_ports_open_only_their_assigned_station(self):
         root = self.admin.get('/')

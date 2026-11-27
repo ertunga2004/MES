@@ -4,7 +4,13 @@
 .anylogic-heading p { margin: 5px 0 14px; color: var(--text-soft); font-size: .9rem; }
 .anylogic-form { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
 .anylogic-form label { flex: 1 1 190px; max-width: 330px; display: grid; gap: 5px; color: var(--text-soft); font-size: .83rem; }
-.anylogic-form select { width: 100%; min-width: 0; min-height: 44px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--panel-border); background: var(--bg-bottom); color: var(--text-main); color-scheme: dark; font: inherit; font-size: .94rem; }
+.anylogic-form select, .mes-source-picker select { width: 100%; min-width: 0; min-height: 44px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--panel-border); background: var(--bg-bottom); color: var(--text-main); color-scheme: dark; font: inherit; font-size: .94rem; }
+.anylogic-speed { display: grid; gap: 5px; color: var(--text-soft); font-size: .83rem; }
+.anylogic-speed-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.anylogic-speed-options .tab-button { min-width: 44px; min-height: 44px; padding: 6px 9px; }
+.anylogic-speed-options [aria-pressed="true"] { background: var(--yellow); border-color: var(--yellow); color: var(--bg-bottom); font-weight: 700; }
+.anylogic-speed-options button[aria-disabled="true"], .anylogic-speed-options button:disabled { opacity: .58; cursor: default; }
+#anylogic-speed-preview { color: var(--yellow); }
 .anylogic-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .anylogic-actions button, #anylogic-report { min-height: 44px; }
 #anylogic-report { display: inline-flex; align-items: center; text-decoration: none; }
@@ -22,3 +28,18 @@
 .anylogic-stock [data-color="yellow"] progress { accent-color: var(--yellow); }
 #anylogic-flow .plant-stage { flex-basis: 147px; }
 #anylogic-events td:first-child { white-space: nowrap; }
+
+.mes-source-picker { display: grid; gap: 5px; color: var(--text-soft); font-size: .83rem; }
+.mes-source-picker select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.mes-sim-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.mes-sim-links .tab-button { display: inline-flex; align-items: center; text-decoration: none; min-height: 44px; }
+.mes-sim-panel h2 { margin: 0; }
+.mes-sim-panel h3 { margin: 18px 0 8px; }
+.simulation-dashboard .panel-head h3 { margin: 0; }
+.mes-sim-panel .plant-flow h3 { margin: 0; }
+.mes-sim-panel progress { width: 100%; accent-color: var(--yellow); }
+.mes-sim-panel [data-sim-run] { overflow-wrap: anywhere; }
+body:not([data-mes-source="anylogic"]) .mes-sim-panel,
+body[data-mes-source="anylogic"] [data-sim-surface] > :not([data-sim-view]),
+body[data-mes-source="anylogic"] :is([data-twin-nonmodel], [data-twin-physical-analysis]),
+body[data-mes-source="anylogic"]:is([data-tab="operations"], [data-tab="work-orders"], [data-tab="oee"], [data-tab="digital-twin"], [data-tab="anylogic"]) :is(.hero-status, #connection-banner) { display: none; }

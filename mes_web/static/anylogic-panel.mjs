@@ -8,7 +8,7 @@ const cases = [
   ['T09', 'Üç kırmızı · depo testi'], ['T10', 'Üç mavi · depo testi'], ['T11', 'Üç sarı · depo testi'],
   ['T12', 'Kamera süresi'], ['T13', 'Konum ve robot'], ['T14', 'Hızlı karışık geliş'],
 ];
-const stateLabels = {
+export const stateLabels = {
   ready: ['Motor hazır', 'ok'], running: ['Simülasyon çalışıyor', 'ok'], paused: ['Duraklatıldı', 'warn'],
   completed: ['Koşu tamamlandı', 'ok'], unavailable: ['Motor kullanılamıyor', 'idle'], error: ['Motor hatası', 'error'],
 };
@@ -18,15 +18,15 @@ const amount = value => Number.isFinite(value) ? number.format(value) : '—';
 const seconds = value => Number.isFinite(value) ? `${amount(value)} sn` : '—';
 const running = value => typeof value === 'boolean' ? (value ? 'Çalışıyor' : 'Bekliyor') : '—';
 
-function card(label, value) {
+export function card(label, value) {
   return `<article class="plant-kpi"><span>${esc(label)}</span><strong>${esc(value)}</strong></article>`;
 }
 
-function stage(label, value) {
+export function stage(label, value) {
   return `<li class="plant-stage"><h3>${esc(label)}</h3><p class="panel-note">${esc(value)}</p></li>`;
 }
 
-function depot(color, inventory) {
+export function depot(color, inventory) {
   const data = inventory[color];
   const name = colors[color];
   const recorded = Number.isFinite(data?.count) && data?.capacity > 0;
@@ -43,7 +43,7 @@ function eventRows(events) {
   }).join('');
 }
 
-async function request(path, data) {
+export async function request(path, data) {
   const init = { cache: 'no-store', signal: AbortSignal.timeout(data ? 42_000 : 12_000) };
   if (data) Object.assign(init, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
   const response = await fetch(path, init);
@@ -52,11 +52,15 @@ async function request(path, data) {
   return result;
 }
 
-export function bindAnyLogic(panel) {
+export function bindAnyLogic(panel, onStart) {
   const query = selector => panel.querySelector(selector);
   const engine = query('#anylogic-engine');
   const mode = query('#anylogic-mode');
   const scenario = query('#anylogic-scenario');
+  const speedButtons = [...panel.querySelectorAll('[data-sim-speed]')];
+  const speedNote = query('#anylogic-speed-note');
+  const speedDetail = query('#anylogic-speed-detail');
+  const speedPreview = query('#anylogic-speed-preview');
   const feedback = query('#anylogic-feedback');
   const report = query('#anylogic-report');
   const verdict = query('#anylogic-verdict');
@@ -68,7 +72,26 @@ export function bindAnyLogic(panel) {
   let commandPending = false;
   let revision = 0;
   let lastReport;
+  let selectedSpeed = 1;
   let snapshot = {};
+  const onMainPreview = ['127.0.0.1', 'localhost'].includes(location.hostname) && location.port === '18780';
+
+  if (onMainPreview) {
+    const url = new URL(location.href);
+    url.port = '18880';
+    url.searchParams.set('tab', 'anylogic');
+    url.searchParams.set('source', 'anylogic');
+    speedPreview.href = url;
+  }
+
+  function liveRun(state) {
+    return state.state === 'running' || state.state === 'paused';
+  }
+
+  function acceptState(state) {
+    snapshot = state;
+    if (liveRun(state) && state.speed != null) selectedSpeed = state.speed;
+  }
 
   function controls() {
     const run = snapshot.run;
@@ -78,6 +101,19 @@ export function bindAnyLogic(panel) {
     }
     const unlocked = snapshot.available && snapshot.can_control && !commandPending;
     mode.disabled = scenario.disabled = !unlocked || Boolean(run);
+    const hasSpeed = Object.hasOwn(snapshot, 'speed') && (!liveRun(snapshot) || snapshot.speed != null);
+    const speedAvailable = snapshot.available && snapshot.can_control && hasSpeed;
+    for (const button of speedButtons) {
+      button.disabled = !speedAvailable;
+      button.setAttribute('aria-disabled', String(!speedAvailable || commandPending));
+      button.setAttribute('aria-pressed', String(Number(button.dataset.simSpeed) === selectedSpeed));
+    }
+    const speedUnavailable = snapshot.available && !hasSpeed;
+    const nextRunSpeed = snapshot.state === 'completed' && hasSpeed && snapshot.can_control;
+    speedNote.hidden = !speedUnavailable && !nextRunSpeed;
+    speedDetail.textContent = speedUnavailable ? 'Bu önizlemede hız ayarı kullanılamıyor.' :
+      nextRunSpeed ? 'Seçtiğin hız bir sonraki koşuda uygulanır.' : '';
+    speedPreview.hidden = !speedUnavailable || !onMainPreview;
     for (const button of buttons) {
       const action = button.dataset.simAction;
       const allowed = { start: !run, pause: snapshot.state === 'running', resume: snapshot.state === 'paused', reset: Boolean(run) };
@@ -98,7 +134,8 @@ export function bindAnyLogic(panel) {
     const counts = metrics.counters || {};
     const inventory = metrics.inventory || {};
     const simulated = run?.mode === 'SUREKLI';
-    query('#anylogic-run').textContent = run ? `${simulated ? 'Sentetik akış' : `Excel testi ${run.scenario}`} · ${run.id.slice(0, 8)}` : 'Koşu bekleniyor';
+    const runSpeed = snapshot.speed == null ? '' : ` · ${snapshot.speed}×`;
+    query('#anylogic-run').textContent = run ? `${simulated ? 'Sentetik akış' : `Excel testi ${run.scenario}`} · ${run.id.slice(0, 8)}${runSpeed}` : 'Koşu bekleniyor';
     query('#anylogic-kpis').innerHTML = [card('Model saati', seconds(snapshot.modelTime)), card('Giren kutu', amount(counts.entered)),
       card('Depolanan kutu', amount(counts.completed)), card('Ara depo', amount(counts.buffer)), card('Konveyör / robot bölgesi', amount(counts.onConveyor)),
       simulated ? card('Sevk edilen kutu', amount(counts.shipped)) : card('Testte beklenen kutu', amount(snapshot.target))].join('');
@@ -133,7 +170,7 @@ export function bindAnyLogic(panel) {
     try {
       const state = await request(api);
       if (before !== revision) return;
-      snapshot = state;
+      acceptState(state);
       render();
       if (state.detail) message(state.detail, state.state === 'error' ? 'error' : '');
       else if (!state.can_control) message('Koşuyu izleme erişiminiz var. Kontroller mühendis ve yöneticiye açık.');
@@ -152,17 +189,19 @@ export function bindAnyLogic(panel) {
 
   let previousError = false;
   mode.addEventListener('change', controls);
-  panel.addEventListener('click', async event => {
-    const button = event.target.closest('button[data-sim-action]');
-    if (!button || commandPending) return;
+  async function send(action, speed = selectedSpeed) {
+    if (commandPending) return;
     commandPending = true;
     revision += 1;
     controls();
-    message('Motor yanıtı bekleniyor…');
+    message(action === 'speed' ? 'Hız değiştiriliyor…' : 'Motor yanıtı bekleniyor…');
     try {
-      snapshot = await request(`${api}/command`, { action: button.dataset.simAction, run_id: snapshot.run?.id || null,
-        mode: mode.value, scenario: scenario.value });
-      message('');
+      const state = await request(`${api}/command`, { action, run_id: snapshot.run?.id || null,
+        mode: mode.value, scenario: scenario.value, speed });
+      acceptState(state);
+      if (action === 'speed' && state.speed != null) selectedSpeed = state.speed;
+      if (action === 'start') onStart();
+      message(action === 'speed' ? `Simülasyon hızı ${snapshot.speed}×.` : '');
       previousError = false;
     } catch (error) {
       message(error.message, 'error');
@@ -170,6 +209,21 @@ export function bindAnyLogic(panel) {
       commandPending = false;
       render();
     }
+  }
+  panel.addEventListener('click', event => {
+    const speedButton = event.target.closest('button[data-sim-speed]');
+    if (speedButton && !speedButton.disabled && !commandPending) {
+      const speed = Number(speedButton.dataset.simSpeed);
+      if (liveRun(snapshot)) {
+        if (speed !== selectedSpeed) void send('speed', speed);
+      } else {
+        selectedSpeed = speed;
+        controls();
+      }
+      return;
+    }
+    const button = event.target.closest('button[data-sim-action]');
+    if (button) void send(button.dataset.simAction);
   });
   setInterval(() => { if (!document.hidden) void refresh(); }, 1200);
   render();

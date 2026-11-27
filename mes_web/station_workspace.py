@@ -32,10 +32,11 @@ class StationAction(BaseModel):
 
 
 class AnyLogicCommand(BaseModel):
-    action: Literal['start', 'pause', 'resume', 'reset']
+    action: Literal['start', 'pause', 'resume', 'reset', 'speed']
     run_id: UUID | None = None
     mode: Literal['TEST', 'SUREKLI'] = 'TEST'
     scenario: str = Field(default='T07', pattern=r'^T(?:0[1-9]|1[0-4])$')
+    speed: Literal[1, 2, 5, 10] | None = None
 
 
 class TemplateCard(BaseModel):
@@ -170,12 +171,17 @@ class StationWorkspace:
             role = self.access.authorize(request, STAFF)['role']
             return JSONResponse({**runner.status(), 'can_control': role in DESIGNERS}, headers=HEADERS)
 
+        @router.get('/api/workspace/anylogic/frame')
+        def anylogic_frame(request: Request):
+            self.access.authorize(request, STAFF)
+            return JSONResponse(runner.frame(), headers=HEADERS)
+
         @router.post('/api/workspace/anylogic/command', dependencies=[Depends(json_write)])
         def anylogic_command(request: Request, payload: AnyLogicCommand):
             self.access.authorize(request, DESIGNERS)
             try:
                 state = runner.command(payload.action, run_id=payload.run_id.hex if payload.run_id else None,
-                                       mode=payload.mode, scenario=payload.scenario)
+                                       mode=payload.mode, scenario=payload.scenario, speed=payload.speed)
             except SimulationError as exc:
                 raise HTTPException(exc.status, str(exc)) from exc
             return JSONResponse({**state, 'can_control': True}, headers=HEADERS)

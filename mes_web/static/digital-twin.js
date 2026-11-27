@@ -23,13 +23,16 @@ const metrics = panel.querySelectorAll("[data-twin-value]");
 const telemetryStatus = panel.querySelector("[data-twin-status]");
 const selector = panel.querySelector("#digital-twin-scenario");
 const source = panel.querySelector("#digital-twin-source");
-source.value = "demo";
+source.value = document.body.dataset.mesSource === "anylogic" ? "anylogic" : "demo";
+const lineLabel = panel.querySelector("[data-twin-line]");
 const initialScenario = normalRun ?? scenarios[0];
 const updateAnalysis = createAnalysisView(panel);
 let dashboard, dashboardReceivedAt, live, model;
+let previousSource = "demo";
+let anyLogicPacket;
 const sampleStride = 2000;
 
-panel.querySelector("[data-twin-line]").textContent = sourceBasis.line;
+lineLabel.textContent = source.value === "anylogic" ? "AnyLogic konveyör modeli" : sourceBasis.line;
 selector.replaceChildren(...scenarios.map(({ id }) => new Option(scenarioLabels[id] ?? id, id)));
 selector.value = initialScenario.id;
 
@@ -56,6 +59,31 @@ export function acceptDashboardSnapshot(snapshot) {
   dashboard = snapshot;
   dashboardReceivedAt = Date.now();
   if (source.value === "live" && !panel.classList.contains("hidden")) updateLive();
+}
+
+export function setAnyLogicMode(active) {
+  if (active === (source.value === "anylogic")) return;
+  if (active) {
+    previousSource = source.value;
+    source.value = "anylogic";
+  } else {
+    source.value = previousSource;
+    anyLogicPacket = undefined;
+  }
+  source.dispatchEvent(new Event("change"));
+}
+
+export function acceptAnyLogicFrame(packet) {
+  if (source.value !== "anylogic") return;
+  anyLogicPacket = packet;
+  model?.applyAnyLogic(packet);
+}
+
+const modelColors = { kirmizi: "red", mavi: "blue", sari: "yellow", red: "red", blue: "blue", yellow: "yellow" };
+
+function mapModelPoint([x, y, z], { start, end }) {
+  const scale = 9.6 / (end[0] - start[0]);
+  return [5.55 - (x - start[0]) * scale, 1.47 + (z - start[2]) * scale, (y - start[1]) * scale];
 }
 
 function updateLive() {
@@ -153,6 +181,8 @@ async function mountModel() {
   let history = [];
   let lastAnalysisAt = -Infinity;
   let livePosition = 0;
+  let simulationRun, simulationSeq;
+  let simulationDisconnected = false;
   let rendering = false;
   let firstView = true;
 
@@ -286,8 +316,69 @@ async function mountModel() {
       }
       livePosition = Math.max(livePosition, at);
     },
+    anylogic() {
+      setPlayback(false, "Hazır");
+      controller.reset();
+      simulationRun = simulationSeq = undefined;
+      simulationDisconnected = false;
+      sceneStatus.textContent = "Sahne AnyLogic modelini bekliyor.";
+      if (anyLogicPacket) this.applyAnyLogic(anyLogicPacket);
+    },
+    applyAnyLogic({ run, frame, detail }) {
+      if (detail) {
+        simulationDisconnected = true;
+        sceneStatus.textContent = "AnyLogic bağlantısı kesildi. Son alınan kare gösteriliyor.";
+        return;
+      }
+      if (run?.id !== simulationRun) {
+        controller.reset();
+        simulationRun = run?.id;
+        simulationSeq = undefined;
+        sceneStatus.textContent = "Sahne AnyLogic modelini bekliyor.";
+      }
+      if (!frame?.layout || !frame.robot || !Array.isArray(frame.products)) {
+        if (simulationDisconnected) sceneStatus.textContent = "Sahne AnyLogic modelini bekliyor.";
+        simulationDisconnected = false;
+        return;
+      }
+      if (simulationSeq == null || simulationDisconnected) sceneStatus.textContent = cameraHint;
+      simulationDisconnected = false;
+      if (!(frame.seq > (simulationSeq ?? -1))) return;
+      simulationSeq = frame.seq;
+      const { layout, robot } = frame;
+      factory.setLiveLayout(layout, mapModelPoint);
+      const joints = robot.links.map(point => mapModelPoint(point.map((value, index) => value + layout.robotBase[index]), layout));
+      const base = mapModelPoint(layout.robotBase, layout);
+      factory.setLiveRobot([[base[0], 0, base[2]], base, ...joints]);
+      const seen = new Set();
+      let coatingIndex = 0;
+      let bufferIndex = 0;
+      for (const product of frame.products) {
+        const color = modelColors[product.color] || "unknown";
+        // Once stored, the inventory mesh shows the box in its actual depot slot.
+        if (product.phase === "placed") continue;
+        const mesh = factory.product(product.id, color);
+        let point;
+        if (product.phase === "buffer" || product.phase === "coating") {
+          const inBuffer = product.phase === "buffer";
+          const index = inBuffer ? (product.bufferIndex >= 0 ? product.bufferIndex : bufferIndex++) : coatingIndex++;
+          point = [3.9 - (index % 6) * 0.58, 0.2, (inBuffer ? 1.6 : 3.5) + Math.floor(index / 6) * 0.32];
+        } else {
+          point = mapModelPoint(product.phase === "robot" ? robot.tool : product.position, layout);
+        }
+        mesh.scaling.set(0.5 / 0.32, 0.256 / 0.28, 0.2 / 0.32);
+        mesh.position.set(...point);
+        controller.items.set(product.id, { mesh });
+        seen.add(product.id);
+      }
+      for (const id of controller.items.keys()) if (!seen.has(id)) controller.remove(id);
+      for (const color of ["red", "blue", "yellow"]) {
+        const stock = frame.inventory?.[color];
+        if (stock) factory.setPalletCount(color, stock.count, stock.capacity);
+      }
+    },
   };
-  if (source.value === "live") model.live(); else model.demo();
+  model[source.value]();
 
   const observer = new ResizeObserver(() => {
     syncRendering();
@@ -306,13 +397,18 @@ async function mountModel() {
 
 source.addEventListener("change", () => {
   const isLive = source.value === "live";
-  panel.querySelector("[data-twin-demo-controls]").hidden = isLive;
+  const isAnyLogic = source.value === "anylogic";
+  panel.querySelector("[data-twin-demo-controls]").hidden = source.value !== "demo";
   panel.querySelector("[data-twin-source-badge]").textContent = isLive ? "FİZİKSEL HAT" : "ÖRNEK VERİ";
   panel.querySelector("[data-twin-source-badge]").classList.toggle("is-live", isLive);
+  lineLabel.textContent = isAnyLogic ? "AnyLogic konveyör modeli" : sourceBasis.line;
   if (isLive) {
     live = {start:Date.now(), events:[], history:[], seen:new Map(), kpis:{}, released:new Set()};
     model?.live();
     updateLive();
+  } else if (isAnyLogic) {
+    telemetryStatus.textContent = "";
+    model?.anylogic();
   } else {
     model?.demo();
   }
@@ -322,7 +418,7 @@ const liveTimer = setInterval(() => {
 }, 1000);
 window.addEventListener("pagehide", event => { if (!event.persisted) clearInterval(liveTimer); });
 
-showSample(samples[initialScenario.from]);
+if (source.value === "demo") showSample(samples[initialScenario.from]);
 try {
   await mountModel();
 } catch (error) {

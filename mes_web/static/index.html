@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MES Kontrol Paneli</title>
     <link rel="stylesheet" href="/static/styles.css?v=at-zeze-tablet-3" />
-    <link rel="stylesheet" href="/static/digital-twin.css?v=4" />
+    <link rel="stylesheet" href="/static/digital-twin.css?v=5" />
   </head>
   <body>
     <div class="app-shell">
@@ -326,7 +326,10 @@
         <section id="tab-digital-twin" class="digital-twin tab-panel hidden" aria-labelledby="digital-twin-title">
           <div class="panel-head digital-twin-heading">
             <h2 id="digital-twin-title">Dijital İkiz Simülasyonu</h2>
-            <span class="runtime-badge digital-twin-badge">ÖRNEK VERİ</span>
+            <div class="digital-twin-heading-actions">
+              <a class="tab-button" href="#digital-twin-kpi-title">Analize geç</a>
+              <span class="runtime-badge digital-twin-badge" data-twin-source-badge>ÖRNEK VERİ</span>
+            </div>
           </div>
 
           <div class="digital-twin-layout">
@@ -356,7 +359,7 @@
             </section>
 
             <section class="panel digital-twin-sidebar" aria-labelledby="digital-twin-telemetry-title">
-              <h3 id="digital-twin-telemetry-title">Telemetri önizlemesi</h3>
+              <h3 id="digital-twin-telemetry-title">Telemetri</h3>
               <dl class="digital-twin-metrics">
                 <div><dt>Hız</dt><dd data-twin-value="speed">—</dd></div>
                 <div><dt>Sıcaklık</dt><dd data-twin-value="temperature">—</dd></div>
@@ -366,26 +369,36 @@
               <p class="panel-note digital-twin-note" data-twin-status role="status"></p>
 
               <div class="digital-twin-controls">
-                <label for="digital-twin-scenario">Senaryo</label>
-                <select id="digital-twin-scenario" disabled>
-                  <option value="">Senaryolar</option>
+                <label for="digital-twin-source">Veri kaynağı</label>
+                <select id="digital-twin-source">
+                  <option value="demo">Örnek simülasyon</option>
+                  <option value="live">Fiziksel hat · MES</option>
                 </select>
-                <fieldset class="digital-twin-playback" disabled>
-                  <legend>Zaman kontrolü</legend>
-                  <button class="tab-button" type="button" data-twin-play>Oynat</button>
-                  <button class="tab-button" type="button" data-twin-pause disabled>Durdur</button>
-                  <label class="digital-twin-rate" for="digital-twin-speed">
-                    Hız
-                    <select id="digital-twin-speed">
-                      <option value="1">1x</option>
-                      <option value="5">5x</option>
-                      <option value="10">10x</option>
-                    </select>
-                  </label>
-                </fieldset>
-                <div class="digital-twin-time" hidden>
-                  <span class="panel-note" data-twin-playback-status role="status"></span>
-                  <span class="panel-note" data-twin-time aria-label="Senaryo süresi"></span>
+                <div class="digital-twin-demo-controls" data-twin-demo-controls>
+                  <label for="digital-twin-scenario">Senaryo</label>
+                  <select id="digital-twin-scenario" disabled>
+                    <option value="">Senaryolar</option>
+                  </select>
+                  <fieldset class="digital-twin-playback" disabled>
+                    <legend>Zaman kontrolü</legend>
+                    <button class="tab-button" type="button" data-twin-play>Oynat</button>
+                    <button class="tab-button" type="button" data-twin-pause disabled>Duraklat</button>
+                    <button class="tab-button" type="button" data-twin-restart>Başa dön</button>
+                    <label class="digital-twin-rate" for="digital-twin-speed">
+                      Hız
+                      <select id="digital-twin-speed">
+                        <option value="1">1×</option>
+                        <option value="5">5×</option>
+                        <option value="10">10×</option>
+                        <option value="20">20×</option>
+                      </select>
+                    </label>
+                    <input id="digital-twin-timeline" class="digital-twin-timeline" type="range" min="0" max="1" value="0" aria-label="Senaryo zaman çizelgesi" />
+                  </fieldset>
+                  <div class="digital-twin-time" hidden>
+                    <span class="panel-note" data-twin-playback-status role="status"></span>
+                    <span class="panel-note" data-twin-time aria-label="Senaryo süresi"></span>
+                  </div>
                 </div>
               </div>
             </section>
@@ -394,18 +407,54 @@
           <section class="panel" aria-labelledby="digital-twin-kpi-title">
             <div class="panel-head">
               <h3 id="digital-twin-kpi-title">Performans göstergeleri</h3>
+              <p class="panel-note" data-twin-analysis-time></p>
             </div>
             <dl class="digital-twin-kpis">
-              <div><dt>OEE</dt><dd>—</dd></div>
-              <div><dt>Verimlilik</dt><dd>—</dd></div>
-              <div><dt>Kalite</dt><dd>—</dd></div>
-              <div><dt>Enerji</dt><dd>—</dd></div>
+              <div><dt>OEE</dt><dd data-twin-kpi="oee">—</dd><small data-twin-availability>Kullanılabilirlik —</small></div>
+              <div><dt>Verimlilik</dt><dd data-twin-kpi="performance">—</dd><small data-twin-performance-note>İdeal çevrime göre üretim</small></div>
+              <div><dt>Kalite</dt><dd data-twin-kpi="quality">—</dd><small>İlk seferde sağlam ürün oranı</small></div>
+              <div><dt>Enerji</dt><dd data-twin-kpi="energyKwh">—</dd><small data-twin-energy-note></small></div>
+            </dl>
+            <p class="panel-note digital-twin-note" data-twin-analysis-source></p>
+          </section>
+          <section class="panel" aria-labelledby="digital-twin-equipment-title">
+            <div class="panel-head"><h3 id="digital-twin-equipment-title">Robot ve konveyör süreleri</h3></div>
+            <dl class="digital-twin-equipment">
+              <div><dt>Robot kol çalışması</dt><dd data-twin-kpi="robotWork">—</dd><small data-twin-robot-share>Çalışma oranı —</small></div>
+              <div><dt>Robot kol boşta</dt><dd data-twin-kpi="robotIdle">—</dd><small>İki çalışma arasındaki gözlenen süre</small></div>
+              <div><dt>Konveyör çalışması</dt><dd data-twin-kpi="beltRun">—</dd><small data-twin-belt-share>Hareket oranı —</small></div>
+              <div><dt>Konveyör duruşu</dt><dd data-twin-kpi="beltStop">—</dd><small>Gözlenen toplam duruş süresi</small></div>
+              <div><dt>Ürünün bantta kalışı</dt><dd data-twin-kpi="dwell">—</dd><small data-twin-dwell-note></small></div>
+              <div><dt>Ürünün duruşta beklemesi</dt><dd data-twin-kpi="stopped">—</dd><small data-twin-stop-note></small></div>
             </dl>
           </section>
+          <div class="digital-twin-analysis-grid">
+            <section class="panel" data-twin-chart="kpi">
+              <h3>OEE ve bileşenlerinin seyri</h3>
+              <canvas aria-hidden="true"></canvas><p class="panel-note" data-twin-chart-status></p>
+              <div class="digital-twin-legend" data-twin-legend></div>
+            </section>
+            <section class="panel" data-twin-chart="crossings">
+              <h3>Ürün bazında konveyör süreleri</h3>
+              <canvas aria-hidden="true"></canvas><p class="panel-note" data-twin-chart-status></p>
+              <div class="digital-twin-legend" data-twin-legend></div>
+            </section>
+            <section class="panel" data-twin-chart="output">
+              <h3>Zamana göre üretim çıkışı</h3>
+              <canvas aria-hidden="true"></canvas><p class="panel-note" data-twin-chart-status></p>
+              <div class="digital-twin-legend" data-twin-legend></div>
+            </section>
+            <section class="panel">
+              <h3>Robot zaman dağılımı ve bant duruşları</h3>
+              <div class="digital-twin-distribution" aria-hidden="true"><span data-twin-robot-bar></span></div>
+              <p class="panel-note" data-twin-robot-breakdown></p>
+              <ul class="digital-twin-stops" data-twin-stops></ul>
+            </section>
+          </div>
         </section>
       </main>
     </div>
 
-    <script src="/static/app.js?v=digital-twin-2"></script>
+    <script src="/static/app.js?v=digital-twin-3"></script>
   </body>
 </html>

@@ -541,3 +541,48 @@ h1 {
     min-width: 0;
   }
 }
+.bantlama-stepper .stepper-steps {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.bantlama-stepper .step-row {
+  border: 1px solid var(--panel-border, var(--line));
+  border-radius: 10px;
+}
+
+.bantlama-stepper .step-row label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 12px;
+}
+
+.bantlama-stepper .step-row label:has(input:enabled) {
+  cursor: pointer;
+}
+
+.bantlama-stepper .step-row.active {
+  border-color: var(--accent);
+  font-weight: 700;
+}
+
+.bantlama-stepper .step-row.done {
+  color: var(--green, var(--accent));
+}
+
+.bantlama-stepper .step-row input {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.bantlama-stepper .stepper-advance-btn {
+  min-height: 44px;
+}

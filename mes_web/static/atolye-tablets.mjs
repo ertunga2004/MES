@@ -1,8 +1,9 @@
-import { esc, duration } from './atolye-onizleme-core.js';
+import { esc, duration, renderStepper } from './atolye-onizleme-core.js?v=5';
 import { SAMPLE_MONITOR_DATA } from './atolye-onizleme-data.js';
 import {
-  COLORS, OUTCOMES, TAPING_STEPS, FAULT_STATUS, elapsedTaping, packedTotal, readyPairs, readyToPack,
-} from './atolye-tablet-state.mjs';
+  COLORS, OUTCOMES, BANTLAMA_STEPS, FAULT_STATUS, completedTapingSteps, restoreTapingProgress,
+  elapsedTaping, packedTotal, readyPairs, readyToPack,
+} from './atolye-tablet-state.mjs?v=4';
 
 const colorEntries = Object.entries(COLORS);
 const outcomes = Object.entries(OUTCOMES);
@@ -23,8 +24,8 @@ function stats(rows) {
     `<div class="connection-card"><p>${esc(label)}</p><strong>${esc(value)}</strong></div>`).join('')}</div>`;
 }
 
-function button(label, { primary = false, disabled = false } = {}) {
-  return `<button type="submit" class="preset-button tablet-button${primary ? '' : ' tablet-button-secondary'}"${disabled ? ' disabled' : ''}>${esc(label)}</button>`;
+function button(label, { primary = false, disabled = false, hidden = false } = {}) {
+  return `<button type="submit" class="preset-button tablet-button${primary ? '' : ' tablet-button-secondary'}"${disabled ? ' disabled' : ''}${hidden ? ' hidden' : ''}>${esc(label)}</button>`;
 }
 
 function blank(text) {
@@ -60,7 +61,11 @@ function workRef(state) {
   return `<div class="tablet-order"><span class="tablet-muted">Aktif örnek iş emri</span><strong>${esc(orderLabel(order))}</strong></div>`;
 }
 
-function taping(state) {
+function tapingStepper(state, { readOnly, completed }) {
+  return renderStepper(completed, { active: Boolean(state.activeBox), paused: state.activeBox?.paused, showButton: !readOnly });
+}
+
+function taping(state, view) {
   const box = state.activeBox;
   const ready = colorEntries.map(([color, label]) => [label, readyPairs(state, color)]);
   const pending = state.boxes.filter(row => row.stage === 'handoff').length;
@@ -71,23 +76,24 @@ function taping(state) {
       <label>Kutu kodu<input name="box" maxlength="60" required></label>
     </div>`, 'Kutuyu başlat', { primary: true, disabled: !ready.some(([, count]) => count > 0) }) : `
     <div class="tablet-row tablet-active-box"><div><strong>${esc(box.id)}</strong> ${colorMark(box.color)}</div>${pill(box.paused ? 'Duraklatıldı' : 'İşlemde', box.paused ? 'amber' : 'green')}</div>
-    <fieldset class="tablet-checklist"${box.paused ? ' disabled' : ''}>
-      <legend>İşlem adımları</legend>
-      ${TAPING_STEPS.map((step, index) => `<label><input type="checkbox" data-taping-step="${index}"${box.steps[index] ? ' checked' : ''}><span>${esc(step)}</span></label>`).join('')}
-    </fieldset>
     ${actionForm('finish', `<div class="tablet-fields">
       <label>Kontrol sonucu<select name="outcome"${box.paused ? ' disabled' : ''}>${outcomes.filter(([name]) => name !== 'allowed').map(([name, title]) => `<option value="${name}">${title}</option>`).join('')}</select></label>
-      <label data-outcome-length>Bant uzunluğu (mm)<input name="length" type="number" min="0.01" step="any"${box.paused ? ' disabled' : ''} required></label>
       <label data-outcome-reason hidden>Kalite gerekçesi<input name="reason" maxlength="240" disabled></label>
-    </div>`, 'Sonucu kaydet', { primary: true, disabled: box.paused || !box.steps.every(Boolean) })}`;
+    </div>`, 'İş Tamamlandı', {
+      primary: true, disabled: box.paused, hidden: view.completed < BANTLAMA_STEPS.length,
+    })}`;
   const timeControls = !box ? blank('Kutu başladığında süre sayacı çalışır.') : `
     <p class="tablet-time" data-taping-clock>${duration(elapsedTaping(box, Date.now()))}</p>
     ${box.paused ? `<p class="tablet-muted">${esc(box.pauseReason)}</p>${actionForm('resume', '', 'Bantlamaya devam et')}` :
       actionForm('pause', '<label>Duraklatma nedeni<input name="reason" maxlength="240" required></label>', 'Duraklat')}`;
+  const usesPublishedStepper = state.template?.design.cards.some(card => card.kind === 'stepper' && card.visible);
+  const stepper = usesPublishedStepper ? '' : panel('İş Adımları',
+    `<div data-bantlama-stepper>${tapingStepper(state, view)}</div>`, true);
   return `${workRef(state)}
     <div class="content-grid tablet-grid">
       ${panel('Kutu bantlama', current)}
       ${panel('İş süresi', timeControls)}
+      ${stepper}
       ${panel('Bantlama ilerlemesi', `${stats([['İşlenen kutu', `${processed} / ${state.orders[0].qty}`], ['Konveyör teslimi bekliyor', pending]])}<p class="tablet-muted">Renge göre hazır kutu</p>${stats(ready)}`)}
       ${panel('WIP bekleme alanları', stats(state.wip.map(area => [area.name, `${area.occupied} / ${area.capacity}`])))}
     </div>`;
@@ -231,7 +237,7 @@ const areas = {
   malzeme: { title: 'Malzeme', subtitle: 'Bant stoku ve istasyondan gelen malzeme talepleri', render: materials },
 };
 
-function publishedTemplate(state) {
+function publishedTemplate(state, view) {
   const template = state.template;
   if (!template) return '';
   const { design, version } = template;
@@ -266,11 +272,13 @@ function publishedTemplate(state) {
   };
   const cards = design.cards.filter(card => card.visible);
   const hasSteps = cards.some(card => card.kind === 'steps');
+  const stepper = view.station === 'bantlama' && cards.some(card => card.kind === 'stepper')
+    ? `<div data-bantlama-stepper>${tapingStepper(state, view)}</div>` : '';
   return `<section class="panel station-template"><div class="panel-head"><h3>${esc(design.title)}</h3>${pill(`Şablon sürümü ${version}`)}</div>
     ${design.instructions && !cards.some(card => card.kind === 'instructions') ? `<p>${esc(design.instructions)}</p>` : ''}
     <div class="station-template-grid layout-${design.layout}">${cards.map(card => `<section class="tablet-record size-${card.size}"><h4>${esc(card.title || defaults[card.kind] || card.kind)}</h4>
-      ${card.body ? `<p>${esc(card.body)}</p>` : ''}${card.kind === 'steps' ? checkForm : detail[card.kind] ? `<p>${esc(detail[card.kind])}</p>` : ''}</section>`).join('')}
-    ${hasSteps ? '' : `<section class="tablet-record size-full"><h4>Kontrol listesi</h4>${checkForm}</section>`}</div></section>`;
+      ${card.body ? `<p>${esc(card.body)}</p>` : ''}${card.kind === 'steps' ? checkForm : card.kind === 'stepper' ? stepper : detail[card.kind] ? `<p>${esc(detail[card.kind])}</p>` : ''}</section>`).join('')}
+    ${hasSteps || (stepper && !fields && !results) ? '' : `<section class="tablet-record size-full"><h4>Kontrol listesi</h4>${checkForm}</section>`}</div></section>`;
 }
 
 function shiftControls(state) {
@@ -286,13 +294,14 @@ function assistance() {
   </div>`;
 }
 
-function renderTabletStation(station, { readOnly, state }) {
+function renderTabletStation(station, { readOnly, state, completed }) {
   const area = areas[station];
+  const view = { station, readOnly, completed };
   return `<section class="tablet-station" data-current-station="${station}" aria-labelledby="tablet-station-title">
     <header class="tablet-station-heading"><h2 id="tablet-station-title">${area.title}</h2><p class="subtitle">${area.subtitle}</p></header>
     <fieldset class="station-controls"${readOnly ? ' disabled' : ''}>${shiftControls(state)}</fieldset>
     <fieldset class="station-controls station-work"${readOnly || !state.shift ? ' disabled' : ''}>
-      ${area.render(state)}${publishedTemplate(state)}${assistance()}
+      ${area.render(state, view)}${publishedTemplate(state, view)}${assistance()}
     </fieldset>
   </section>`;
 }
@@ -330,6 +339,7 @@ function mountWorkspace(root, readOnly, lockedStation) {
   let pending = 0;
   let reading = false;
   let dirty = false;
+  let tapingProgress = 0;
   let queue = Promise.resolve();
   const path = readOnly ? '/api/workspace/monitoring' : `/api/workspace/tablet/${lockedStation}`;
 
@@ -347,7 +357,10 @@ function mountWorkspace(root, readOnly, lockedStation) {
   function paint() {
     const board = stationState();
     if (!board) return;
-    outlet.innerHTML = renderTabletStation(current, { readOnly, state: board });
+    if (current === 'bantlama') {
+      tapingProgress = readOnly ? completedTapingSteps(board.activeBox) : restoreTapingProgress(board);
+    }
+    outlet.innerHTML = renderTabletStation(current, { readOnly, state: board, completed: tapingProgress });
     if (readOnly) {
       root.querySelector('#monitor-summary').innerHTML = monitoringSummary(data);
       root.querySelector('#monitor-records').innerHTML = monitoringRecords(data);
@@ -393,30 +406,46 @@ function mountWorkspace(root, readOnly, lockedStation) {
     form.querySelector('[data-outcome-reason]').hidden = good;
     form.elements.reason.disabled = good;
     form.elements.reason.required = !good;
-    form.querySelector('[data-outcome-length]').hidden = !good;
-    form.elements.length.disabled = !good;
-    form.querySelector('button').disabled = good && !box.steps.every(Boolean);
+    const button = form.querySelector('button');
+    button.hidden = good && tapingProgress < BANTLAMA_STEPS.length;
+    button.textContent = good ? 'İş Tamamlandı' : 'Kalite sonucunu kaydet';
+    return form;
   }
 
   function submit(action, fields, form) {
     const button = form?.querySelector('button');
-    if (button?.disabled) return;
+    if (button?.disabled || button?.hidden || (pending && ['step', 'finish'].includes(action))) return;
+    const checkbox = action === 'step' ? form.querySelector('[data-taping-step]:enabled') : null;
+    const stepFocus = document.activeElement === checkbox ? '[data-taping-step]:enabled' :
+      document.activeElement === button ? '[data-action="stepper-advance"]' : null;
     if (button) button.disabled = true;
+    if (checkbox) checkbox.disabled = true;
     pending += 1;
     queue = queue.then(async () => {
       try {
         const next = await requestData(`${path}/actions`, { action, fields });
         data = next.board;
-        if (action === 'step') updateTapingControls();
-        else {
+        if (action === 'step') {
+          tapingProgress = restoreTapingProgress(data);
+          const stepper = outlet.querySelector('[data-bantlama-stepper]');
+          stepper.innerHTML = tapingStepper(data, { readOnly, completed: tapingProgress });
+          const resultForm = updateTapingControls();
+          if (tapingProgress === BANTLAMA_STEPS.length) {
+            notify('Tüm adımlar tamamlandı. Kontrol sonucunu kaydedin.', 'success');
+            if (stepFocus) resultForm?.querySelector('button').focus();
+          } else {
+            if (stepFocus) stepper.querySelector(stepFocus)?.focus({ preventScroll: true });
+            notify(next.message, 'success');
+          }
+        } else {
           dirty = false;
           paint();
-          notify(next.message, 'success');
+          notify(action === 'finish' && fields.outcome === 'good' ? `İş Tamamlandı · ${next.message}` : next.message, 'success');
         }
       } catch (error) {
         notify(error.message, 'error');
-        if (action === 'step') { dirty = false; paint(); }
         if (button?.isConnected) button.disabled = false;
+        if (checkbox?.isConnected) checkbox.disabled = false;
       } finally {
         pending -= 1;
       }
@@ -424,11 +453,16 @@ function mountWorkspace(root, readOnly, lockedStation) {
   }
 
   if (!readOnly) {
-    outlet.addEventListener('input', () => { dirty = true; });
+    outlet.addEventListener('input', event => {
+      if (!event.target.matches('[data-taping-step]')) dirty = true;
+    });
     outlet.addEventListener('change', event => {
       const input = event.target;
+      if (input.matches('[data-taping-step]') && input.checked) {
+        input.checked = false;
+        input.form.requestSubmit();
+      }
       if (input.matches('[name="outcome"]') && current === 'bantlama') updateTapingControls();
-      if (input.matches('[data-taping-step]')) submit('step', { index: Number(input.dataset.tapingStep), checked: input.checked, activeBoxId: stationState().activeBox.id });
     });
     outlet.addEventListener('submit', event => {
       const form = event.target.closest('form[data-task]');
@@ -436,6 +470,10 @@ function mountWorkspace(root, readOnly, lockedStation) {
       event.preventDefault();
       const fields = Object.fromEntries(new FormData(form));
       if (current === 'bantlama' && stationState()?.activeBox) fields.activeBoxId = stationState().activeBox.id;
+      if (form.dataset.task === 'step') {
+        fields.index = tapingProgress;
+        fields.checked = true;
+      }
       submit(form.dataset.task, fields, form);
     });
   } else {

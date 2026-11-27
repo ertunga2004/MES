@@ -141,10 +141,20 @@ class StationWorkspaceTests(unittest.TestCase):
         self.action(giyotin, 'giyotin', 'cut', color='blue', count=2, lot='KESIM-TEST', length=100, result='good', shield=True)
         self.action(bantlama, 'bantlama', 'start', box='KUTU-TEST', color='blue')
         self.action(bantlama, 'bantlama', 'shift-end', 409)
-        self.action(bantlama, 'bantlama', 'finish', 409, activeBoxId='KUTU-TEST', outcome='good', length=100)
-        for index in range(4):
-            self.action(bantlama, 'bantlama', 'step', activeBoxId='KUTU-TEST', index=index, checked=True)
-        self.action(bantlama, 'bantlama', 'finish', activeBoxId='KUTU-TEST', outcome='good', length=100)
+        self.action(bantlama, 'bantlama', 'finish', 409, activeBoxId='KUTU-TEST', outcome='good')
+        self.action(bantlama, 'bantlama', 'step', 409, activeBoxId='KUTU-TEST', index=1, checked=True)
+        self.action(bantlama, 'bantlama', 'step', 422, activeBoxId='KUTU-TEST', index=0, checked=False)
+        for index in range(5):
+            board = self.action(bantlama, 'bantlama', 'step', activeBoxId='KUTU-TEST', index=index, checked=True)['board']
+            self.assertEqual(board['activeBox']['steps'], [True] * (index + 1) + [False] * (4 - index))
+            if index == 3:
+                self.action(bantlama, 'bantlama', 'finish', 409, activeBoxId='KUTU-TEST', outcome='good')
+        reloaded = bantlama.get('/api/workspace/tablet/bantlama').json()
+        self.assertEqual(reloaded['activeBox']['steps'], [True] * 5)
+        board = self.action(bantlama, 'bantlama', 'finish', activeBoxId='KUTU-TEST', outcome='good')['board']
+        finished = next(box for box in board['boxes'] if box['id'] == 'KUTU-TEST')
+        self.assertEqual(finished['stage'], 'handoff')
+        self.assertIsNone(finished['length'])
         self.action(bantlama, 'bantlama', 'help', description='Örnek kontrol')
         self.action(bantlama, 'bantlama', 'shift-end')
         self.action(konveyor, 'konveyor', 'match', box='KUTU-TEST', measurement='OLC-TEST')
@@ -179,6 +189,16 @@ class StationWorkspaceTests(unittest.TestCase):
         self.assertEqual(copy['template']['design']['title'], 'Kaplama deneme listesi')
         self.assertEqual(copy['templateRecord']['values'], [True])
         self.assertEqual(copy['coating']['total'], 14)
+
+    def test_bantlama_stepper_is_a_fixed_card_with_no_custom_steps_required(self):
+        card = {'kind': 'stepper', 'title': 'İş Adımları', 'size': 'full', 'source': 'fixed'}
+        template = {'title': 'Bantlama', 'cards': [card]}
+        draft = {'revision': 0, 'design': template}
+        self.assertEqual(self.admin.put('/api/workspace/templates/kaplama', json=draft).status_code, 422)
+        self.assertEqual(self.admin.put('/api/workspace/templates/bantlama', json=draft).status_code, 200)
+        published = self.admin.post('/api/workspace/templates/bantlama/publish', json={'revision': 1})
+        self.assertEqual(published.status_code, 200, published.text)
+        self.assertEqual(published.json()['published']['design']['cards'][0]['kind'], 'stepper')
 
     def test_technician_quality_and_material_actions(self):
         technician, _ = self.pair('tekniker')

@@ -17,7 +17,7 @@ from .station_access import STATIONS
 
 COLORS = {'blue': 'Mavi', 'red': 'Kırmızı', 'yellow': 'Sarı'}
 OUTCOMES = {'good', 'rework', 'scrap', 'allowed'}
-TAPING_STEPS = ['Bant rengini doğrula', 'Kutu kodunu tara', 'Bant uzunluğunu ölç', 'Kalite kontrolünü tamamla']
+TAPING_STEP_COUNT = 5
 STATION_DATA = {
     'bantlama': ('cut', 'used', 'activeBox', 'boxes', 'wip'),
     'giyotin': ('cut', 'used', 'cutLog'),
@@ -156,6 +156,11 @@ def coating(state, action, fields):
     return 'Kaplama kontrolü kaydedildi.'
 
 
+def taping_steps(box):
+    # Confirmations from the old four-step checklist refer to different tasks.
+    return box['steps'] if len(box['steps']) == TAPING_STEP_COUNT else [False] * TAPING_STEP_COUNT
+
+
 def taping(state, action, fields):
     box = state['activeBox']
     now = int(time.time() * 1000)
@@ -165,7 +170,7 @@ def taping(state, action, fields):
         require(not box and not any(row['id'] == identifier for row in state['boxes']), 'Açık veya yinelenen kutu kaydı var.')
         require(state['cut'][color] - state['used'][color] >= 2, 'Bu renk için iki kesilmiş bant gerekiyor.')
         state['used'][color] += 2
-        state['activeBox'] = {'id': identifier, 'color': color, 'steps': [False] * len(TAPING_STEPS), 'activeMs': 0,
+        state['activeBox'] = {'id': identifier, 'color': color, 'steps': [False] * TAPING_STEP_COUNT, 'activeMs': 0,
                               'since': now, 'paused': False, 'pauseReason': ''}
         return f'{identifier} için bantlama başladı.'
     require(box is not None and box['id'] == fields.get('activeBoxId'), 'Açık kutu değişti. Ekranı yenileyin.')
@@ -180,14 +185,18 @@ def taping(state, action, fields):
         return 'Bantlama duraklatıldı.'
     if action == 'step':
         index = fields.get('index')
-        value = fields.get('checked')
-        require(type(index) is int and 0 <= index < len(TAPING_STEPS) and type(value) is bool, 'Adım geçersiz.', 422)
-        box['steps'][index] = value
-        return 'Kontrol adımı güncellendi.'
+        require(type(index) is int and 0 <= index < TAPING_STEP_COUNT and fields.get('checked') is True, 'Adım geçersiz.', 422)
+        steps = taping_steps(box)
+        if steps[index]:
+            return 'Adım zaten tamamlandı.'
+        require(index == steps.index(False), 'Önce aktif adımı tamamlayın.')
+        steps[index] = True
+        box['steps'] = steps
+        return 'İş adımı tamamlandı.'
     outcome = choice(fields, 'outcome', {'good', 'rework', 'scrap'}, 'Kontrol sonucunu')
     if outcome == 'good':
-        require(all(box['steps']), 'Sağlam teslim için tüm adımları tamamlayın.')
-        length = number(fields, 'length', 'bant uzunluğu')
+        require(all(taping_steps(box)), 'Sağlam teslim için tüm adımları tamamlayın.')
+        length = number(fields, 'length', 'bant uzunluğu') if fields.get('length') not in (None, '') else None
         reason = ''
     else:
         length = None
@@ -388,6 +397,9 @@ class StationWorkflow:
     def station_board(state, station):
         keys = ('revision', 'goals', *STATION_DATA[station])
         view = {key: state[key] for key in keys}
+        if station == 'bantlama' and view['activeBox']:
+            box = view['activeBox']
+            view['activeBox'] = {**box, 'steps': taping_steps(box)}
         view['orders'] = state['orders'][:1]
         view['shift'] = state['shifts'].get(station)
         view['template'] = state['templates'].get(station, {}).get('published')

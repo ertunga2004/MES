@@ -2,6 +2,8 @@
 
 `mes_web/`, konveyor hattinin aktif web katmanidir. Bu klasor; MQTT ingest, dashboard snapshot, operator kiosk UI, teknisyen cagri UI, vardiya kontrollu OEE runtime state ve workbook kaydini tek yerde toplar.
 
+**Dijital İkiz** ekranında örnek simülasyon 20× hıza kadar oynatılır ve analizler senaryo zamanıyla ilerler. **Fiziksel hat · MES** görünümü mevcut dashboard akışından vardiya OEE’sini ve MEGA durum/ürün olaylarını okur. Enerji sayacı aynı MQTT kökünün `/logs` kanalına `{"type":"performance-telemetry","energyKwh":4.72}` biçiminde birikimli kWh okuması gönderebilir. Ekran, ürün başına duruşta bekleme süresini yalnız bant durumu bütün ürün geçişi boyunca gözlenmişse hesaplar.
+
 ## Ana Sorumluluklar
 
 - MQTT topiclerini dinlemek

@@ -111,6 +111,7 @@ const state = {
     inventoryRemoveConfirmTimer: null,
   },
 };
+let digitalTwinModule;
 
 const els = {
   moduleTitle: document.getElementById("module-title"),
@@ -825,7 +826,10 @@ function setActiveTab(tabName) {
   const showDigitalTwin = state.activeTab === "digital-twin";
   els.digitalTwinTab.classList.toggle("hidden", !showDigitalTwin);
   if (showDigitalTwin) {
-    import("/static/digital-twin.js?v=2").catch(() => {
+    import("/static/digital-twin.js?v=3").then(module => {
+      digitalTwinModule = module;
+      if (state.snapshot) module.acceptDashboardSnapshot(state.snapshot);
+    }).catch(() => {
       els.digitalTwinTab.querySelector("[data-twin-status]").textContent = "Örnek veri yüklenemedi.";
       els.digitalTwinTab.querySelector("[data-twin-scene-status]").textContent = "3B model önizlemesi başlatılamadı.";
     });
@@ -1640,6 +1644,7 @@ async function fetchDashboard() {
 
 function applySnapshot(snapshot) {
   state.snapshot = snapshot;
+  digitalTwinModule?.acceptDashboardSnapshot(snapshot);
   resolveOeeDrafts(snapshot);
   resolveWorkOrderDrafts(snapshot);
   render(snapshot);

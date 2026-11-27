@@ -29,7 +29,7 @@ class StationAction(BaseModel):
 
 
 class TemplateCard(BaseModel):
-    kind: Literal['order', 'instructions', 'steps', 'timer', 'progress', 'result', 'status', 'wip', 'downtime', 'actions', 'material', 'before', 'after', 'extra']
+    kind: Literal['order', 'instructions', 'steps', 'stepper', 'timer', 'progress', 'result', 'status', 'wip', 'downtime', 'actions', 'material', 'before', 'after', 'extra']
     size: Literal['small', 'medium', 'large', 'full'] = 'full'
     source: Literal['fixed', 'station', 'order'] = 'fixed'
     visible: bool = True
@@ -159,6 +159,8 @@ class StationWorkspace:
             self.access.authorize(request, DESIGNERS)
             require(station in STATIONS, 'İstasyon bulunamadı.', 404)
             require(len({card.kind for card in payload.design.cards}) == len(payload.design.cards), 'Kart türleri benzersiz olmalı.', 422)
+            require(all(card.kind != 'stepper' or (station == 'bantlama' and card.size == 'full' and card.source == 'fixed')
+                        for card in payload.design.cards), 'İş Adımları kartı Bantlama için sabit ve tam genişlikte olmalı.', 422)
             validated = _clean_design(Design(title=payload.design.title, instructions=payload.design.instructions,
                                              timer=payload.design.features.timer, result_options=payload.design.features.result or [],
                                              steps=payload.design.steps, sections=payload.design.sections))
@@ -183,7 +185,8 @@ class StationWorkspace:
             def update(state):
                 row = state['templates'].get(station)
                 require(row and row['revision'] == payload.revision, 'Güncel taslağı kaydedin.')
-                require(row['draft']['steps'], 'Yayınlamak için en az bir adım ekleyin.', 422)
+                require(row['draft']['steps'] or any(card['kind'] == 'stepper' and card['visible'] for card in row['draft']['cards']),
+                        'Yayınlamak için en az bir adım ekleyin.', 422)
                 row['published'] = {'version': row['revision'], 'design': row['draft']}
                 return row
 

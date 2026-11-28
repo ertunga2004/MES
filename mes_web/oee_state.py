@@ -1109,6 +1109,32 @@ def _prepare_work_order_import_row(raw: Any) -> tuple[Any, list[dict[str, Any]]]
     return prepared, warnings
 
 
+def _import_station_orders(rows: Any, order: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("STATION_ORDERS_INVALID")
+    result: dict[str, dict[str, Any]] = {}
+    seen_ids: set[str] = set()
+    expected = {"giyotin": order["quantity"] * TAPES_PER_BOX, "kaplama": order["quantity"]}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("STATION_ORDERS_INVALID")
+        code = _text_or_default(row.get("station_code")).lower()
+        station_order_id = _text_or_default(row.get("station_order_id"))
+        unit = _text_or_default(row.get("unit"))
+        target = row.get("target_qty")
+        if (
+            not code or not station_order_id or station_order_id == order["orderId"]
+            or code in result or station_order_id in seen_ids or not unit
+            or type(target) is not int or target <= 0
+        ):
+            raise ValueError("STATION_ORDERS_INVALID")
+        if code in expected and (target != expected[code] or unit.casefold() != "adet"):
+            raise ValueError("STATION_ORDER_TARGET_MISMATCH")
+        result[code] = {"station_order_id": station_order_id, "target_qty": target, "unit": unit}
+        seen_ids.add(station_order_id)
+    return result
+
+
 def _normalize_work_order_row(raw: Any, *, existing: dict[str, Any] | None = None, queued_at: str = "") -> dict[str, Any]:
     entry = raw if isinstance(raw, dict) else {}
     current = existing if isinstance(existing, dict) else {}
@@ -1481,6 +1507,8 @@ def ensure_runtime_state_shape(payload: Any) -> dict[str, Any]:
     normalized_orders: dict[str, dict[str, Any]] = {}
     for raw_key, raw_order in raw_orders.items():
         normalized = _normalize_work_order_row(raw_order, queued_at="")
+        if isinstance(raw_order, dict) and isinstance(raw_order.get("stationOrders"), dict):
+            normalized["stationOrders"] = raw_order["stationOrders"]
         order_id = normalized["orderId"] or str(raw_key or "").strip()
         if not order_id:
             continue
@@ -3060,6 +3088,16 @@ class OeeRuntimeStateManager:
         return result
 
     @_state_locked
+    def edit_giyotin(self, operation: Any, after_commit: Any = None) -> Any:
+        state = self.read_state()
+        result, changed = operation(state, state["cuttingWorkflow"]["protocol4"])
+        if changed:
+            self.write_state(state)
+        if after_commit is not None and result is not None:
+            after_commit(result)
+        return result
+
+    @_state_locked
     def start_conveyor_handoff(self, *, request_id: str, order_id: str, order_key: str, operator: str) -> dict[str, Any]:
         state = self.read_state()
         progress = manual_coating_progress(state)
@@ -3098,7 +3136,12 @@ class OeeRuntimeStateManager:
         if not progress["can_record"] or not 0 < quantity <= progress["remaining_qty"]:
             raise ValueError("COATING_QUANTITY_UNAVAILABLE")
 
-        records[request_id] = {**batch, "recorded_at": datetime.now(timezone.utc).isoformat()}
+        station_order = progress.get("station_order") or {}
+        records[request_id] = {
+            **batch, "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "station_order_id": station_order.get("station_order_id", ""),
+            "unit": station_order.get("unit", "adet"),
+        }
         if "cutting" in progress:
             records[request_id]["tapes_used"] = quantity * TAPES_PER_BOX
         self.write_state(state)
@@ -3841,12 +3884,23 @@ class OeeRuntimeStateManager:
             order_id = str(normalized.get("orderId") or "").strip()
             if not order_id:
                 raise ValueError("WORK_ORDER_ID_REQUIRED")
+            existing = next_orders.get(order_id) if order_id in incoming_ids else existing_orders.get(order_id)
             merged = _normalize_work_order_row(
-                prepared_order,
-                existing=existing_orders.get(order_id),
-                queued_at=str((existing_orders.get(order_id) or {}).get("queuedAt") or queued_at),
+                prepared_order, existing=existing, queued_at=str((existing or {}).get("queuedAt") or queued_at),
             )
-            existing = existing_orders.get(order_id)
+            station_orders = existing.get("stationOrders", {}) if existing else {}
+            if "station_orders" in prepared_order:
+                imported_station_orders = _import_station_orders(prepared_order["station_orders"], merged)
+                if station_orders and imported_station_orders != station_orders:
+                    raise ValueError("STATION_ORDER_ROUTE_CONFLICT")
+                if existing and existing["status"] != "queued" and imported_station_orders != station_orders:
+                    raise ValueError("STATION_ORDER_ROUTE_CONFLICT")
+                station_orders = imported_station_orders
+            if station_orders:
+                for code, multiplier in (("giyotin", TAPES_PER_BOX), ("kaplama", 1)):
+                    if code in station_orders and station_orders[code]["target_qty"] != merged["quantity"] * multiplier:
+                        raise ValueError("STATION_ORDER_TARGET_MISMATCH")
+                merged["stationOrders"] = station_orders
             merged["manualCoatingKey"] = manual_coating_order_key(existing) if existing else uuid.uuid4().hex
             if existing and cutting_batch(state, order_id, merged["manualCoatingKey"]):
                 changes_unit = (merged["unit"].casefold() or "adet") != (existing["unit"].casefold() or "adet")
@@ -3888,6 +3942,18 @@ class OeeRuntimeStateManager:
                     continue
                 if str(existing.get("status") or "") in {"active", "completed"}:
                     next_orders[order_id] = existing
+
+        station_order_owners = {
+            station_order["station_order_id"]: (parent_id, code)
+            for parent_id, order in existing_orders.items()
+            for code, station_order in order.get("stationOrders", {}).items()
+        }
+        for parent_id, order in next_orders.items():
+            for code, station_order in order.get("stationOrders", {}).items():
+                owner = (parent_id, code)
+                station_order_id = station_order["station_order_id"]
+                if station_order_owners.setdefault(station_order_id, owner) != owner:
+                    raise ValueError("STATION_ORDER_ID_CONFLICT")
 
         next_sequence: list[str] = []
         for order_id in existing_sequence:

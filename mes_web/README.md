@@ -38,6 +38,12 @@ Kaplama kayıtları mevcut çalışma durumu dosyasında iş emri, operatör ad�
 
 Bu akış iki istasyonu yan yana kabul eder. Bant kesildiğinde kaplamaya hazır sayılır. Ayrı parti teslimi, bekleme alanı ve taşıma süresi bu sürümde kullanılmaz. İlk kesim kaydından sonra iş emrinin hedef adedi ve birimi sabitlenir. Başka bir akışla kayıt alınmış emirleri karıştırmamak için doğrudan aktarıma yeni bir iş emriyle başla. Kesim ve kaplama konveyör üretimine veya OEE'ye eklenmez. Aynı isteğin tekrarı yeni kayıt üretmez.
 
+### Giyotin Protocol 4 ve ERP log provası
+
+Giyotin çevrimlerini MES'e almak için `MES_WEB_GIYOTIN_PROTOCOL4_ENABLED=1` ayarı ile uyumlu ESP32 ve Nano firmware'i gerekir. Depodaki Protocol 3 Nano sürümüyle Protocol 4 çevrim kaydı çalışmaz. Bu durumda yerel prova için yukarıdaki elle kesim akışı kullanılabilir.
+
+[ERP istasyon emri örneğindeki](../docs/FERP_JSON_CONTRACT.md#atölye-istasyon-emirleri) emri içe aktar. Giyotin çevrimi ve kaplama onayı sonrasında Excel'deki `1_Olay_Logu` sayfasında ana emri, istasyon emrini, olay kimliğini ve miktarı kontrol et.
+
 ### Kiosk Tasarla
 
 Sunucu bilgisayarında MES ana ekranındaki **Kiosk Tasarla** bağlantısını aç. Sunucuyu başlatmadan önce `MES_WEB_KIOSK_DESIGN_PASSWORD` ortam değişkenine seçtiğin mühendis parolasını ata. Girişte kullanıcı adı `muhendis`. Tarayıcı giriş ekranı için ASCII karakterlerden oluşan bir parola seç.

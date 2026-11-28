@@ -162,6 +162,8 @@
 .tablet-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .tablet-button { min-height: 44px; padding: 10px 16px; font-family: inherit; }
 .tablet-button-secondary { border-color: var(--panel-border); background: rgba(255, 255, 255, .06); }
+.tablet-giyotin-actions > .tablet-form { margin: 0; }
+.tablet-giyotin-status { margin: 12px 0; color: var(--text-main); font-weight: 600; }
 .tablet-fault-actions { align-items: end; }
 
 .tablet-stats {

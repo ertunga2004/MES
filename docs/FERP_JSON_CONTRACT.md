@@ -73,6 +73,31 @@ Dashboard reload ve uygulama startup yuklemesi varsayilan olarak bu klasordeki e
 
 Mevcut MES canonical input sekli korunur. Bilinmeyen label importu patlatmaz; response icinde `warnings` olarak doner.
 
+### Atölye istasyon emirleri
+
+Pilot için mevcut `orders` listesindeki ana emre `station_orders` eklenebilir. ERP her istasyon işini ayrı ve kalıcı bir kimlikle gönderir. Aşağıdaki örnekte bir kutu için iki bant parçası kesilir.
+
+```json
+{
+  "replace_existing": false,
+  "orders": [
+    {
+      "order_id": "ATOLYE-001",
+      "stock_code": "KUTU-MAVI",
+      "product_color": "blue",
+      "quantity": 1,
+      "unit": "adet",
+      "station_orders": [
+        {"station_code": "giyotin", "station_order_id": "ATOLYE-001-KES", "target_qty": 2, "unit": "adet"},
+        {"station_code": "kaplama", "station_order_id": "ATOLYE-001-KAP", "target_qty": 1, "unit": "adet"}
+      ]
+    }
+  ]
+}
+```
+
+İstasyon emirlerini ana emir başlamadan önce aktarın. Aynı rota yeniden gönderilebilir. MES, eşleşen giyotin veya kaplama kaydını `1_Olay_Logu` sayfasında `event_uid`, `production_order_id`, `station_order_id`, `station_code`, `quantity` ve `unit` alanlarıyla gösterir. Önceki formatla alınan emirlerin istasyon emri alanı boş kalır.
+
 ## Export
 
 Is emri operator onayi ile kapatildiktan sonra accept-active response semasi korunur ve sadece `ferp_export` alani eklenir.

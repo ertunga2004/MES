@@ -47,6 +47,8 @@ class AppConfig:
     port: int = 8080
     module_id: str = "konveyor_main"
     cutting_workflow_enabled: bool = False
+    giyotin_protocol4_enabled: bool = False
+    giyotin_topic_root: str = "sau/iot/giyotin"
     conveyor_handoff_enabled: bool = False
     kiosk_design_password: str = field(default="", repr=False)
     module_type: str = "conveyor"
@@ -189,6 +191,22 @@ class AppConfig:
             "vision_events": f"{root}/vision/events",
         }
 
+    @property
+    def giyotin_topics(self) -> dict[str, str]:
+        root = self.giyotin_topic_root.rstrip("/")
+        return {f"{root}/{suffix}": kind for suffix, kind in (
+            ("cmd", "command"), ("status", "status"), ("logs", "logs"),
+            ("heartbeat", "heartbeat"), ("bridge/status", "bridge_status"),
+        )}
+
+    @property
+    def giyotin_command_topic(self) -> str:
+        return f"{self.giyotin_topic_root.rstrip('/')}/cmd"
+
+    @property
+    def cutting_input_enabled(self) -> bool:
+        return self.cutting_workflow_enabled or self.giyotin_protocol4_enabled
+
     @classmethod
     def from_env(cls) -> "AppConfig":
         return cls(
@@ -196,6 +214,8 @@ class AppConfig:
             port=int(os.getenv("MES_WEB_PORT", "8080")),
             module_id=os.getenv("MES_WEB_MODULE_ID", "konveyor_main"),
             cutting_workflow_enabled=_env_bool("MES_WEB_CUTTING_WORKFLOW_ENABLED", False),
+            giyotin_protocol4_enabled=_env_bool("MES_WEB_GIYOTIN_PROTOCOL4_ENABLED", False),
+            giyotin_topic_root=os.getenv("MES_WEB_GIYOTIN_TOPIC_ROOT") or "sau/iot/giyotin",
             conveyor_handoff_enabled=_env_bool("MES_WEB_CONVEYOR_HANDOFF_ENABLED", False),
             kiosk_design_password=os.getenv("MES_WEB_KIOSK_DESIGN_PASSWORD", ""),
             module_type=os.getenv("MES_WEB_MODULE_TYPE", "conveyor"),

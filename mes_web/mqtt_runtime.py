@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from .config import AppConfig
@@ -26,6 +28,7 @@ class MqttIngestClient:
         self._mqtt: Any | None = None
         self.client: Any | None = None
         self.connected = False
+        self.giyotin = None
 
     def _record_work_order_state(self, received_at: str) -> None:
         if self.excel_sink is None or self.oee_state_manager is None:
@@ -78,6 +81,9 @@ class MqttIngestClient:
             if topic_name == "command":
                 continue
             client.subscribe(topic)
+        if self.giyotin is not None:
+            for topic in self.config.giyotin_topics:
+                client.subscribe(topic)
 
     def _on_disconnect(
         self,
@@ -90,6 +96,8 @@ class MqttIngestClient:
         del client, userdata, disconnect_flags, reason_code, properties
         self.connected = False
         self.store.set_mqtt_connection(False)
+        if self.giyotin is not None:
+            self.giyotin.disconnect()
 
     def _decode(self, payload: Any) -> str:
         if isinstance(payload, bytes):
@@ -100,10 +108,16 @@ class MqttIngestClient:
         del client, userdata
         topic = str(message.topic)
         payload = self._decode(message.payload)
-        stamp = utc_now_text()
         module_id = self.config.module_id
         topics = self.config.topics
 
+        if self.giyotin is not None and topic in self.config.giyotin_topics:
+            stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+            self.giyotin.receive_mqtt(self.config.giyotin_topics[topic], payload, stamp,
+                                      retained=bool(getattr(message, "retain", False)))
+            return
+
+        stamp = utc_now_text()
         if topic == topics["status"]:
             self.store.apply_status_line(module_id, payload, received_at=stamp)
             return
@@ -182,10 +196,18 @@ class MqttIngestClient:
                         self.excel_sink.record_early_pick_request(item_id, stamp)
 
     def publish_command(self, payload: str) -> None:
+        self._publish(self.config.topics["command"], payload)
+
+    def publish_giyotin(self, payload: dict[str, Any]) -> None:
+        if self.giyotin is None or not self.config.publish_enabled:
+            raise RuntimeError("MQTT_GIYOTIN_DISABLED")
+        self._publish(self.config.giyotin_command_topic, json.dumps(payload))
+
+    def _publish(self, topic: str, payload: str) -> None:
         if self.client is None or self._mqtt is None:
             raise RuntimeError("MQTT_UNAVAILABLE")
         if not self.connected:
             raise RuntimeError("MQTT_OFFLINE")
-        message_info = self.client.publish(self.config.topics["command"], payload, qos=0, retain=False)
+        message_info = self.client.publish(topic, payload, qos=0, retain=False)
         if message_info.rc != self._mqtt.MQTT_ERR_SUCCESS:
             raise RuntimeError("MQTT_PUBLISH_FAILED")

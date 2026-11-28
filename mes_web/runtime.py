@@ -121,6 +121,8 @@ class RuntimeService:
             self._watchdog_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._watchdog_task
+        if self.mqtt_client.giyotin is not None:
+            self.mqtt_client.giyotin.shutdown()
         self.mqtt_client.stop()
         self.excel_sink.stop()
 
@@ -129,6 +131,8 @@ class RuntimeService:
             await asyncio.sleep(1)
             tick_now = datetime.now().astimezone()
             tick_changed = self.oee_manager.tick(now=tick_now)
+            if self.mqtt_client.giyotin is not None:
+                self.mqtt_client.giyotin.tick()
             self.store.refresh_oee_runtime_state(self.config.module_id, force=tick_changed)
             if tick_changed:
                 self.excel_sink.record_work_order_state(self.oee_manager.read_state(), utc_now_text(tick_now))

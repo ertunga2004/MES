@@ -824,7 +824,7 @@ class DashboardStore:
                 )
             inventory_rows.sort(key=lambda row: (-row["quantity"], row["stock_code"], row["match_key"]))
 
-            coating = manual_coating_progress(payload, cutting_enabled=self.config.cutting_workflow_enabled)
+            coating = manual_coating_progress(payload, cutting_enabled=self.config.cutting_input_enabled)
             module["work_orders"] = {
                 "enabled": True,
                 "manual_coating": coating,

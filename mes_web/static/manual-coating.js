@@ -83,7 +83,10 @@ function render() {
   const shownQty = isCutting ? cutting?.cut_tapes || 0 : progress?.completed_qty || 0;
   const target = isCutting ? cutting?.target_tapes : progress?.target_qty;
   const unit = isCutting ? "bant parçası" : cutting ? "kutu" : "adet";
-  order.textContent = progress?.order_id || "Aktif iş emri yok";
+  const stationOrder = isCutting ? cutting?.station_order : progress?.station_order;
+  order.textContent = stationOrder
+    ? `Ana emir ${progress.order_id} · İstasyon emri ${stationOrder.station_order_id}`
+    : progress?.order_id || "Aktif iş emri yok";
   count.textContent = progress?.unit_supported ? `${shownQty} / ${target} ${unit}` : "–";
   meter.max = target || 1;
   meter.value = shownQty;

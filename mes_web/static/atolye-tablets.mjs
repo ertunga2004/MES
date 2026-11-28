@@ -94,6 +94,7 @@ function taping(state) {
 }
 
 function cutting(state) {
+  if (state.protocol4) return protocolCutting(state.protocol4);
   const rows = colorEntries.map(([color]) => {
     const remaining = state.cut[color] - state.used[color];
     return `<tr><th scope="row">${colorMark(color)}</th><td>${state.cut[color]} / ${state.goals[color] * 2}</td><td>${readyPairs(state, color)}</td><td>${remaining % 2}</td></tr>`;
@@ -109,6 +110,80 @@ function cutting(state) {
       </div>${checkField('Koruyucu kalkan kontrol edildi', 'shield')}`, 'Kesimi kaydet', { primary: true })}`)}
     ${panel('Kesim ve bantlama durumu', `<div class="tablet-table-wrap"><table class="tablet-table"><thead><tr><th scope="col">Renk</th><th scope="col">Kesilen / Hedef</th><th scope="col">Hazır kutu</th><th scope="col">Tek bant</th></tr></thead><tbody>${rows}</tbody></table></div>`)}
     ${panel('Son kesim kayıtları', `<div class="tablet-list">${log}</div>`, true)}
+  </div>`;
+}
+
+const giyotinModes = {
+  offline: 'Cihaz bağlantısı bekleniyor',
+  not_ready: 'Nano hazır değil',
+  ready: 'Yeni çevrim için hazır',
+  awaiting_permit: 'İzin bekleniyor',
+  permitted: 'İzin verildi',
+  running: 'Çevrim sürüyor',
+  awaiting_event: 'Çevrim kaydı veya cihaz durumu bekleniyor',
+  revoking: 'İzin kaldırma onayı bekleniyor',
+  review: 'Çevrim uzlaştırması gerekli',
+};
+const giyotinReasons = {
+  paused: 'Üretim duraklatıldı.',
+  stopped: 'Üretim durduruldu.',
+  order_or_shift_ended: 'İş emri değişti veya vardiya kapandı.',
+  target_reached: 'İş emri hedefi tamamlandı.',
+  permit_expired: 'İzin süresi doldu. Yeni çevrim için yeniden başlatın.',
+  permit_unconfirmed: 'İzin cihaz tarafından doğrulanamadı.',
+  cycle_uncertain: 'Nano çevrim sonucunu doğrulayamadı.',
+  cycle_unconfirmed: 'Çevrim sonucu alınamadı.',
+  backend_restart: 'MES yeniden başlatıldığında açık çevrim kaydı bulundu.',
+  nano_reset: 'Nano yeniden başladı.',
+  telemetry_loss: 'Köprü yayın kaybı bildirdi. Cihaz ve MES kayıtlarını karşılaştırın.',
+  connection_lost: 'Cihaz bağlantısı kesildi.',
+  command_rejected: 'Cihaz komutu reddetti.',
+  publish_failed: 'MQTT yayını doğrulanamadı.',
+  unmatched_event: 'Çevrim olayı kayıtlı izinle eşleştirilemedi.',
+  unknown_permit: 'MES kaydı olmayan izin kapatılıyor.',
+};
+const giyotinNanoStates = {
+  SESSION_REQUIRED: 'Oturum bekleniyor', CONFIG_REQUIRED: 'Ayar gerekli', PERMIT_REQUIRED: 'İzin gerekli',
+  WAIT_RELEASE: 'Butonlar bırakılmalı', WAIT_SECOND_BUTTON: 'İkinci buton bekleniyor', READY: 'Hazır',
+  CYCLE_RUNNING: 'Çevrim sürüyor', EVENT_PENDING: 'Olay onayı bekleniyor', CYCLE_UNCERTAIN: 'Çevrim belirsiz',
+};
+const hiddenField = (name, value) => `<input type="hidden" name="${name}" value="${esc(value)}">`;
+
+function protocolCutting(device) {
+  const { order, events, review } = device;
+  const text = giyotinReasons[review?.reason ?? device.reason];
+  const direction = device.mode === 'permitted' ?
+    (device.nanoState === 'WAIT_RELEASE' ? 'İki fiziksel butonu bırakın.' : 'Çevrim için iki fiziksel butonu kullanın.') : '';
+  const startFields = order ? hiddenField('orderId', order.id) + hiddenField('orderKey', order.key) : '';
+  const startLabel = device.reason === 'paused' ? 'Devam et' : 'Başlat';
+  const orderTitle = order?.stationOrderId ? `Ana emir ${order.id} · İstasyon emri ${order.stationOrderId}` : order?.id;
+  const buttonState = value => value === true ? 'Basılı' : value === false ? 'Bırakıldı' : '—';
+  const records = events.filter(row => row.count).map(row => `<div class="tablet-row">
+    <div><strong>${esc(row.stationOrderId || row.orderId)}</strong><span>${esc(row.operator ?? '')}</span></div>
+    <span>${esc(new Date(row.recordedAt).toLocaleString('tr-TR'))}</span>
+    ${pill(row.resolution ? 'Uzlaştırıldı' : 'Nano çevrimi', 'green')}</div>`).join('');
+  const resolve = review ? panel('Çevrim uzlaştırması', `<p class="tablet-muted">Fiziksel sonucu ve MES kaydını karşılaştırın.</p>${actionForm(
+    'giyotin-reconcile', hiddenField('reviewId', review.id) + `<label>Çevrim sonucu<select name="outcome" required>${options([
+      ...(review.canCredit ? [['completed', 'Tamamlandığı doğrulandı · Bir çevrim kaydet']] : []),
+      ['no_credit', 'Kayıtlar doğrulandı · Sayaç değişmesin'],
+    ])}</select></label>` + checkField('Fiziksel sonucu ve MES kaydını kontrol ettim', 'confirmed'), 'Uzlaştırmayı kaydet')}`, true) : '';
+  return `<div class="content-grid tablet-grid">
+    ${panel('Çevrim kontrolü', `
+      ${text || direction ? `<p class="tablet-muted">${esc([text, direction].filter(Boolean).join(' '))}</p>` : ''}
+      ${device.rejection ? `<p class="tablet-muted">${esc(device.rejection)}</p>` : ''}
+      ${stats([['Cihaz', device.online ? 'Çevrimiçi' : 'Çevrimdışı'], ['Nano', giyotinNanoStates[device.nanoState] ?? '—'],
+        ['D2', buttonState(device.buttons[0])], ['D3', buttonState(device.buttons[1])]])}
+      <div class="tablet-actions tablet-giyotin-actions">
+        ${actionForm('giyotin-start', startFields, startLabel, { primary: true, disabled: !device.canStart })}
+        ${actionForm('giyotin-pause', '', 'Duraklat', { disabled: !device.canStop })}
+        ${actionForm('giyotin-stop', '', 'Durdur', { disabled: !device.canStop })}
+      </div>`)}
+    ${panel('İş emri ve üretim', order ? `<p>${esc([orderTitle, order.name].filter(Boolean).join(' · '))}</p>
+      ${stats([['Tamamlanan çevrim', `${order.completed} / ${order.target}`]])}
+      <progress class="tablet-progress" aria-label="Tamamlanan çevrim" max="${order.target}" value="${order.completed}"></progress>`
+      : blank('MES’te aktif iş emri bekleniyor.'))}
+    ${resolve}
+    ${panel('Son çevrim kayıtları', records ? `<div class="tablet-list">${records}</div>` : blank('Tamamlanmış cihaz çevrimi bekleniyor.'), true)}
   </div>`;
 }
 
@@ -254,13 +329,14 @@ function publishedTemplate(state) {
     material: 'Malzeme', progress: 'İlerleme', extra: 'Ek bilgi', before: 'İşe başlamadan önce', after: 'İş bitiminde' };
   const detail = {
     instructions: design.instructions, before: design.before, after: design.after,
-    order: orderLabel(state.orders[0]), status: state.shift?.operator ?? 'Vardiya kapalı',
+    order: state.protocol4 ? (state.protocol4.order?.id ?? 'Aktif iş emri bekleniyor') : orderLabel(state.orders[0]), status: state.shift?.operator ?? 'Vardiya kapalı',
     wip: state.wip?.map(area => `${area.name} ${area.occupied} / ${area.capacity}`).join(' · '),
     material: state.materials && colorEntries.map(([id, name]) => `${name} ${state.materials[id]}`).join(' · '),
     timer: design.features.timer ? (state.shift ? `Vardiya başlangıcı ${new Date(state.shift.startedAt).toLocaleTimeString('tr-TR')}` : 'Vardiya kapalı') : '',
     result: result || 'Sonuç bekleniyor', actions: 'İşlemler vardiya açıkken kullanılabilir.',
     downtime: state.faults ? `${state.faults.filter(item => item.status !== 'resolved').length} açık bildirim` : '',
-    progress: state.coating ? `${state.coating.total} / ${state.coating.target} parça` :
+    progress: state.protocol4 ? (state.protocol4.order ? `${state.protocol4.order.completed} / ${state.protocol4.order.target} çevrim` : '') :
+      state.coating ? `${state.coating.total} / ${state.coating.target} parça` :
       state.packed ? `${packedTotal(state)} / ${state.orders[0].qty} kutu` : `İş emri hedefi ${state.orders[0].qty} adet`,
     extra: design.sections.map(item => `${item.title} · ${item.body}`).join('\n'),
   };
@@ -289,10 +365,12 @@ function assistance() {
 function renderTabletStation(station, { readOnly, state }) {
   const area = areas[station];
   return `<section class="tablet-station" data-current-station="${station}" aria-labelledby="tablet-station-title">
-    <header class="tablet-station-heading"><h2 id="tablet-station-title">${area.title}</h2><p class="subtitle">${area.subtitle}</p></header>
+    <header class="tablet-station-heading"><h2 id="tablet-station-title">${area.title}</h2><p class="subtitle">${state.protocol4 ? 'İş emri ve Nano çevrim kontrolü' : area.subtitle}</p></header>
     <fieldset class="station-controls"${readOnly ? ' disabled' : ''}>${shiftControls(state)}</fieldset>
+    ${state.protocol4 ? `<p class="tablet-giyotin-status" data-giyotin-status role="status" aria-atomic="true">${giyotinModes[state.protocol4.mode]}</p>
+      <fieldset class="station-controls" data-giyotin-panel${readOnly ? ' disabled' : ''}>${area.render(state)}</fieldset>` : ''}
     <fieldset class="station-controls station-work"${readOnly || !state.shift ? ' disabled' : ''}>
-      ${area.render(state)}${publishedTemplate(state)}${assistance()}
+      ${state.protocol4 ? '' : area.render(state)}${publishedTemplate(state)}${assistance()}
     </fieldset>
   </section>`;
 }
@@ -347,6 +425,8 @@ function mountWorkspace(root, readOnly, lockedStation) {
   function paint() {
     const board = stationState();
     if (!board) return;
+    const sampleNote = root.querySelector('.station-sample-note');
+    sampleNote.hidden = Boolean(board.protocol4) && !readOnly;
     outlet.innerHTML = renderTabletStation(current, { readOnly, state: board });
     if (readOnly) {
       root.querySelector('#monitor-summary').innerHTML = monitoringSummary(data);
@@ -361,13 +441,27 @@ function mountWorkspace(root, readOnly, lockedStation) {
   }
 
   async function refresh() {
-    if (reading || pending || dirty) return;
+    if (reading || pending || (dirty && !stationState()?.protocol4)) return;
     reading = true;
     try {
       const next = await requestData(path);
+      const nextBoard = readOnly ? next.stations[current] : next;
+      const protocol = nextBoard?.protocol4;
+      const deviceChanged = protocol && JSON.stringify(protocol) !== JSON.stringify(stationState()?.protocol4);
       if (!pending && !dirty && (!data || next.revision > data.revision)) {
         data = next;
         paint();
+      } else if (!pending && deviceChanged) {
+        const status = outlet.querySelector('[data-giyotin-status]');
+        const panel = outlet.querySelector('[data-giyotin-panel]');
+        if (status.textContent !== giyotinModes[protocol.mode]) status.textContent = giyotinModes[protocol.mode];
+        const focused = panel.contains(document.activeElement) ? document.activeElement : null;
+        const task = focused?.closest('form')?.dataset.task;
+        if (task === 'giyotin-reconcile' && protocol.review?.id === focused.form.elements.reviewId.value) return;
+        if (readOnly) data.stations[current].protocol4 = protocol;
+        else data.protocol4 = protocol;
+        panel.innerHTML = protocolCutting(protocol);
+        if (task) panel.querySelector(`[data-task="${task}"] button:enabled`)?.focus({ preventScroll: true });
       }
     } catch (error) {
       if (error.status === 401) location.replace(readOnly ? '/mes-oturum' : '/tablet-eslestir');

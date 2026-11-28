@@ -6,12 +6,33 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
+from .giyotin_runtime import GiyotinError, GiyotinRuntime
 from .kiosk_designer import Section, Step, _clean_design, Design
 from .station_access import DESIGNERS, STAFF, STATIONS, STATION_PORTS, WorkspaceAccess, WorkspaceBoundary, listener_station, workspace_url
 from .station_workflow import StationWorkflow, require
 
 
 HEADERS = {'Cache-Control': 'no-store', 'Content-Security-Policy': "frame-ancestors 'none'"}
+GIYOTIN_ACTIONS = {
+    'giyotin-start': 'Çevrim izni isteniyor.',
+    'giyotin-pause': 'İzin kaldırma işlemi başlatıldı.',
+    'giyotin-stop': 'İzin kaldırma işlemi başlatıldı.',
+    'giyotin-reconcile': 'Çevrim uzlaştırması kaydedildi.',
+    'giyotin-calibrate': 'Kalibrasyon onayı bekleniyor.',
+    'giyotin-ping': 'Bağlantı sorgusu gönderildi.',
+    'giyotin-status': 'Durum sorgusu gönderildi.',
+}
+GIYOTIN_ERRORS = {
+    'offline': 'Canlı ESP32 ve Nano bağlantısını bekleyin.',
+    'not_ready': 'Nano yeni işlem için hazır değil.',
+    'blocked': 'Açık çevrim, komut veya uzlaştırma tamamlanmalı.',
+    'order_or_shift_ended': 'Giyotin vardiyasını açın ve MES’te bir iş emri başlatın.',
+    'order_changed': 'Aktif iş emri değişti. Ekranı yenileyin.',
+    'target_unavailable': 'Bu iş emri yeni çevrim için uygun değil.',
+    'invalid_calibration': 'Kalibrasyon değerleri geçersiz.',
+    'invalid_resolution': 'Uzlaştırma seçimi geçersiz veya kayıt değişti.',
+    'publish_failed': 'MQTT isteği doğrulanamadı. Cihaz durumunu kontrol edin.',
+}
 
 
 class Credentials(BaseModel):
@@ -78,10 +99,14 @@ def json_write(request: Request):
 
 
 class StationWorkspace:
-    def __init__(self, app, static_dir, config):
+    def __init__(self, app, static_dir, config, oee_manager, publish_giyotin, on_giyotin_production):
         self.static_dir = static_dir
         self.access = WorkspaceAccess(config.kiosk_design_password)
         self.workflow = StationWorkflow()
+        self.giyotin = (
+            GiyotinRuntime(config, oee_manager, self.giyotin_shift, publish_giyotin, on_production=on_giyotin_production)
+            if config.giyotin_protocol4_enabled else None
+        )
         app.add_middleware(WorkspaceBoundary, access=self.access)
         router = APIRouter()
 
@@ -133,13 +158,16 @@ class StationWorkspace:
         @router.get('/api/workspace/tablet/{station}')
         def tablet_data(station: str, request: Request):
             self.access.tablet(request, station)
-            return JSONResponse(self.workflow.station_board(self.workflow.read(), station), headers=HEADERS)
+            return JSONResponse(self.board(self.workflow.read(), station), headers=HEADERS)
 
         @router.post('/api/workspace/tablet/{station}/actions', dependencies=[Depends(json_write)])
         def tablet_action(station: str, payload: StationAction, request: Request):
-            self.access.tablet(request, station)
-            message, state = self.workflow.action(station, payload.action, payload.fields)
-            return JSONResponse({'message': message, 'board': self.workflow.station_board(state, station)}, headers=HEADERS)
+            identity = self.access.tablet(request, station)
+            if station == 'giyotin' and self.giyotin is not None:
+                message, state = self.giyotin_action(payload, identity)
+            else:
+                message, state = self.workflow.action(station, payload.action, payload.fields)
+            return JSONResponse({'message': message, 'board': self.board(state, station)}, headers=HEADERS)
 
         @router.get('/api/workspace/monitoring')
         def monitor_data(request: Request):
@@ -147,7 +175,7 @@ class StationWorkspace:
             state = self.workflow.read()
             return JSONResponse({'role': identity['role'], 'revision': state['revision'], 'orders': state['orders'],
                                  'boxes': state['boxes'], 'faults': state['faults'], 'packed': state['packed'],
-                                 'stations': {station: self.workflow.station_board(state, station) for station in STATIONS}}, headers=HEADERS)
+                                 'stations': {station: self.board(state, station) for station in STATIONS}}, headers=HEADERS)
 
         @router.get('/api/workspace/templates')
         def templates(request: Request):
@@ -191,6 +219,36 @@ class StationWorkspace:
             return JSONResponse(row, headers=HEADERS)
 
         app.include_router(router)
+
+    def giyotin_shift(self):
+        return self.workflow.read()['shifts'].get('giyotin')
+
+    def board(self, state, station):
+        board = self.workflow.station_board(state, station)
+        if station == 'giyotin' and self.giyotin is not None:
+            board['protocol4'] = self.giyotin.board(board['shift'])
+        return board
+
+    def giyotin_action(self, payload, identity):
+        action, fields = payload.action, payload.fields
+        require(action != 'cut', 'Kesim adedi Nano çevrim olaylarından kaydedilir.')
+        with self.giyotin.lock:
+            if action not in GIYOTIN_ACTIONS:
+                message, state = self.workflow.action('giyotin', action, fields)
+                if action == 'shift-end':
+                    self.giyotin.tick()
+                return message, state
+            if action == 'giyotin-calibrate':
+                require(identity['role'] == 'admin', 'Kalibrasyon için yönetici yetkisi gerekli.', 403)
+            try:
+                self.giyotin.control(action, fields)
+            except GiyotinError as exc:
+                code = str(exc)
+                status = 503 if code in ('offline', 'publish_failed') else 422 if code.startswith('invalid_') else 409
+                raise HTTPException(status, GIYOTIN_ERRORS[code]) from exc
+            except OSError as exc:
+                raise HTTPException(503, GIYOTIN_ERRORS['publish_failed']) from exc
+            return GIYOTIN_ACTIONS[action], self.workflow.read()
 
     def html(self, filename, values):
         content = (self.static_dir.parent / 'templates' / filename).read_text(encoding='utf-8')

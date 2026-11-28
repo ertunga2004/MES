@@ -1,10 +1,11 @@
-import { card, depot, request, stage, stateLabels } from './anylogic-panel.mjs?v=4';
+import { card, depot, request, stage, stateLabels } from './anylogic-panel.mjs?v=5';
 import { esc } from './atolye-onizleme-core.js?v=5';
 
 const api = '/api/workspace/anylogic';
 const format = new Intl.NumberFormat('tr-TR', { maximumFractionDigits: 1 });
 const percentage = new Intl.NumberFormat('tr-TR', { style: 'percent', maximumFractionDigits: 1 });
 const clock = new Intl.DateTimeFormat('tr-TR', { dateStyle: 'short', timeStyle: 'short' });
+const telemetryClock = new Intl.DateTimeFormat('tr-TR', { dateStyle: 'short', timeStyle: 'medium' });
 const amount = value => Number.isFinite(value) ? format.format(value) : '—';
 const unit = (value, suffix) => Number.isFinite(value) ? `${amount(value)} ${suffix}` : '—';
 const colors = ['red', 'blue', 'yellow'];
@@ -23,19 +24,20 @@ function panel(title, content, { full = true, status = '' } = {}) {
 
 function recentOutput(events) {
   const rows = events.flatMap(event => {
-    const [kind, box, color] = String(event.message || '').split(';');
+    const [kind, box, color, duration] = String(event.message || '').split(';');
     if (kind !== 'DEPOLANDI') return [];
-    return [`<tr><td>${esc(unit(event.at, 'sn'))}</td><td>${esc(box || '—')}</td><td>${esc(colorNames[color] || '—')}</td></tr>`];
+    return [`<tr><td>${esc(unit(event.at, 'sn'))}</td><td>${esc(box || '—')}</td><td>${esc(colorNames[color] || '—')}</td>
+      <td>${esc(unit(duration ? Number(duration) : null, 'sn'))}</td></tr>`];
   }).reverse();
   return `<div class="plant-table-wrap"><table class="plant-table" aria-label="Son depolama hareketleri">
-    <thead><tr><th scope="col">Model saati</th><th scope="col">Kutu</th><th scope="col">Renk</th></tr></thead>
-    <tbody>${rows.join('') || '<tr><td colspan="3" class="empty-state">Depolama hareketi bekleniyor.</td></tr>'}</tbody>
+    <thead><tr><th scope="col">Model saati</th><th scope="col">Kutu</th><th scope="col">Renk</th><th scope="col">Girişten depoya</th></tr></thead>
+    <tbody>${rows.join('') || '<tr><td colspan="4" class="empty-state">Depolama hareketi bekleniyor.</td></tr>'}</tbody>
     </table></div>`;
 }
 
 export function renderSimulationSummary(snapshot, tab) {
   const { run, state, speed, target, verdict, metrics = {}, modelTime } = snapshot;
-  const { counters = {}, inventory = {}, robot, stations, conveyor, camera } = metrics;
+  const { counters = {}, inventory = {}, robot, stations, stationOutputs, conveyor, camera } = metrics;
   const { entered, completed, buffer, onConveyor, shipped } = counters;
   const [label, tone] = stateLabels[state] || ['Motor sorgulanıyor', 'idle'];
   const mode = run ? (run.mode === 'TEST' ? 'Excel testi' : 'Sürekli akış') : '—';
@@ -44,6 +46,8 @@ export function renderSimulationSummary(snapshot, tab) {
   const status = `<span class="plant-led" data-tone="${tone}">${label}</span>`;
   const identity = `<p class="panel-note" data-sim-run>${esc(runLabel)}</p>`;
   const belt = typeof conveyor?.running === 'boolean' ? (conveyor.running ? 'Bant çalışıyor' : 'Bant duruyor') : '—';
+  const lastBeltEvent = [...(metrics.events || [])].reverse().find(event => /^BANT_(?:DURDU|DEVAM);/.test(event.message || ''));
+  const beltReason = lastBeltEvent?.message.startsWith('BANT_DURDU;') ? lastBeltEvent.message.split(';')[3] : null;
   const deposits = `<div class="anylogic-stock">${colors.map(color => depot(color, inventory)).join('')}</div>`;
   const counts = cards(['Model saati', unit(modelTime, 'sn')], ['Hat girişi', unit(entered, 'kutu')],
     ['Depolanan', unit(completed, 'kutu')], ['Ara depo', unit(buffer, 'kutu')],
@@ -57,6 +61,8 @@ export function renderSimulationSummary(snapshot, tab) {
     return [
       panel('Anlık üretim özeti', identity + counts, { status }),
       panel('Üretim akışı', `<ol class="plant-flow" style="--stages: 6" aria-label="Simülasyon istasyon sırası" tabindex="0">${flow.join('')}</ol>`),
+      panel('İstasyon çıkışları', cards(['Giyotin / kesme', unit(stationOutputs?.cutting, 'bant')],
+        ['Kaplama', unit(stationOutputs?.coating, 'kutu')], ['Renk depoları', unit(completed, 'kutu')])),
       panel('Darboğaz ve kayıplar', cards(['Ara depo bekleyen', unit(buffer, 'kutu')],
         ['Bant durumu', belt], ['Robot boşta', unit(robot?.idleSeconds, 'sn')]), { full: false }),
       panel('Operasyonel uyarılar', `<p class="panel-note">${state === 'error' || state === 'unavailable' ? 'AnyLogic verisi alınamadı.' : '—'}</p>`, { full: false }),
@@ -80,7 +86,8 @@ export function renderSimulationSummary(snapshot, tab) {
       panel('Üretim özeti', counts),
       panel('Ekipman performansı', cards(['Ortalama üretim hızı', unit(rate, 'kutu / model saati')],
         ['Robot boşta', unit(idle, 'sn')], ['Robot çalışma oranı', utilisation === null ? '—' : percentage.format(utilisation)])),
-      panel('Arıza ve duruşlar', cards(['Arıza kaydı', '—'], ['Duruş süresi', '—'], ['Bant durumu', belt]), { full: false }),
+      panel('Arıza ve duruşlar', cards(['Arıza kaydı', '—'], ['Duruş süresi', '—'], ['Bant durumu', belt],
+        ['Son duruş nedeni', beltReason || '—']), { full: false }),
       panel('Kalite kayıtları', cards(['Sağlam', '—'], ['Yeniden işlem', '—'], ['Hurda', '—']), { full: false }),
       panel('Renk performansı', deposits),
       panel('Son üretim hareketleri', recentOutput(metrics.events || [])),
@@ -108,17 +115,73 @@ function twinSummary({ run, state, speed, frame, detail }) {
     ${run ? `<p class="panel-note" data-sim-run>${esc(run.scenario)} · ${esc(run.id.slice(0, 8) + speedSuffix(speed))}</p>` : ''}${model}`;
 }
 
-export function bindSimulationMes({ moduleId, selectTab }) {
+export function bindSimulationMes({ moduleId, selectTab, simulationSelection }) {
   const picker = document.getElementById('mes-source');
   const views = new Map([...document.querySelectorAll('[data-sim-view]')].map(view => [view.dataset.simView, view]));
+  const twinControl = document.getElementById('twin-anylogic-control');
+  const twinButtons = [...twinControl.querySelectorAll('[data-twin-sim-action]')];
+  const twinFeedback = twinControl.querySelector('[data-twin-sim-feedback]');
+  const twinConnections = twinControl.querySelector('[data-twin-sim-connections]');
+  const twinState = twinControl.querySelector('[data-twin-sim-state]');
   let tab, twin;
   let active = new URLSearchParams(window.location.search).get('source') === 'anylogic';
   let snapshot = {}, packet = {}, frameKey, generation = 0;
   const rendered = new WeakMap();
+  let sending = false;
+  let commandRevision = 0;
+  let lastConnectionError;
+
+  function renderTwinControl() {
+    const { run, available, can_control, state, transport, mqttConnected, bridgeConnected, engineConnected, lastDataAt } = snapshot;
+    const allowed = { start: !run || state === 'stopped', pause: state === 'running', resume: state === 'paused',
+      stop: ['running', 'paused'].includes(state), reset: Boolean(run) };
+    for (const button of twinButtons) button.disabled = sending || !available || !can_control || !allowed[button.dataset.twinSimAction];
+    const [label, tone] = stateLabels[state] || ['Motor sorgulanıyor', 'idle'];
+    twinState.textContent = label;
+    twinState.dataset.tone = tone;
+    const received = Date.parse(lastDataAt);
+    const connected = value => value == null ? '—' : value ? 'Bağlı' : 'Bağlı değil';
+    const values = [
+      ['AnyLogic', transport === 'mqtt' ? connected(engineConnected) : run ? 'Bağlı' : '—'],
+      ['MQTT', connected(mqttConnected)],
+      ['Köprü', transport === 'mqtt' ? connected(bridgeConnected) : 'Yerel Java'],
+      ['Veri kaynağı', run?.origin === 'desktop' ? 'AnyLogic masaüstü' : 'AnyLogic simülasyonu'],
+      ['Model saati', unit(snapshot.modelTime, 'sn')],
+      ['Son veri', Number.isFinite(received) ? telemetryClock.format(received) : '—'],
+    ];
+    twinConnections.innerHTML = values.map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${esc(value)}</dd></div>`).join('');
+    if (!sending) {
+      if (snapshot.detail) twinFeedback.textContent = snapshot.detail;
+      else if (lastConnectionError && twinFeedback.textContent === lastConnectionError) twinFeedback.textContent = '';
+      lastConnectionError = snapshot.detail;
+    }
+  }
+
+  twinControl.addEventListener('click', async event => {
+    const button = event.target.closest('[data-twin-sim-action]');
+    if (!button || button.disabled || sending) return;
+    sending = true;
+    commandRevision += 1;
+    twinFeedback.textContent = 'AnyLogic yanıtı bekleniyor…';
+    renderTwinControl();
+    try {
+      snapshot = await request(`${api}/command`, { action: button.dataset.twinSimAction,
+        run_id: snapshot.run?.id || null, ...simulationSelection() });
+      const [label] = stateLabels[snapshot.state] || ['Komut onaylandı'];
+      twinFeedback.textContent = label;
+    } catch (error) {
+      twinFeedback.textContent = error.message;
+    } finally {
+      sending = false;
+      commandRevision += 1;
+      renderTwinControl();
+    }
+  });
 
   function render() {
     if (!active || !views.has(tab)) return;
     const view = views.get(tab);
+    if (tab === 'digital-twin') renderTwinControl();
     const motorError = !packet.run && ['unavailable', 'error'].includes(snapshot.state);
     const next = tab === 'digital-twin' ? twinSummary(motorError ? snapshot : packet) : renderSimulationSummary(snapshot, tab);
     if (rendered.get(view) === next) return;
@@ -136,13 +199,14 @@ export function bindSimulationMes({ moduleId, selectTab }) {
     const stamp = generation;
     while (generation === stamp) {
       if (!document.hidden) {
+        const revision = commandRevision;
         let result;
         try {
           result = await request(path);
         } catch (error) {
           result = { state: 'unavailable', detail: error.message };
         }
-        if (generation === stamp) receive(result);
+        if (generation === stamp && (path !== api || revision === commandRevision && !sending)) receive(result);
       }
       await new Promise(resolve => setTimeout(resolve, interval));
     }

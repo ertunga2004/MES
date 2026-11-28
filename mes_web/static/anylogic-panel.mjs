@@ -10,6 +10,7 @@ const cases = [
 ];
 export const stateLabels = {
   ready: ['Motor hazır', 'ok'], running: ['Simülasyon çalışıyor', 'ok'], paused: ['Duraklatıldı', 'warn'],
+  stopped: ['Simülasyon durduruldu', 'idle'],
   completed: ['Koşu tamamlandı', 'ok'], unavailable: ['Motor kullanılamıyor', 'idle'], error: ['Motor hatası', 'error'],
 };
 const colors = { red: 'Kırmızı', blue: 'Mavi', yellow: 'Sarı', kirmizi: 'Kırmızı', mavi: 'Mavi', sari: 'Sarı' };
@@ -95,12 +96,12 @@ export function bindAnyLogic(panel, onStart) {
 
   function controls() {
     const run = snapshot.run;
-    if (run) {
+    if (run && snapshot.state !== 'stopped' && run.mode && run.scenario !== '—') {
       mode.value = run.mode;
       scenario.value = run.scenario;
     }
     const unlocked = snapshot.available && snapshot.can_control && !commandPending;
-    mode.disabled = scenario.disabled = !unlocked || Boolean(run);
+    mode.disabled = scenario.disabled = !unlocked || Boolean(run && snapshot.state !== 'stopped');
     const hasSpeed = Object.hasOwn(snapshot, 'speed') && (!liveRun(snapshot) || snapshot.speed != null);
     const speedAvailable = snapshot.available && snapshot.can_control && hasSpeed;
     for (const button of speedButtons) {
@@ -116,7 +117,8 @@ export function bindAnyLogic(panel, onStart) {
     speedPreview.hidden = !speedUnavailable || !onMainPreview;
     for (const button of buttons) {
       const action = button.dataset.simAction;
-      const allowed = { start: !run, pause: snapshot.state === 'running', resume: snapshot.state === 'paused', reset: Boolean(run) };
+      const allowed = { start: !run || snapshot.state === 'stopped', pause: snapshot.state === 'running',
+        resume: snapshot.state === 'paused', stop: liveRun(snapshot), reset: Boolean(run) };
       button.disabled = !unlocked || !allowed[action];
     }
     query('#anylogic-scenario-note').textContent = mode.value === 'SUREKLI'
@@ -196,8 +198,7 @@ export function bindAnyLogic(panel, onStart) {
     controls();
     message(action === 'speed' ? 'Hız değiştiriliyor…' : 'Motor yanıtı bekleniyor…');
     try {
-      const state = await request(`${api}/command`, { action, run_id: snapshot.run?.id || null,
-        mode: mode.value, scenario: scenario.value, speed });
+      const state = await request(`${api}/command`, { action, run_id: snapshot.run?.id || null, ...selection(), speed });
       acceptState(state);
       if (action === 'speed' && state.speed != null) selectedSpeed = state.speed;
       if (action === 'start') onStart();
@@ -226,6 +227,9 @@ export function bindAnyLogic(panel, onStart) {
     if (button) void send(button.dataset.simAction);
   });
   setInterval(() => { if (!document.hidden) void refresh(); }, 1200);
+  function selection() {
+    return { mode: mode.value || 'TEST', scenario: scenario.value || 'T07', speed: selectedSpeed };
+  }
   render();
-  return { activate(active) { visible = active; if (visible) void refresh(); } };
+  return { selection, activate(active) { visible = active; if (visible) void refresh(); } };
 }

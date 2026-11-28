@@ -831,6 +831,8 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def on_startup() -> None:
         install_windows_connection_reset_filter()
+        if hasattr(workspace.anylogic, "start"):
+            workspace.anylogic.start()
         await runtime_service.start()
 
     @app.on_event("shutdown")

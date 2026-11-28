@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
+from .anylogic_mqtt import AnyLogicMqttClient, mqtt_anylogic_enabled
 from .anylogic_runner import AnyLogicRunner, SimulationError
 from .kiosk_designer import Section, Step, _clean_design, Design
 from .station_access import DESIGNERS, STAFF, STATIONS, STATION_PORTS, WorkspaceAccess, WorkspaceBoundary, listener_station, workspace_url
@@ -32,7 +33,7 @@ class StationAction(BaseModel):
 
 
 class AnyLogicCommand(BaseModel):
-    action: Literal['start', 'pause', 'resume', 'reset', 'speed']
+    action: Literal['start', 'pause', 'resume', 'stop', 'reset', 'speed']
     run_id: UUID | None = None
     mode: Literal['TEST', 'SUREKLI'] = 'TEST'
     scenario: str = Field(default='T07', pattern=r'^T(?:0[1-9]|1[0-4])$')
@@ -93,7 +94,11 @@ class StationWorkspace:
         self.static_dir = static_dir
         self.access = WorkspaceAccess(config.kiosk_design_password)
         self.workflow = StationWorkflow()
-        self.anylogic = runner = AnyLogicRunner(config.root_dir, config.oee_runtime_state_path)
+        self.anylogic = runner = (
+            AnyLogicMqttClient(config.root_dir) if mqtt_anylogic_enabled()
+            else AnyLogicRunner(config.root_dir, config.oee_runtime_state_path)
+        )
+        app.state.anylogic = runner
         app.add_middleware(WorkspaceBoundary, access=self.access)
         router = APIRouter()
 

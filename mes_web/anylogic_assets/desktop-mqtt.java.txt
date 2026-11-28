@@ -1,0 +1,103 @@
+        if (System.getProperty("mes.anylogic.runDir") == null) {
+            final java.nio.file.Path shared = java.nio.file.Paths.get(@CONTROL_DIRECTORY@);
+            final String session = live_run.replace("-", "");
+            final java.nio.file.Path directory = shared.resolve("anylogic-runs").resolve(session);
+            java.nio.file.Files.createDirectories(directory);
+            final java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(shared.resolve("engine.lock"),
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+            final java.nio.channels.FileLock lease;
+            try {
+                lease = channel.tryLock(0, 1, false);
+                if (lease == null) throw new IllegalStateException("MES AnyLogic koşusu zaten açık.");
+            } catch (Exception ex) {
+                channel.close();
+                throw ex;
+            }
+            test_rapor_klasoru = directory.toString();
+            final com.anylogic.engine.Engine engine = getEngine();
+            Thread controls = new Thread(() -> {
+                final java.nio.file.Path request = directory.resolve("command.txt");
+                final java.nio.file.Path snapshot = directory.resolve("live").resolve("live-state.json");
+                final java.nio.file.Path temp = shared.resolve("desktop-" + session + ".tmp");
+                final java.nio.file.Path status = shared.resolve("desktop.json");
+                String lastRequest = "";
+                boolean ok = true;
+                boolean completed = false;
+                String state = "running";
+                try {
+                    while (true) {
+                        String engineState = engine.getState().toString();
+                        switch (engineState) {
+                            case "RUNNING": state = completed ? "completed" : "running"; break;
+                            case "PAUSED": state = completed ? "completed" : "paused"; break;
+                            case "ERROR": state = "error"; break;
+                            case "IDLE":
+                            case "FINISHED": state = "stopped"; break;
+                        }
+                        if (test_rapor_yazildi && !completed && engineState.equals("RUNNING")) {
+                            try {
+                                completed = java.nio.file.Files.readString(snapshot).contains("\"message\":\"TEST_SONUCU;;;");
+                                if (completed) {
+                                    engine.pause();
+                                    state = "completed";
+                                }
+                            } catch (java.io.IOException ignored) { }
+                        }
+                        if (java.nio.file.Files.exists(request)) {
+                            try {
+                                java.util.List<String> parts = java.nio.file.Files.readAllLines(request);
+                                if (parts.size() == 4 && !lastRequest.equals(parts.get(0))) {
+                                    lastRequest = parts.get(0);
+                                    ok = false;
+                                    if (System.currentTimeMillis() <= Long.parseLong(parts.get(3))) {
+                                        String action = parts.get(1);
+                                        if (action.equals("pause") && state.equals("running")) {
+                                            ok = engine.pause();
+                                            if (ok) state = "paused";
+                                        } else if (action.equals("resume") && state.equals("paused")) {
+                                            ok = engine.run();
+                                            if (ok) state = "running";
+                                        } else if (action.equals("speed") && (state.equals("running") || state.equals("paused"))) {
+                                            int speed = Integer.parseInt(parts.get(2));
+                                            if (speed == 1 || speed == 2 || speed == 5 || speed == 10) {
+                                                if (!engine.getRealTimeMode()) engine.setRealTimeMode(true);
+                                                engine.setRealTimeScale(speed);
+                                                ok = engine.getRealTimeScale() == speed;
+                                            }
+                                        } else if (action.equals("stop") || action.equals("reset")) {
+                                            engine.stop();
+                                            state = "stopped";
+                                            ok = true;
+                                        }
+                                    }
+                                }
+                            } catch (java.io.IOException | NumberFormatException ignored) { }
+                        }
+                        String payload = "{\"id\":" + live_quote.apply(session)
+                            + ",\"state\":" + live_quote.apply(state)
+                            + ",\"engineRunId\":" + live_quote.apply(live_run)
+                            + ",\"startedAt\":" + live_quote.apply(java.time.Instant.ofEpochMilli(live_started_at).toString())
+                            + ",\"speed\":" + engine.getRealTimeScale()
+                            + ",\"target\":" + (surekli_akis ? "null" : Integer.toString(test_kimlikler.size()))
+                            + ",\"verdict\":" + (completed ? live_quote.apply(test_durum) : "null")
+                            + ",\"requestId\":" + live_quote.apply(lastRequest) + ",\"ok\":" + ok + "}";
+                        for (int attempt = 0; attempt < 3; attempt++) {
+                            try {
+                                java.nio.file.Files.writeString(temp, payload);
+                                java.nio.file.Files.move(temp, status, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+                                break;
+                            } catch (java.io.IOException ignored) { Thread.sleep(20); }
+                        }
+                        if (state.equals("stopped") || state.equals("error")) break;
+                        Thread.sleep(200);
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    try { lease.release(); channel.close(); } catch (java.io.IOException ignored) { }
+                }
+            }, "MES AnyLogic masaüstü köprüsü");
+            controls.setDaemon(true);
+            controls.start();
+        }

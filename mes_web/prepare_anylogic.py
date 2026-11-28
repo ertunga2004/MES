@@ -15,7 +15,7 @@ EXPORT_NAME = 'Excel_Test_Konveyor_Simulation'
 WORKBOOK = 'AnyLogic_Test_Plani.xlsx'
 
 
-def isolate_paths(model):
+def isolate_paths(model, defaults=None):
     paths = {
         WORKBOOK: 'new java.io.File(System.getProperty("mes.anylogic.modelDir"), "AnyLogic_Test_Plani.xlsx").getPath()',
         'senaryo.txt': 'new java.io.File(System.getProperty("mes.anylogic.runDir"), "senaryo.txt").getPath()',
@@ -29,6 +29,24 @@ def isolate_paths(model):
             raise ValueError(f'Model yolu doğrulanamadı: {name}')
     if re.search(r'["\x27][A-Za-z]:[/\\]', model):
         raise ValueError('Modelde doğrulanmamış sabit dosya yolu var.')
+    if defaults:
+        shared, workbook_dir = defaults
+        for setting, path in (('modelDir', workbook_dir), ('runDir', shared / 'desktop')):
+            expression = f'System.getProperty("mes.anylogic.{setting}")'
+            # The desktop copy supplies local defaults. The exported process overrides them.
+            model = model.replace(expression, f'{expression[:-1]}, {json.dumps(path.as_posix(), ensure_ascii=False)})')
+        worker = (Path(__file__).with_name('anylogic_assets') / 'desktop-mqtt.java.txt').read_text(encoding='utf-8')
+        worker = worker.replace('@CONTROL_DIRECTORY@', json.dumps(shared.as_posix(), ensure_ascii=False))
+        anchor = '    if (!test_yuklendi) {\n'
+        if model.count(anchor) != 1:
+            raise ValueError('Masaüstü AnyLogic başlangıç olayı doğrulanamadı.')
+        model = model.replace(anchor, anchor + worker.rstrip() + '\n', 1)
+        products = r'        b.append(",\"products\":[");'
+        counts = r'''        b.append(",\"stationOutputs\":{\"cutting\":").append(bant_kesme.out.count())
+            .append(",\"coating\":").append(kutu_kaplama.out.count()).append("}");'''
+        if model.count(products) != 1:
+            raise ValueError('AnyLogic kare çıktısı doğrulanamadı.')
+        model = model.replace(products, counts + '\n' + products, 1)
     return model
 
 
@@ -36,13 +54,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('model', type=Path, help='Read-only reference Excel_Test_Konveyor.alp')
     parser.add_argument('--installation', type=Path, default=INSTALLATION)
+    parser.add_argument('--mqtt', action='store_true', help='Prepare the MQTT-integrated desktop model and export')
     args = parser.parse_args()
     source = args.model.resolve(strict=True)
     project = Path(__file__).resolve().parent.parent
     local = (project / '.local').resolve()
     if not local.is_relative_to(project):
         raise ValueError('Yerel model klasörü proje kökünün içinde olmalı.')
-    output = local / 'anylogic'
+    shared = local / 'anylogic-mqtt'
+    output = shared / 'runtime' if args.mqtt else local / 'anylogic'
     if output.exists():
         raise FileExistsError(f'Yerel çıktı klasörü kullanımda: {output}')
     install = args.installation.resolve(strict=True)
@@ -52,15 +72,24 @@ def main():
     for path in (java, javac, cli, source.with_name(WORKBOOK)):
         if not path.is_file():
             raise FileNotFoundError(path)
-    model = isolate_paths(source.read_text(encoding='utf-8-sig'))
     model_dir = output / 'model'
+    if args.mqtt:
+        desktop = shared / 'desktop'
+        desktop.mkdir(parents=True, exist_ok=True)
+        for name, value in (('senaryo.txt', 'T07'), ('uretim_modu.txt', 'SUREKLI')):
+            path = desktop / name
+            if not path.exists():
+                path.write_text(value, encoding='utf-8')
+    model = isolate_paths(source.read_text(encoding='utf-8-sig'), (shared, model_dir) if args.mqtt else None)
     model_dir.mkdir(parents=True)
     copy = model_dir / 'Excel_Test_Konveyor.alp'
     copy.write_text(model, encoding='utf-8', newline='\n')
     shutil.copyfile(source.with_name(WORKBOOK), model_dir / WORKBOOK)
     export = output / 'export'
+    build_workspace = output / 'build-workspace'
+    build_workspace.mkdir()
     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-    subprocess.run([str(cli), '-e', '-o', str(export), f'{copy}:Simulation'], cwd=output, check=True,
+    subprocess.run([str(cli), '-data', str(build_workspace), '-e', '-o', str(export), f'{copy}:Simulation'], cwd=output, check=True,
                    timeout=300, creationflags=flags)
     runtime = export / EXPORT_NAME
     if not (runtime / 'model.jar').is_file():

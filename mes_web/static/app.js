@@ -1,6 +1,6 @@
 import { bindPlantPanels } from './plant-panels.mjs?v=1';
-import { bindAnyLogic } from './anylogic-panel.mjs?v=4';
-import { bindSimulationMes } from './simulation-mes.mjs?v=5';
+import { bindAnyLogic } from './anylogic-panel.mjs?v=5';
+import { bindSimulationMes } from './simulation-mes.mjs?v=8';
 import { esc } from './atolye-onizleme-core.js?v=5';
 
 const DEFAULT_MODULE_ID = "konveyor_main";
@@ -2216,6 +2216,7 @@ async function bootstrap() {
 }
 
 const plantPanels = bindPlantPanels({ moduleId: state.moduleId, getSnapshot: () => state.snapshot, getRuntime: () => state.runtime });
-const simulationMes = bindSimulationMes({ moduleId: state.moduleId, selectTab: setActiveTab });
+const simulationMes = bindSimulationMes({ moduleId: state.moduleId, selectTab: setActiveTab,
+  simulationSelection: () => anylogicPanel.selection() });
 const anylogicPanel = bindAnyLogic(els.anylogicTab, simulationMes.start);
 bootstrap();

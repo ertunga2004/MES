@@ -36,6 +36,9 @@
 .mes-sim-panel h2 { margin: 0; }
 .mes-sim-panel h3 { margin: 18px 0 8px; }
 .simulation-dashboard .panel-head h3 { margin: 0; }
+#twin-anylogic-control .panel-head h3 { margin: 0; }
+#twin-anylogic-control .anylogic-actions { margin-top: 12px; }
+#twin-anylogic-control [data-twin-sim-feedback]:empty { display: none; }
 .mes-sim-panel .plant-flow h3 { margin: 0; }
 .mes-sim-panel progress { width: 100%; accent-color: var(--yellow); }
 .mes-sim-panel [data-sim-run] { overflow-wrap: anywhere; }

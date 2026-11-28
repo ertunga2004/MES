@@ -15,6 +15,7 @@ from .prepare_anylogic import EXPORT_NAME, WORKBOOK
 
 
 SCENARIOS = tuple(f'T{index:02d}' for index in range(1, 15))
+FRAME_FIELDS = ('seq', 'simTime', 'layout', 'products', 'robot', 'inventory', 'conveyor', 'camera', 'counters')
 
 
 class SimulationError(Exception):
@@ -31,9 +32,19 @@ def read_json(path):
         return {}
 
 
+def frame_metrics(live):
+    fields = ('simTime', 'counters', 'inventory', 'conveyor', 'camera', 'robot', 'stations', 'stationOutputs')
+    metrics = {key: live[key] for key in fields if key in live}
+    if 'counters' in metrics and isinstance(live.get('products'), list):
+        metrics['counters'] = {**metrics['counters'], 'onConveyor': sum(
+            row.get('phase') in {'belt', 'robot'} for row in live['products'])}
+    metrics['events'] = live.get('events', [])[-12:]
+    return metrics
+
+
 class AnyLogicRunner:
-    def __init__(self, workspace, state_path):
-        self.local = (workspace / '.local' / 'anylogic').resolve()
+    def __init__(self, workspace, state_path, *, installation=None):
+        self.local = (installation or workspace / '.local' / 'anylogic').resolve()
         self.runs = state_path.resolve().parent / 'anylogic-runs'
         self.runtime = self.local / 'export' / EXPORT_NAME
         self.process = None
@@ -112,12 +123,12 @@ class AnyLogicRunner:
         self._last_frame = frame
         return frame
 
-    def frame(self):
+    def frame(self, *, include_events=False):
         with self.lock:
             if self.process is None or self.process.poll() is not None:
                 return {'run': None, 'state': 'ready', 'frame': None}
             live = self._read_frame()
-            keys = ('seq', 'simTime', 'layout', 'products', 'robot', 'inventory', 'conveyor', 'camera', 'counters')
+            keys = FRAME_FIELDS + ('events',) if include_events else FRAME_FIELDS
             return {'run': self.active, 'state': self.engine_state, 'speed': self.engine_speed,
                     'frame': {key: live[key] for key in keys if key in live} or None}
 
@@ -125,11 +136,7 @@ class AnyLogicRunner:
         active = self.active
         folder = self.runs / active['id']
         live = self._read_frame()
-        metrics = {key: live[key] for key in ('simTime', 'counters', 'inventory', 'conveyor', 'camera', 'robot', 'stations') if key in live}
-        if 'counters' in metrics and isinstance(live.get('products'), list):
-            metrics['counters'] = {**metrics['counters'], 'onConveyor': sum(
-                row.get('phase') in {'belt', 'robot'} for row in live['products'])}
-        metrics['events'] = live.get('events', [])[-12:]
+        metrics = frame_metrics(live)
         has_report = self._report_file(folder, active).is_file()
         if has_report:
             self.last_report = active['id']
@@ -173,6 +180,12 @@ class AnyLogicRunner:
             if action == 'reset':
                 self.close()
                 return self.status()
+            if action == 'stop':
+                if current['state'] not in {'running', 'paused'}:
+                    raise SimulationError('Durdurmak için çalışan veya duraklatılan bir koşu gerekli.', 409)
+                result = self._snapshot(current)
+                self.close()
+                return {**result, 'state': 'stopped'}
             if action == 'speed':
                 if current['state'] not in {'running', 'paused'}:
                     raise SimulationError('Hız, çalışan veya duraklatılan bir koşuda değiştirilebilir.', 409)

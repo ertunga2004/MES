@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/static/styles.css?v=at-zeze-tablet-3" />
     <link rel="stylesheet" href="/static/digital-twin.css?v=5" />
     <link rel="stylesheet" href="/static/plant-panels.css?v=1" />
-    <link rel="stylesheet" href="/static/anylogic-panel.css?v=5" />
+    <link rel="stylesheet" href="/static/anylogic-panel.css?v=6" />
   </head>
   <body>
     <div class="app-shell">
@@ -66,6 +66,7 @@
                 <button type="button" class="tab-button is-active" data-sim-action="start" disabled>Başlat</button>
                 <button type="button" class="tab-button" data-sim-action="pause" disabled>Duraklat</button>
                 <button type="button" class="tab-button" data-sim-action="resume" disabled>Devam et</button>
+                <button type="button" class="tab-button" data-sim-action="stop" disabled>Durdur</button>
                 <button type="button" class="tab-button" data-sim-action="reset" disabled>Yeni koşu</button>
               </div>
             </div>
@@ -424,6 +425,7 @@
             <h2 id="digital-twin-title">Dijital İkiz Simülasyonu</h2>
             <div class="digital-twin-heading-actions">
               <a class="tab-button" href="#digital-twin-kpi-title" data-twin-physical-analysis>Analize geç</a>
+              <a class="tab-button mes-sim-panel" href="#twin-anylogic-control">Simülasyon kontrolüne geç</a>
               <span class="runtime-badge digital-twin-badge" data-twin-source-badge data-twin-nonmodel>ÖRNEK VERİ</span>
               <span class="runtime-badge digital-twin-badge is-live mes-sim-panel">ANYLOGIC</span>
             </div>
@@ -506,6 +508,22 @@
             </section>
           </div>
 
+          <section id="twin-anylogic-control" class="panel mes-sim-panel" aria-labelledby="twin-anylogic-title">
+            <div class="panel-head">
+              <h3 id="twin-anylogic-title">AnyLogic simülasyon kontrolü</h3>
+              <span class="plant-led" data-twin-sim-state></span>
+            </div>
+            <dl class="digital-twin-metrics" data-twin-sim-connections></dl>
+            <div class="anylogic-actions">
+              <button type="button" class="tab-button is-active" data-twin-sim-action="start" disabled>Başlat</button>
+              <button type="button" class="tab-button" data-twin-sim-action="pause" disabled>Duraklat</button>
+              <button type="button" class="tab-button" data-twin-sim-action="resume" disabled>Devam et</button>
+              <button type="button" class="tab-button" data-twin-sim-action="stop" disabled>Durdur</button>
+              <button type="button" class="tab-button" data-twin-sim-action="reset" disabled>Sıfırla</button>
+            </div>
+            <p class="panel-note" data-twin-sim-feedback role="status"></p>
+          </section>
+
           <section class="panel" aria-labelledby="digital-twin-kpi-title" data-twin-physical-analysis>
             <div class="panel-head">
               <h3 id="digital-twin-kpi-title">Performans göstergeleri</h3>
@@ -557,6 +575,6 @@
       </main>
     </div>
 
-    <script type="module" src="/static/app.js?v=anylogic-8"></script>
+    <script type="module" src="/static/app.js?v=anylogic-11"></script>
   </body>
 </html>

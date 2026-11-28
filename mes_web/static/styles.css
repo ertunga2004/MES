@@ -317,6 +317,50 @@ body {
   color: var(--text-soft);
 }
 
+.giyotin-events-head {
+  margin-top: 18px;
+  margin-bottom: 8px;
+  color: var(--text-soft);
+  font-size: 0.9rem;
+}
+
+.giyotin-events {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.giyotin-event {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.giyotin-event > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.giyotin-event strong {
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.giyotin-event span,
+.giyotin-event p {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+}
+
+.giyotin-event p {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+}
+
 #oee-quality-override-list .status-row {
   align-items: center;
 }

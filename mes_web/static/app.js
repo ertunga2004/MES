@@ -127,6 +127,8 @@ const els = {
   connectionCards: document.getElementById("connection-cards"),
   systemGrid: document.getElementById("system-grid"),
   hardwareGrid: document.getElementById("hardware-grid"),
+  giyotinGrid: document.getElementById("giyotin-grid"),
+  giyotinEvents: document.getElementById("giyotin-events"),
   visionPanel: document.getElementById("vision-panel"),
   visionGrid: document.getElementById("vision-grid"),
   countCards: document.getElementById("count-cards"),
@@ -220,6 +222,15 @@ function formatTime(value) {
     timeOptions.fractionalSecondDigits = 3;
   }
   return `${dateText} ${date.toLocaleTimeString("tr-TR", timeOptions)}`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function formatTrendTime(value) {
@@ -966,6 +977,52 @@ function renderVision(snapshot) {
     .join("");
 }
 
+function renderGiyotin(snapshot) {
+  const giyotin = snapshot.giyotin || {};
+  const deviceState = String(giyotin.device_state || "offline").toLowerCase();
+  const stateLabels = {
+    offline: "ESP32 cevrimdisi",
+    online: "Bagli",
+    disabled: "Izin kapali",
+    waiting_for_nano: "Nano bekleniyor",
+    waiting_for_buttons: "Iki buton bekleniyor",
+    cycle_running: "Cevrim suruyor",
+    unknown: "Durum bekleniyor",
+  };
+  const permitText = giyotin.permit_active
+    ? (deviceState === "offline" ? "Acik; cihaz cevrimdisi" : "Acik")
+    : "Kapali";
+  const rows = [
+    ["Is emri", giyotin.job_id || "-"],
+    ["Giyotin durumu", stateLabels[deviceState] || formatToken(deviceState)],
+    ["MES izni", permitText],
+    ["Cevrim adedi", `${formatNumber(giyotin.completed_count || 0)} / ${formatNumber(giyotin.target_count || 0)}`],
+    ["Nano", giyotin.nano_ready ? (giyotin.nano_armed ? "Hazir ve izinli" : "Hazir; izin bekliyor") : "Baglanti bekleniyor"],
+    ["Hareket", giyotin.cycle_busy ? "Cevrim suruyor" : "Beklemede"],
+    ["MES komut gönderimi", giyotin.command_delivery === "sent" ? "Gönderildi" : (giyotin.command_delivery || "Beklemede")],
+    ["Son olay", giyotin.last_event || "-"],
+    ["Son cihaz mesaji", giyotin.last_seen_at ? formatTime(giyotin.last_seen_at) : "-"],
+  ];
+  els.giyotinGrid.innerHTML = rows.map(([label, value]) => `
+    <div class="status-row">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `).join("");
+
+  const events = Array.isArray(giyotin.recent_events) ? [...giyotin.recent_events].reverse().slice(0, 6) : [];
+  if (!events.length) {
+    els.giyotinEvents.innerHTML = '<p class="empty-state">Giyotin olayi bekleniyor.</p>';
+    return;
+  }
+  els.giyotinEvents.innerHTML = events.map((event) => `
+    <article class="giyotin-event">
+      <div><strong>${escapeHtml(formatToken(event.event))}</strong><span>${escapeHtml(formatTime(event.at))}</span></div>
+      <p>${escapeHtml(event.job_id || "Is emri yok")} | ${escapeHtml(event.completed_count ?? 0)} / ${escapeHtml(event.target_count ?? 0)}</p>
+    </article>
+  `).join("");
+}
+
 function renderCommands(snapshot) {
   const permissions = snapshot.command_permissions;
   const presetDisabled = !permissions.publish_enabled;
@@ -1623,6 +1680,7 @@ function render(snapshot) {
   ]);
 
   renderCounts(snapshot);
+  renderGiyotin(snapshot);
   renderVision(snapshot);
   renderCommands(snapshot);
   renderLogs(snapshot);

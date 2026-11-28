@@ -184,6 +184,12 @@ class KioskAppTests(unittest.TestCase):
         board = "/api/station-kiosks/kontrol"
         first = {
             "title": "Görsel Kontrol", "instructions": "Yüzeyi kontrol et.",
+            "template": "quality",
+            "layout": "double", "shift_position": "compact", "before": "Ölçüm aletini hazırla.",
+            "cards": [{"kind": "steps", "title": "Kalite adımları", "size": "full", "source": "fixed", "visible": True, "body": ""},
+                      {"kind": "order", "title": "Emir", "size": "medium", "source": "order", "visible": False, "body": ""},
+                      {"kind": "timer", "title": "Sayaç", "size": "small", "source": "fixed", "visible": True, "body": ""},
+                      {"kind": "result", "title": "Sonuç", "size": "medium", "source": "fixed", "visible": True, "body": ""}],
             "timer": True, "show_target": True, "result_options": ["Sağlam", "Yeniden işlem"],
             "steps": [{"label": "Yüzey kontrol edildi", "kind": "check", "required": True, "options": []}],
             "sections": [{"title": "Hatırlatma", "body": "Parti etiketini kontrol et."}],
@@ -200,21 +206,39 @@ class KioskAppTests(unittest.TestCase):
         self.assertEqual(client.post(f"{designer}/publish", auth=auth, json={"revision": revision}).json()["published"], 1)
         self.assertEqual(client.get("/istasyon/kontrol").status_code, 200)
         original = client.get(board).json()
+        self.assertEqual(original["design"]["template"], "quality")
+        self.assertEqual(original["design"]["cards"], first["cards"])
+        self.assertEqual(original["design"]["layout"], "double")
+        self.assertEqual(original["design"]["shift_position"], "compact")
+        self.assertEqual(original["design"]["before"], first["before"])
         self.assertEqual(original["order"]["quantity"], 10)
         start = {"run_id": "test-run-1", "operator": "Deneme Operatörü", "order_id": "IE-10", "order_key": original["order"]["key"], "version": 1}
         self.assertEqual(client.post(f"{board}/start", json=start).status_code, 200)
         self.assertEqual(client.post(f"{board}/start", json=start).status_code, 200)
-        second = {**first, "instructions": "Yeni talimat", "steps": [{"label": "Ölçü", "kind": "number", "required": True, "options": []}]}
+        update = {"run_id": "test-run-1", "values": [False], "revision": 0, "operation": "pause"}
+        paused = client.post(f"{board}/update", json=update)
+        self.assertEqual(paused.status_code, 200, paused.text)
+        self.assertTrue(paused.json()["active"]["paused_at"])
+        self.assertEqual(client.post(f"{board}/update", json=update).status_code, 409)
+        self.assertIsNone(client.post(f"{board}/update", json={**update, "revision": 1, "operation": "resume"}).json()["active"]["paused_at"])
+        second = {**first, "template": "packing", "instructions": "Yeni talimat", "cards": list(reversed(first["cards"])),
+                  "steps": [{"label": "Ölçü", "kind": "number", "required": True, "options": []}]}
         revised = client.put(designer, auth=auth, json={"revision": revision, "design": second}).json()["revision"]
         self.assertEqual(client.post(f"{designer}/publish", auth=auth, json={"revision": revision}).status_code, 409)
         self.assertEqual(client.post(f"{designer}/publish", auth=auth, json={"revision": revised}).json()["published"], 2)
         self.assertEqual(client.get(board).json()["design"]["instructions"], first["instructions"])
         self.assertEqual(client.get(board).json()["active"]["version"], 1)
-        finish = {"run_id": "test-run-1", "values": [False], "result": "Sağlam"}
+        self.assertEqual(client.get(board).json()["design"]["template"], "quality")
+        self.assertEqual(client.get(board).json()["design"]["cards"], first["cards"])
+        old_finish = {"run_id": "test-run-1", "values": [True], "result": "Sağlam"}
+        self.assertEqual(client.post(f"{board}/finish", json=old_finish).status_code, 409)
+        finish = {"run_id": "test-run-1", "values": [False], "result": "Sağlam", "revision": 2}
         self.assertEqual(client.post(f"{board}/finish", json=finish).status_code, 422)
         self.assertEqual(client.post(f"{board}/finish", json={**finish, "values": [True]}).status_code, 200)
         self.assertEqual(client.post(f"{board}/finish", json={**finish, "values": [True]}).status_code, 200)
         self.assertEqual(client.get(board).json()["version"], 2)
+        self.assertEqual(client.get(board).json()["design"]["template"], "packing")
+        self.assertEqual(client.get(board).json()["design"]["cards"], second["cards"])
         self.assertEqual(client.get("/api/kiosk-designs", auth=auth).json()[0]["last_completed"]["result"], "Sağlam")
         self.assertEqual(len(manager.read_state()["stationKiosks"]["kontrol"]["completed"]), 1)
         self.assertEqual(manager.read_state()["workOrders"]["ordersById"]["IE-10"]["completedQty"], 0)
@@ -225,6 +249,58 @@ class KioskAppTests(unittest.TestCase):
         auth = ("muhendis", "test-kiosk-only")
         self.assertEqual(client.get("/kiosk-tasarla", auth=auth).status_code, 403)
         self.assertEqual(client.get("/api/station-kiosks/kontrol").status_code, 403)
+
+    def test_waiting_kiosk_work_keeps_its_steps_and_publication_on_pickup(self) -> None:
+        client, _config, manager, _store, runtime = self._build_client(kiosk_password="test-kiosk-only")
+        manager.import_work_orders([{"orderId": "IE-10", "stockCode": "BOX", "quantity": 10}])
+        manager.start_work_order("IE-10")
+        auth = ("muhendis", "test-kiosk-only")
+        designer = "/api/kiosk-designs/kalite"
+        board = "/api/station-kiosks/kalite"
+        design = {"title": "Kalite", "waiting_areas": ["Kontrol rafı"],
+                  "steps": [{"kind": "number", "label": "Ölçüm"}, {"kind": "check", "label": "Kontrol", "interruptible": True}],
+                  "cards": [{"kind": "steps"}, {"kind": "wip", "source": "station"}]}
+        self.assertEqual(client.put(designer, auth=auth, json={"revision": 0, "design": design}).status_code, 200)
+        self.assertEqual(client.post(f"{designer}/publish", auth=auth, json={"revision": 1}).status_code, 200)
+        order = client.get(board).json()["order"]
+        start = {"run_id": "run-1", "operator": "Deneme", "order_id": order["id"], "order_key": order["key"], "version": 1}
+        self.assertEqual(client.post(f"{board}/start", json=start).status_code, 200)
+        park = {"run_id": "run-1", "revision": 0, "operation": "park", "values": [0, False],
+                "area": "Kontrol rafı", "step_index": 1, "item": "Parça 1", "note": "İkinci ölçüm bekleniyor"}
+        self.assertEqual(client.post(f"{board}/update", json={**park, "values": [None, False]}).status_code, 422)
+        parked = client.post(f"{board}/update", json=park)
+        self.assertEqual(parked.status_code, 200, parked.text)
+        self.assertIsNone(parked.json()["active"])
+        self.assertEqual(parked.json()["parked"][0]["item"], "Parça 1")
+        revised = client.put(designer, auth=auth, json={"revision": 1, "design": {**design, "title": "Yeni kalite"}})
+        self.assertEqual(client.post(f"{designer}/publish", auth=auth, json={"revision": revised.json()["revision"]}).status_code, 200)
+        picked = client.post(f"{board}/pickup", json={"run_id": "run-1", "operator": "İkinci Operatör"})
+        self.assertEqual(picked.status_code, 200, picked.text)
+        self.assertEqual(picked.json()["version"], 1)
+        self.assertEqual(picked.json()["active"]["values"], [0, False])
+        self.assertEqual(picked.json()["active"]["park_history"][0]["operator"], "Deneme")
+        self.assertEqual(picked.json()["parked"], [])
+        self.assertEqual(manager.read_state()["counts"]["total"], 0)
+        self.assertEqual(runtime.mqtt_client.published, [])
+
+    def test_kiosk_templates_are_validated_without_changing_manual_fields(self) -> None:
+        client, *_ = self._build_client(kiosk_password="test-kiosk-only")
+        auth = ("muhendis", "test-kiosk-only")
+        design = {"title": "Örnek", "instructions": "Yerel talimat", "timer": False,
+                  "steps": [{"label": "Kontrol", "kind": "check"}]}
+        for template in ("process", "quality", "packing", "material", "status", "plain"):
+            with self.subTest(template=template):
+                response = client.put(f"/api/kiosk-designs/{template}", auth=auth, json={
+                    "revision": 0, "design": {**design, "template": template},
+                })
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["draft"]["template"], template)
+                self.assertEqual(response.json()["draft"]["instructions"], design["instructions"])
+                self.assertFalse(response.json()["draft"]["timer"])
+        unsupported = client.put("/api/kiosk-designs/unsupported", auth=auth, json={
+            "revision": 0, "design": {**design, "template": "invented"},
+        })
+        self.assertEqual(unsupported.status_code, 422)
 
     def test_open_kiosk_work_survives_runtime_restart(self) -> None:
         client, config, manager, _store, _runtime = self._build_client(kiosk_password="test-kiosk-only")

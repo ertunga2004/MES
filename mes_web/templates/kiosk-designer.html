@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Kiosk Tasarla · MES</title>
   <link rel="stylesheet" href="/static/kiosk.css">
-  <link rel="stylesheet" href="/static/station-kiosk.css">
-  <script type="module" src="/static/kiosk-designer.js"></script>
+  <link rel="stylesheet" href="/static/station-kiosk.css?v=kiosk-cards-2">
+  <script type="module" src="/static/kiosk-designer.js?v=kiosk-cards-2"></script>
 </head>
-<body>
+<body class="configurable-kiosk">
   <main class="kiosk-shell">
     <header class="topbar">
       <div><p class="eyebrow">ATÖLYE MES</p><h1>Kiosk Tasarla</h1></div>
@@ -23,6 +23,11 @@
       <section class="card station-card station-stack" aria-labelledby="design-heading">
         <div><h2 id="design-heading">Yeni kiosk</h2><p class="muted" id="design-status"></p></div>
         <form id="design-form" class="station-stack">
+          <fieldset class="station-stack station-block">
+            <legend>Şablon seç</legend>
+            <div id="preset-list" class="designer-presets"></div>
+            <button class="station-link preset-clear" type="button" id="clear-preset">Sade düzen</button>
+          </fieldset>
           <div class="designer-fields">
             <label>Kiosk adı<input name="title" maxlength="60" required placeholder="Örn. Görsel Kontrol"></label>
             <label>Adres adı<input name="slug" pattern="[a-z][a-z0-9\-]{1,39}" maxlength="40" required placeholder="Örn. gorsel-kontrol"></label>
@@ -32,11 +37,33 @@
             <legend>Ekranda ne olsun?</legend>
             <label class="station-check"><input name="timer" type="checkbox"> İş süresi sayacı</label>
             <label class="station-check"><input name="show_target" type="checkbox"> İş emri hedefi</label>
+            <div id="fixed-target" class="designer-fields" hidden>
+              <label>Sabit hedef adet<input name="target_quantity" type="number" min="1" max="1000000000"></label>
+              <label>Birim<input name="target_unit" maxlength="25" placeholder="Örn. parça"></label>
+            </div>
             <label class="station-check"><input name="record_result" type="checkbox"> Sonuç kaydı</label>
             <label id="result-options" hidden>Sonuç seçenekleri, her satıra bir tane<textarea name="result_options" rows="3" placeholder="Uygun&#10;Yeniden işlem"></textarea></label>
           </fieldset>
+          <fieldset class="station-stack station-block" id="card-controls" hidden>
+            <legend>Yerleşim ve veri bağlantıları</legend>
+            <div class="designer-fields">
+              <label>MES istasyonu<select name="station"></select></label>
+              <label>Ekran yerleşimi<select name="layout"></select></label>
+              <label>Vardiya çubuğu<select name="shift_position"><option value="top">Üstte geniş</option><option value="compact">Sağ üstte kompakt</option></select></label>
+            </div>
+            <label>Kioskta seçilebilecek WIP alanları, her satıra bir alan<textarea name="waiting_areas" rows="2" maxlength="810" placeholder="Örn. Kontrol rafı"></textarea></label>
+            <h3>Kartlar</h3>
+            <div id="cards" class="station-stack"></div>
+            <div class="station-row" id="card-add-controls">
+              <label>Eklenecek kart<select id="new-card-kind"></select></label>
+              <button class="secondary-button" type="button" id="add-card">Kart ekle</button>
+            </div>
+          </fieldset>
+          <button class="secondary-button" id="configure-cards" type="button">Kart düzenini özelleştir</button>
+          <label>İşe başlamadan önce<textarea name="before" rows="2" maxlength="1500"></textarea></label>
           <div class="station-row"><h3>Akış adımları</h3><button class="secondary-button" type="button" id="add-step">Adım ekle</button></div>
           <div id="steps" class="station-stack"></div>
+          <label>İş bitiminde<textarea name="after" rows="2" maxlength="1500"></textarea></label>
           <div class="station-row"><h3>Ek bilgi</h3><button class="secondary-button" type="button" id="add-section">Bölüm ekle</button></div>
           <div id="sections" class="station-stack"></div>
           <div class="station-row">
@@ -51,6 +78,10 @@
         </div>
         <p id="feedback" class="station-feedback" role="status"></p>
       </section>
+      <aside class="card station-card station-stack designer-preview" aria-labelledby="preview-title">
+        <h2 id="preview-title">Tablet önizlemesi</h2>
+        <fieldset id="tablet-preview" class="station-stack preview-screen" disabled></fieldset>
+      </aside>
     </div>
   </main>
   <template id="step-template">
@@ -62,6 +93,7 @@
       </div>
       <label data-options hidden>Seçenekler, her satıra bir tane<textarea name="step_options" rows="2"></textarea></label>
       <label class="station-check"><input name="step_required" type="checkbox" checked> Zorunlu</label>
+      <label class="station-check"><input name="step_interruptible" type="checkbox"> Bu adımda iş WIP alanına alınabilir</label>
       <div class="station-row step-buttons">
         <button class="secondary-button" type="button" data-action="up">Yukarı</button>
         <button class="secondary-button" type="button" data-action="down">Aşağı</button>
@@ -75,6 +107,24 @@
       <label>Bölüm başlığı<input name="section_title" required maxlength="80"></label>
       <label>Bölüm içeriği<textarea name="section_body" required rows="3" maxlength="1500"></textarea></label>
       <button class="secondary-button" type="button">Bölümü sil</button>
+    </fieldset>
+  </template>
+  <template id="card-template">
+    <fieldset class="station-stack station-block card-edit-row">
+      <legend></legend>
+      <div class="designer-fields">
+        <label>Kart başlığı<input name="card_title" maxlength="80"></label>
+        <label>Kart boyutu<select name="card_size"></select></label>
+        <label>Veri kaynağı<select name="card_source"></select></label>
+      </div>
+      <label>Ek açıklama<textarea name="card_body" rows="2" maxlength="1500"></textarea></label>
+      <div class="station-row">
+        <label class="station-check"><input name="card_visible" type="checkbox"> Göster</label>
+        <span class="card-drag" draggable="true">Sürükle</span>
+        <button class="secondary-button" type="button" data-card-action="up">Yukarı</button>
+        <button class="secondary-button" type="button" data-card-action="down">Aşağı</button>
+        <button class="secondary-button" type="button" data-card-action="remove">Kartı kaldır</button>
+      </div>
     </fieldset>
   </template>
 </body>

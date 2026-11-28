@@ -89,14 +89,20 @@ Pilot için mevcut `orders` listesindeki ana emre `station_orders` eklenebilir. 
       "unit": "adet",
       "station_orders": [
         {"station_code": "giyotin", "station_order_id": "ATOLYE-001-KES", "target_qty": 2, "unit": "adet"},
-        {"station_code": "kaplama", "station_order_id": "ATOLYE-001-KAP", "target_qty": 1, "unit": "adet"}
+        {"station_code": "bantlama", "station_order_id": "ATOLYE-001-BNT", "target_qty": 1, "unit": "adet"},
+        {"station_code": "konveyor", "station_order_id": "ATOLYE-001-KNV", "target_qty": 1, "unit": "adet"},
+        {"station_code": "paketleme", "station_order_id": "ATOLYE-001-PKT", "target_qty": 1, "unit": "adet"}
       ]
     }
   ]
 }
 ```
 
-İstasyon emirlerini ana emir başlamadan önce aktarın. Aynı rota yeniden gönderilebilir. MES, eşleşen giyotin veya kaplama kaydını `1_Olay_Logu` sayfasında `event_uid`, `production_order_id`, `station_order_id`, `station_code`, `quantity` ve `unit` alanlarıyla gösterir. Önceki formatla alınan emirlerin istasyon emri alanı boş kalır.
+İstasyon emirlerini ana emir başlamadan önce aktarın. Aynı rota yeniden gönderilebilir. Giyotin ve Bantlama operatör tabletleri bu rotadaki iş emirlerini ve hedefleri gösterir. MES, doğrulanmış kesim ve tamamlanan bantlama kayıtlarını `1_Olay_Logu` sayfasında `event_uid`, `production_order_id`, `station_order_id`, `station_code`, `quantity` ve `unit` alanlarıyla gösterir. Önceki formatla alınan emirlerin istasyon emri alanı boş kalır.
+
+Dört istasyonlu rotada sağlam kutu Bantlama’dan Konveyör’ün teslim kuyruğuna geçer. Operatör kutuyu sensörün `ITEM_ID` ve `MEASURE_ID` çiftiyle eşleştirir. Aynı çifte ait `ROBOT|EVENT=RELEASED` ve uygun renk birlikte doğrulanınca Paketleme açılır. `1_Olay_Logu` sayfasında eşleşme, çıkış ve kapanış satırlarının `item_id` alanı MES kutu kodunu içerir. Bantlama satırının `notes` alanı kullanılan kesim olaylarının kimliklerini de taşır.
+
+Paketleme operatörü koli kapanışını onayladığında MES iş emrini kapatır ve `pending` klasörüne `FERP_PAKETLEME_<kimlik>.json` yazar. Paket `ferp_mes_export.v1` zarfını kullanır. `station_flow` içinde her kutu için `event_type_code: "packing_closed"` olan bir satır bulunur. Bu satır `event_uid`, `production_order_id`, `station_order_id`, `item_id`, `measure_id`, `operator`, `quantity` ve `unit` alanlarını içerir. ERP dosyasındaki `event_uid` Excel’deki kapanış olayının kimliğidir. Kapanış tekrar gönderildiğinde aynı olay kimliği ve dosya adı kullanılır. Dosya MES’in aktarım için hazırladığı örnek kapanış kaydıdır. ERP kabulü ayrı bir doğrulama gerektirir.
 
 ## Export
 

@@ -147,6 +147,7 @@ EVENT_TYPE_IDS = {
     "giyotin_cut_completed": 30,
     "manual_cut_recorded": 31,
     "coating_completed": 32,
+    "taping_completed": 33,
 }
 DECISION_SOURCE_IDS = {"CORE_STABLE": 1, "MEDIAN_STABLE": 2, "CORE_VOTE_MATCH": 3, "VISION": 4, "TABLET": 5, "SYSTEM": 6}
 MEGA_STATE_IDS = {"SEARCH": 1, "SEARCHING": 2, "MEASURING": 3, "WAIT_ARM": 4, "PAUSED": 5, "STOPPED": 6, "QUEUE": 7}
@@ -558,7 +559,8 @@ class WorkbookProjector:
         }
 
     def consume_station_production(
-        self, state: dict[str, Any], seen_event_uids: set[str], workbook_day: date | None
+        self, state: dict[str, Any], seen_event_uids: set[str], workbook_day: date | None,
+        cut_boxes: dict[str, str],
     ) -> list[dict[str, Any]]:
         workflow = state.get("cuttingWorkflow") or {}
         production = []
@@ -585,10 +587,18 @@ class WorkbookProjector:
                     "unit": record.get("unit") or "adet",
                 })
 
+        for run in (workflow.get("tabletRuns") or {}).values():
+            for box in run["boxes"]:
+                production.extend(box[key] for key in ("productionEvent", "matchEvent", "exitEvent", "packingEvent") if key in box)
+
         summaries = {
             "giyotin_cut_completed": "Giyotin çevrimi tamamlandı",
             "manual_cut_recorded": "Manuel kesim kaydedildi",
             "coating_completed": "Kaplama kaydedildi",
+            "taping_completed": "Bantlama tamamlandı",
+            "conveyor_matched": "Kutu hat ölçümüyle eşleştirildi",
+            "conveyor_exit_verified": "Konveyör çıkışı doğrulandı",
+            "packing_closed": "Paketleme operatör onayıyla kapandı",
         }
         rows = []
         for event in production:
@@ -605,10 +615,21 @@ class WorkbookProjector:
                 event_type_code=kind, event_summary_tr=summaries[kind],
             )
             row.update({key: value for key, value in event.items() if key != "recorded_at"})
+            if event_uid in cut_boxes:
+                row["item_id"] = cut_boxes[event_uid]
             row["station_id"] = ""  # The physical station code is independent of the legacy conveyor IDs.
             rows.append(row)
             seen_event_uids.add(event_uid)
         return rows
+
+    @staticmethod
+    def station_cut_boxes(state: dict[str, Any]) -> dict[str, str]:
+        items: dict[str, list[str]] = {}
+        for run in state["cuttingWorkflow"]["tabletRuns"].values():
+            for box in run["boxes"]:
+                for uid in box.get("cutEvents", {}):
+                    items.setdefault(uid, []).append(box["id"])
+        return {uid: ", ".join(boxes) for uid, boxes in items.items()}
 
     def consume_tablet_log(self, raw_line: str, received_at: str) -> dict[str, list[dict[str, Any]]]:
         rows = {RAW_LOG_SHEET_NAME: [self._raw_row(received_at=received_at, source_topic="sau/iot/mega/konveyor/tablet/log", source_code="tablet", raw_payload=raw_line, parsed_flag=0)]}
@@ -1308,12 +1329,14 @@ class ExcelRuntimeSink:
             counters[id_header] = next_id
         self.projector.prime(counters)
         event_sheet = workbook["1_Olay_Logu"]
-        event_uid_column = next(cell.column for cell in event_sheet[1] if cell.value == "event_uid")
-        seen_event_uids = {
-            row[0] for row in event_sheet.iter_rows(
+        event_columns = {cell.value: cell.column for cell in event_sheet[1]}
+        event_uid_column = event_columns["event_uid"]
+        event_rows = {
+            row[0]: index for index, row in enumerate(event_sheet.iter_rows(
                 min_row=2, min_col=event_uid_column, max_col=event_uid_column, values_only=True
-            ) if row[0]
+            ), start=2) if row[0]
         }
+        seen_event_uids = set(event_rows)
 
         dirty = True
         closing = False
@@ -1357,8 +1380,12 @@ class ExcelRuntimeSink:
                     self._sync_fault_sheet(workbook, item.payload)
                     self._sync_maintenance_sheet(workbook, item.payload)
                     dirty = True
+                    cut_boxes = self.projector.station_cut_boxes(item.payload)
+                    for uid, box_ids in cut_boxes.items():
+                        if uid in event_rows:
+                            event_sheet.cell(event_rows[uid], event_columns["item_id"]).value = _excel_cell_value(box_ids)
                     rows = {"1_Olay_Logu": self.projector.consume_station_production(
-                        item.payload, seen_event_uids, workbook_day
+                        item.payload, seen_event_uids, workbook_day, cut_boxes
                     )}
                 elif item.kind == "kiosk_event":
                     rows = self.projector.consume_kiosk_event(item.payload, item.received_at)
@@ -1372,6 +1399,8 @@ class ExcelRuntimeSink:
                         if target_row > 2:
                             self._copy_row_style(sheet, source_row=2, target_row=target_row, width=len(headers))
                         self._write_sheet_row(sheet, target_row, headers, row)
+                        if sheet is event_sheet and row.get("event_uid"):
+                            event_rows[_excel_cell_value(row["event_uid"])] = target_row
                         self._update_auto_filter(sheet, len(headers), target_row, get_column_letter)
                         dirty = True
             if dirty:

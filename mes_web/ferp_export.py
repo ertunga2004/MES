@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from tempfile import NamedTemporaryFile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -493,3 +494,44 @@ def write_ferp_export_package(package: dict[str, Any], pending_dir: str | Path) 
         suffix += 1
     candidate.write_text(json.dumps(package, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return candidate
+
+
+def build_packing_closure(order: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
+    first = events[0]
+    return {
+        "schema": EXPORT_SCHEMA,
+        "export_id": f'FERP_PAKETLEME_{first["event_uid"].split(":", 1)[1]}',
+        "created_at": first["recorded_at"],
+        "source": {"system": "MES", "module_id": "konveyor_main"},
+        "work_order": {
+            "ferp_object": _first_text(order, "ferpObject") or "mym4004",
+            "ferp_screen": _first_text(order, "ferpScreen", "erpType") or "Is Emirleri",
+            "ferp_labels": _work_order_label_payload(order),
+        },
+        "station_flow": [
+            {**event, "station_id": event["station_code"], "event_at": event["recorded_at"],
+             "input_stage": "SEMI_FINISHED", "output_stage": "FINISHED", "classification": "GOOD"}
+            for event in events
+        ],
+        "ferp_documents": [],
+        "quality_summary": {"GOOD": len(events), "REWORK": 0, "SCRAP": 0, "TOTAL": len(events)},
+        "warnings": [],
+    }
+
+
+def write_packing_closure(package: dict[str, Any], pending_dir: Path) -> Path:
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    path = pending_dir / f'{package["export_id"]}.json'
+    if path.is_file():
+        return path
+    with NamedTemporaryFile(mode="w", encoding="utf-8", dir=pending_dir, suffix=".tmp", delete=False) as handle:
+        temporary_path = Path(handle.name)
+        try:
+            json.dump(package, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.close()
+            temporary_path.replace(path)
+        finally:
+            handle.close()
+            temporary_path.unlink(missing_ok=True)
+    return path

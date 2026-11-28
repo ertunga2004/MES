@@ -2,6 +2,7 @@
 
 from contextlib import closing
 from copy import deepcopy
+from datetime import datetime, timezone
 import json
 import math
 import os
@@ -129,11 +130,24 @@ def cutting(state, action, fields):
     length = number(fields, 'length', 'uzunluk ölçümü')
     result = choice(fields, 'result', {'good', 'scrap'}, 'Ölçüm sonucunu')
     confirmed(fields, 'shield', 'Koruyucu kalkan kontrolü')
+    record = dict(color=color, count=count, lot=lot, length=length, result=result)
+    if state.get('erpOrder'):
+        order_id = text(fields, 'orderId', 'İş emrini', 60)
+        request_id = text(fields, 'requestId', 'Kesim kayıt kimliğini', 64)
+        record.update(orderId=order_id, requestId=request_id, source='manual')
+        previous = next((row for row in state['cutLog'] if row.get('requestId') == request_id), None)
+        if previous is not None:
+            require(all(previous.get(key) == value for key, value in record.items()),
+                    'Bu kayıt kimliği farklı bir kesim için kullanılmış.')
+            return 'Kesim kaydı daha önce alındı.'
+        require(state['orders'][0]['id'] == order_id, 'Aktif örnek iş emri değişti. Ekranı yenileyin.')
     if result == 'good':
         remaining = state['goals'][color] * 2 - state['cut'][color]
         require(count <= remaining, f'Bu renkte kesim hedefinden {remaining} bant kaldı.')
         state['cut'][color] += count
-    state['cutLog'].insert(0, {'color': color, 'count': count, 'lot': lot, 'length': length, 'result': result})
+    if state.get('erpOrder'):
+        record['recordedAt'] = datetime.now(timezone.utc).isoformat()
+    state['cutLog'].insert(0, record)
     return 'Kesim kontrolü kaydedildi.'
 
 
@@ -193,7 +207,8 @@ def taping(state, action, fields):
         length = None
         reason = text(fields, 'reason', 'Kalite gerekçesini')
     state['boxes'].append(dict(id=box['id'], color=box['color'], stage='handoff' if outcome == 'good' else 'rejected',
-                               outcome=outcome, length=length, reason=reason, completedAt=now if outcome != 'good' else None))
+                               outcome=outcome, length=length, reason=reason, completedAt=now if outcome != 'good' else None,
+                               taping={'at': now}))
     state['activeBox'] = None
     return f'{box["id"]} bantlama sonucu kaydedildi.'
 

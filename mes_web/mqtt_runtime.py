@@ -122,6 +122,8 @@ class MqttIngestClient:
             self.store.apply_status_line(module_id, payload, received_at=stamp)
             return
         if topic == topics["logs"]:
+            if getattr(message, "retain", False):
+                return
             self.store.apply_log_line(module_id, payload, topic=topic, received_at=stamp)
             if self.excel_sink is not None:
                 self.excel_sink.record_mega_log(payload, stamp)

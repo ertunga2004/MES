@@ -1,4 +1,4 @@
-import { esc, duration } from './atolye-onizleme-core.js';
+import { esc, duration } from './atolye-onizleme-core.js?v=6';
 import { SAMPLE_MONITOR_DATA } from './atolye-onizleme-data.js';
 import {
   COLORS, OUTCOMES, TAPING_STEPS, FAULT_STATUS, elapsedTaping, packedTotal, readyPairs, readyToPack,
@@ -44,7 +44,7 @@ function actionForm(action, fields, label, settings = {}) {
 }
 
 function boxOptions(boxes) {
-  return options(boxes.map(box => [box.id, `${box.id} · ${COLORS[box.color]}${box.measurement ? ` · ${box.measurement}` : ''}`]), 'Kutu seçin');
+  return options(boxes.map(box => [box.id, [box.id, box.orderId, COLORS[box.color], box.measurement].filter(Boolean).join(' · ')]), 'Kutu seçin');
 }
 
 function field(label, name, type = 'text', extra = '') {
@@ -57,6 +57,10 @@ function checkField(label, name) {
 
 function workRef(state) {
   const order = state.orders[0];
+  if (state.erpOrder) {
+    return `<div class="tablet-order"><span class="tablet-muted">ERP iş emri</span>
+      <strong>${esc(`Ana emir ${order.id} · İstasyon emri ${state.erpOrder.stationOrderId}`)}</strong></div>`;
+  }
   return `<div class="tablet-order"><span class="tablet-muted">Aktif örnek iş emri</span><strong>${esc(orderLabel(order))}</strong></div>`;
 }
 
@@ -69,7 +73,7 @@ function taping(state) {
     <div class="tablet-fields">
       <label>Bant rengi<select name="color" required>${options(colorEntries.filter(([color]) => readyPairs(state, color) > 0))}</select></label>
       <label>Kutu kodu<input name="box" maxlength="60" required></label>
-    </div>`, 'Kutuyu başlat', { primary: true, disabled: !ready.some(([, count]) => count > 0) }) : `
+    </div>`, 'Kutuyu başlat', { primary: true, disabled: state.erpOrder?.open === false || !ready.some(([, count]) => count > 0) }) : `
     <div class="tablet-row tablet-active-box"><div><strong>${esc(box.id)}</strong> ${colorMark(box.color)}</div>${pill(box.paused ? 'Duraklatıldı' : 'İşlemde', box.paused ? 'amber' : 'green')}</div>
     <fieldset class="tablet-checklist"${box.paused ? ' disabled' : ''}>
       <legend>İşlem adımları</legend>
@@ -99,16 +103,21 @@ function cutting(state) {
     const remaining = state.cut[color] - state.used[color];
     return `<tr><th scope="row">${colorMark(color)}</th><td>${state.cut[color]} / ${state.goals[color] * 2}</td><td>${readyPairs(state, color)}</td><td>${remaining % 2}</td></tr>`;
   }).join('');
-  const log = state.cutLog.slice(0, 12).map(row => `<div class="tablet-row"><div><strong>${esc(row.lot)}</strong>${colorMark(row.color)}</div><span>${row.count} bant${row.length ? ` · ${row.length} mm` : ''}</span>${pill(row.result === 'good' ? 'Uygun' : 'Red', row.result === 'good' ? 'green' : 'amber')}</div>`).join('');
+  const log = state.cutLog.slice(0, 12).map(row => {
+    const source = row.source === 'manual' ? 'Operatör girişi' : 'Örnek veya eski kayıt';
+    const time = row.recordedAt ? new Date(row.recordedAt).toLocaleString('tr-TR') : '';
+    const details = [source, row.orderId, time].filter(Boolean).join(' · ');
+    return `<div class="tablet-row"><div><strong>${esc(row.lot)}</strong>${colorMark(row.color)}<span>${esc(details)}</span></div><span>${row.count} bant${row.length ? ` · ${row.length} mm` : ''}</span>${pill(row.result === 'good' ? 'Uygun' : 'Fire', row.result === 'good' ? 'green' : 'amber')}</div>`;
+  }).join('');
   return `${workRef(state)}<div class="content-grid tablet-grid">
-    ${panel('Kesim kaydı', `<p class="tablet-muted">Her iki kesilmiş bant aynı renkte bir kutuya yeter.</p>${actionForm('cut', `<div class="tablet-fields">
-      <label>Bant rengi<select name="color" required>${options(colorEntries)}</select></label>
+    ${panel('Elle kesim kaydı', `<p class="tablet-muted">Bir kutu için aynı renkten iki uygun bant gerekir.</p>${actionForm('cut', `<div class="tablet-fields">
+      <label>Bant rengi<select name="color" required>${options(colorEntries.filter(([color]) => !state.erpOrder || color === state.erpOrder.color))}</select></label>
       <label>Kesilen bant adedi<input name="count" type="number" inputmode="numeric" min="1" max="10000" required></label>
       <label>Kesim partisi<input name="lot" maxlength="60" required></label>
       ${field('Ölçülen uzunluk (mm)', 'length', 'number', 'min="0.01" step="any"')}
-      <label>Kalite sonucu<select name="result" required>${options(goodOrReject)}</select></label>
-      </div>${checkField('Koruyucu kalkan kontrol edildi', 'shield')}`, 'Kesimi kaydet', { primary: true })}`)}
-    ${panel('Kesim ve bantlama durumu', `<div class="tablet-table-wrap"><table class="tablet-table"><thead><tr><th scope="col">Renk</th><th scope="col">Kesilen / Hedef</th><th scope="col">Hazır kutu</th><th scope="col">Tek bant</th></tr></thead><tbody>${rows}</tbody></table></div>`)}
+      <label>Kalite sonucu<select name="result" required>${options([['good', 'Uygun'], ['scrap', 'Fire']])}</select></label>
+      </div>${checkField('Koruyucu kalkan kontrol edildi', 'shield')}`, 'Kesimi kaydet', { primary: true, disabled: state.erpOrder?.open === false })}`)}
+    ${panel('Kesim ve bantlama durumu', `<div class="tablet-table-wrap"><table class="tablet-table"><thead><tr><th scope="col">Renk</th><th scope="col">Uygun bant / Hedef</th><th scope="col">Bantla hazırlanabilecek kutu</th><th scope="col">Artan bant</th></tr></thead><tbody>${rows}</tbody></table></div>`)}
     ${panel('Son kesim kayıtları', `<div class="tablet-list">${log}</div>`, true)}
   </div>`;
 }
@@ -203,17 +212,30 @@ function coating(state) {
   </div>`;
 }
 
+function measurementOptions(measurements) {
+  return options(measurements.map(row => [JSON.stringify([row.item_id, row.measure_id]),
+    `${row.measure_id} · Parça ${row.item_id} · ${COLORS[row.color]}`]), 'Ölçüm seçin');
+}
+
 function conveyor(state) {
   const handoff = state.boxes.filter(box => box.stage === 'handoff');
   const transit = state.boxes.filter(box => box.stage === 'transit');
   const exits = state.boxes.filter(box => ['exited', 'packed'].includes(box.stage));
+  const routed = Boolean(state.erpOrder);
+  const measurements = state.lineMeasurements || [];
+  const measurementField = routed ? `<label>Hat ölçümü<select name="lineSelection" required>${measurementOptions(measurements)}</select></label>`
+    : '<label>Hat ölçüm kimliği<input name="measurement" maxlength="60" required></label>';
+  const waiting = routed ? [...handoff, ...transit].map(box => `<div class="tablet-row"><div><strong>${esc(box.id)}</strong>
+    <span class="tablet-muted">${esc(box.orderId || state.orders[0].id)}</span></div>${colorMark(box.color)}
+    ${pill(box.stage === 'handoff' ? 'Konveyöre teslim bekliyor' : 'Robot bırakma kaydı bekleniyor', 'amber')}</div>`).join('') : '';
   const log = exits.map(box => `<div class="tablet-row"><div><strong>${esc(box.id)}</strong>${colorMark(box.color)}</div><span>${esc(box.measurement)}</span>${pill('Çıkış doğrulandı', 'green')}</div>`).join('');
   return `${workRef(state)}<div class="content-grid tablet-grid">
-    ${panel('Hat kuyruğu', stats([['Teslim bekliyor', handoff.length], ['Hat üzerinde', transit.length], ['Doğrulanan çıkış', exits.length]]), true)}
+    ${panel('Hat kuyruğu', `${stats([['Teslim bekliyor', handoff.length], ['Hat üzerinde', transit.length], ['Doğrulanan çıkış', exits.length]])}${waiting ? `<div class="tablet-list">${waiting}</div>` : ''}`, true)}
     ${panel('Kutu ve ölçüm eşleştirme', handoff.length ? actionForm('match', `<div class="tablet-fields">
       <label>Teslim edilen kutu<select name="box" required>${boxOptions(handoff)}</select></label>
-      <label>Hat ölçüm kimliği<input name="measurement" maxlength="60" required></label></div>`, 'Hat girişini eşleştir', { primary: true }) : blank('Eşleşecek kutu bekleniyor.'))}
-    ${panel('Hat çıkışını doğrula', transit.length ? actionForm('exit', `<label>Hat üzerindeki kutu<select name="box" required>${boxOptions(transit)}</select></label>`, 'Çıkışı doğrula', { primary: true }) : blank('Hat üzerinde kutu yok.'))}
+      ${measurementField}</div>${routed ? `<p class="tablet-muted" data-waiting-measurement${measurements.length ? ' hidden' : ''}>Sensör ölçümü bekleniyor.</p>` : ''}`, 'Hat girişini eşleştir',
+      { primary: true, disabled: routed && !measurements.length }) : blank('Eşleşecek kutu bekleniyor.'))}
+    ${routed ? '' : panel('Hat çıkışını doğrula', transit.length ? actionForm('exit', `<label>Hat üzerindeki kutu<select name="box" required>${boxOptions(transit)}</select></label>`, 'Çıkışı doğrula', { primary: true }) : blank('Hat üzerinde kutu yok.'))}
     ${panel('Hız ve sensör kontrolü', `${state.conveyorCheck ? stats([['Son gözlenen hız', state.conveyorCheck.speed], ['Sensör', 'Kontrol edildi'], ['Acil durdurma', 'Kontrol edildi']]) : ''}${actionForm('check',
       `${field('Gözlenen hız', 'speed', 'number', 'min="0" step="any"')}${checkField('Sensör temizliği kontrol edildi', 'sensor')}${checkField('Acil durdurma kontrolü tamamlandı', 'stop')}`, 'Kontrolü kaydet')}`)}
     ${panel('Son doğrulamalar', log ? `<div class="tablet-list">${log}</div>` : blank('Doğrulanan çıkış bekleniyor.'), true)}
@@ -226,9 +248,10 @@ function packing(state) {
   const packed = packedTotal(state);
   const stage = state.carton.stage;
   const stageLabel = { open: 'Açık', parked: 'Ayrıldı', sealed: 'Kapatıldı' }[stage];
+  const closingFields = state.erpOrder && packed === order.qty ? checkField('Koli kapanışını onaylıyorum', 'confirmed') : '';
   const cartonRows = colorEntries.map(([color, label]) => [label, `${state.packed[color]} / ${state.goals[color]}`]);
   const cartonActions = stage === 'parked' ? `<p class="tablet-muted">${esc(state.carton.reason)}</p>${actionForm('resume', '', 'Paketlemeye devam et', { primary: true })}` :
-    stage === 'sealed' ? blank('Müşteri kolisi tamamlandı.') : `<div class="tablet-actions">${actionForm('seal', '', 'Koliyi tamamla', { primary: true, disabled: packed !== order.qty })}</div>
+    stage === 'sealed' ? blank(state.erpOrder ? 'Koli kapatıldı. ERP aktarımı bekleniyor.' : 'Müşteri kolisi tamamlandı.') : `<div class="tablet-actions">${actionForm('seal', closingFields, 'Koliyi tamamla', { primary: true, disabled: packed !== order.qty })}</div>
       ${packed < order.qty ? actionForm('park', '<label>Eksik koli nedeni<input name="reason" maxlength="240" required></label>', 'Eksik koliyi ayır') : ''}`;
   return `${workRef(state)}<div class="content-grid tablet-grid">
     ${panel('Müşteri kolisi', `<div class="tablet-row"><div><strong>${esc(order.customer)}</strong><span class="tablet-muted">${packed} / ${order.qty} kutu</span></div>${pill(stageLabel, stage === 'sealed' ? 'green' : 'amber')}</div>
@@ -408,6 +431,7 @@ function mountWorkspace(root, readOnly, lockedStation) {
   let pending = 0;
   let reading = false;
   let dirty = false;
+  let pendingCut;
   let queue = Promise.resolve();
   const path = readOnly ? '/api/workspace/monitoring' : `/api/workspace/tablet/${lockedStation}`;
 
@@ -426,7 +450,7 @@ function mountWorkspace(root, readOnly, lockedStation) {
     const board = stationState();
     if (!board) return;
     const sampleNote = root.querySelector('.station-sample-note');
-    sampleNote.hidden = Boolean(board.protocol4) && !readOnly;
+    sampleNote.hidden = Boolean(board.protocol4 || board.erpOrder) && !readOnly;
     outlet.innerHTML = renderTabletStation(current, { readOnly, state: board });
     if (readOnly) {
       root.querySelector('#monitor-summary').innerHTML = monitoringSummary(data);
@@ -441,16 +465,30 @@ function mountWorkspace(root, readOnly, lockedStation) {
   }
 
   async function refresh() {
-    if (reading || pending || (dirty && !stationState()?.protocol4)) return;
+    const currentBoard = stationState();
+    if (reading || pending || (dirty && !currentBoard?.protocol4 && !currentBoard?.lineMeasurements)) return;
     reading = true;
     try {
       const next = await requestData(path);
       const nextBoard = readOnly ? next.stations[current] : next;
       const protocol = nextBoard?.protocol4;
       const deviceChanged = protocol && JSON.stringify(protocol) !== JSON.stringify(stationState()?.protocol4);
-      if (!pending && !dirty && (!data || next.revision > data.revision)) {
+      const orderChanged = JSON.stringify(nextBoard?.erpOrder) !== JSON.stringify(stationState()?.erpOrder);
+      const measurementsChanged = JSON.stringify(nextBoard?.lineMeasurements) !== JSON.stringify(stationState()?.lineMeasurements);
+      if (!pending && !dirty && (!data || next.revision > data.revision || orderChanged || measurementsChanged)) {
         data = next;
         paint();
+      } else if (!pending && measurementsChanged && !orderChanged && nextBoard?.lineMeasurements) {
+        const form = outlet.querySelector('[data-task="match"]');
+        const select = form?.elements.lineSelection;
+        if (select) {
+          const previous = select.value;
+          select.innerHTML = measurementOptions(nextBoard.lineMeasurements);
+          if ([...select.options].some(option => option.value === previous)) select.value = previous;
+          form.querySelector('button').disabled = nextBoard.lineMeasurements.length === 0;
+          form.querySelector('[data-waiting-measurement]').hidden = nextBoard.lineMeasurements.length > 0;
+          data.lineMeasurements = nextBoard.lineMeasurements;
+        }
       } else if (!pending && deviceChanged) {
         const status = outlet.querySelector('[data-giyotin-status]');
         const panel = outlet.querySelector('[data-giyotin-panel]');
@@ -494,12 +532,30 @@ function mountWorkspace(root, readOnly, lockedStation) {
 
   function submit(action, fields, form) {
     const button = form?.querySelector('button');
-    if (button?.disabled) return;
+    if (button?.disabled || (pending && action === 'cut')) return;
+    if (stationState()?.erpOrder && ['cut', 'start', 'step', 'pause', 'resume', 'finish', 'match', 'pack', 'park', 'seal'].includes(action)) {
+      fields.orderKey = stationState().erpOrder.key;
+    }
+    if (action === 'match' && fields.lineSelection) {
+      [fields.lineItemId, fields.measurement] = JSON.parse(fields.lineSelection);
+      delete fields.lineSelection;
+    }
+    if (action === 'cut') {
+      fields.orderId = stationState().orders[0].id;
+      const payload = JSON.stringify(fields);
+      if (pendingCut?.payload !== payload) {
+        const random = crypto.getRandomValues(new Uint8Array(16));
+        const requestId = Array.from(random, byte => byte.toString(16).padStart(2, '0')).join('');
+        pendingCut = { payload, requestId };
+      }
+      fields.requestId = pendingCut.requestId;
+    }
     if (button) button.disabled = true;
     pending += 1;
     queue = queue.then(async () => {
       try {
         const next = await requestData(`${path}/actions`, { action, fields });
+        if (action === 'cut') pendingCut = undefined;
         data = next.board;
         if (action === 'step') updateTapingControls();
         else {

@@ -10,6 +10,8 @@ from .giyotin_runtime import GiyotinError, GiyotinRuntime
 from .kiosk_designer import Section, Step, _clean_design, Design
 from .station_access import DESIGNERS, STAFF, STATIONS, STATION_PORTS, WorkspaceAccess, WorkspaceBoundary, listener_station, workspace_url
 from .station_workflow import StationWorkflow, require
+from .tablet_production import TABLET_ACTIONS, board_for_order
+from .store import utc_now_text
 
 
 HEADERS = {'Cache-Control': 'no-store', 'Content-Security-Policy': "frame-ancestors 'none'"}
@@ -99,12 +101,13 @@ def json_write(request: Request):
 
 
 class StationWorkspace:
-    def __init__(self, app, static_dir, config, oee_manager, publish_giyotin, on_giyotin_production):
+    def __init__(self, app, static_dir, config, oee_manager, publish_giyotin, on_production, on_packing_closure):
         self.static_dir = static_dir
         self.access = WorkspaceAccess(config.kiosk_design_password)
         self.workflow = StationWorkflow()
+        self.oee_manager = oee_manager
         self.giyotin = (
-            GiyotinRuntime(config, oee_manager, self.giyotin_shift, publish_giyotin, on_production=on_giyotin_production)
+            GiyotinRuntime(config, oee_manager, self.giyotin_shift, publish_giyotin, on_production=on_production)
             if config.giyotin_protocol4_enabled else None
         )
         app.add_middleware(WorkspaceBoundary, access=self.access)
@@ -166,7 +169,23 @@ class StationWorkspace:
             if station == 'giyotin' and self.giyotin is not None:
                 message, state = self.giyotin_action(payload, identity)
             else:
-                message, state = self.workflow.action(station, payload.action, payload.fields)
+                message = None
+                if station in TABLET_ACTIONS:
+                    state = self.workflow.read()
+                    if station == 'bantlama' and payload.action == 'shift-end':
+                        require(not self.board(state, station)['activeBox'], 'Vardiya kapanmadan önce açık kutuyu tamamlayın.')
+                    if payload.action in TABLET_ACTIONS[station]:
+                        try:
+                            message = self.oee_manager.edit_tablet_production(
+                                station, payload.action, payload.fields, state['shifts'].get(station))
+                        except OSError as error:
+                            raise HTTPException(500, 'ERP istasyon kaydı yazılamadı.') from error
+                        if message is not None and payload.action in {'cut', 'finish', 'match', 'seal'}:
+                            on_production(utc_now_text())
+                            if payload.action == 'seal':
+                                on_packing_closure(payload.fields['orderKey'])
+                if message is None:
+                    message, state = self.workflow.action(station, payload.action, payload.fields)
             return JSONResponse({'message': message, 'board': self.board(state, station)}, headers=HEADERS)
 
         @router.get('/api/workspace/monitoring')
@@ -225,6 +244,8 @@ class StationWorkspace:
 
     def board(self, state, station):
         board = self.workflow.station_board(state, station)
+        if station in TABLET_ACTIONS:
+            board.update(board_for_order(self.oee_manager.read_state(), station))
         if station == 'giyotin' and self.giyotin is not None:
             board['protocol4'] = self.giyotin.board(board['shift'])
         return board

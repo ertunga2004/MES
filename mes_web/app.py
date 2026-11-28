@@ -13,6 +13,7 @@ from pydantic import BaseModel, StrictInt, StrictStr
 from .command_policy import is_local_only_command
 from .config import AppConfig
 from .conveyor_handoff import handoff_view
+from .ferp_export import write_packing_closure
 from .ferp_xls_export import write_seeded_ferp_examples, write_work_order_xls_export
 from .kiosk_designer import create_kiosk_router
 from .manual_coating import manual_coating_progress
@@ -726,8 +727,18 @@ def create_app() -> FastAPI:
     def record_physical_station_state(received_at: str) -> None:
         runtime_service.excel_sink.record_work_order_state(oee_state_manager.read_state(), received_at)
 
+    def record_packing_closure(order_key: str) -> None:
+        state = oee_state_manager.read_state()
+        closure = state["cuttingWorkflow"]["tabletRuns"][order_key]["erpClosure"]
+        store.refresh_oee_runtime_state(config.module_id, force=True)
+        try:
+            write_packing_closure(closure, config.ferp_export_pending_dir)
+        except OSError as exc:
+            raise HTTPException(503, "Koli MES’te kapandı. ERP dosyasını yazmak için kapanışı yeniden gönderin.") from exc
+
     publish_giyotin = runtime_service.mqtt_client.publish_giyotin if config.giyotin_protocol4_enabled else None
-    workspace = StationWorkspace(app, static_dir, config, oee_state_manager, publish_giyotin, record_physical_station_state)
+    workspace = StationWorkspace(app, static_dir, config, oee_state_manager, publish_giyotin,
+                                 record_physical_station_state, record_packing_closure)
 
     def sync_work_order_runtime(state: dict[str, Any] | None = None) -> None:
         if workspace.giyotin is not None:

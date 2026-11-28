@@ -13,6 +13,7 @@ from typing import Any
 
 from .cutting_workflow import TAPES_PER_BOX, apply_cutting_action, cutting_batch, empty_cutting_workflow
 from .conveyor_handoff import handoff_view, observe_handoff_completion, observe_handoff_entry, resolve_handoff, start_handoff
+from .ferp_export import build_packing_closure
 from .ferp_labels import FerpLabelRegistryError, validate_label_payload
 from .manual_coating import manual_coating_order_key, manual_coating_progress
 from .parsers import (
@@ -24,6 +25,8 @@ from .parsers import (
     parse_vision_status,
     parse_vision_tracks,
 )
+from .station_workflow import require
+from .tablet_production import has_packing_route, observe_tablet_exit, record_tablet_action
 
 
 SHIFT_PRESETS: dict[str, dict[str, str]] = {
@@ -1114,7 +1117,8 @@ def _import_station_orders(rows: Any, order: dict[str, Any]) -> dict[str, dict[s
         raise ValueError("STATION_ORDERS_INVALID")
     result: dict[str, dict[str, Any]] = {}
     seen_ids: set[str] = set()
-    expected = {"giyotin": order["quantity"] * TAPES_PER_BOX, "kaplama": order["quantity"]}
+    expected = dict.fromkeys(("kaplama", "bantlama", "konveyor", "paketleme"), order["quantity"])
+    expected["giyotin"] = order["quantity"] * TAPES_PER_BOX
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("STATION_ORDERS_INVALID")
@@ -2083,6 +2087,8 @@ def _find_work_order_requirement_by_match(order: dict[str, Any] | None, match_ke
 
 
 def _consume_inventory_for_order(state: dict[str, Any], order: dict[str, Any], *, now: datetime, reason: str = "inventory") -> int:
+    if has_packing_route(order):
+        return 0
     inventory = _work_order_inventory(state)
     items = state.get("itemsById") if isinstance(state.get("itemsById"), dict) else {}
     _sync_work_order_row(order)
@@ -2960,13 +2966,12 @@ def _complete_runtime_item(
     _append_recent_id(state, resolved_key)
     _recompute_item_counts(state)
     _set_summary(state, f"#{item.get('item_id') or resolved_key} tamamlandi ve renk {normalized_color} olarak kilitlendi.", now=now)
-    _route_completed_item_to_work_orders(
-        state,
-        resolved_key,
-        item,
-        received_at=received_at,
-        now=now,
-    )
+    work_orders = state["workOrders"]
+    if item.get("tabletMeasurement") or has_packing_route(work_orders["ordersById"].get(work_orders["activeOrderId"])):
+        item["inventoryAction"] = "awaiting_tablet_packaging"
+        item["inventory_backfill_disabled"] = True
+    else:
+        _route_completed_item_to_work_orders(state, resolved_key, item, received_at=received_at, now=now)
     observe_handoff_completion(state, item)
     return True
 
@@ -3098,6 +3103,31 @@ class OeeRuntimeStateManager:
         return result
 
     @_state_locked
+    def edit_tablet_production(self, station: str, action: str, fields: dict[str, Any], shift: Any) -> Any:
+        state = self.read_state()
+        message, changed = record_tablet_action(state, station, action, fields, shift, self._finalize_tablet_order)
+        if changed:
+            self.write_state(state)
+        return message
+
+    def _finalize_tablet_order(self, state, order, run, boxes, stamp):
+        now = datetime.fromisoformat(stamp)
+        items = state["itemsById"]
+        for box in boxes:
+            match = box["lineMatch"]
+            matches = [(key, item) for key, item in items.items() if (measured := item.get("tabletMeasurement"))
+                       and all(measured[k] == match[k] for k in ("item_id", "measure_id", "recorded_at", "color"))
+                       and measured.get("released_at") == box["exitEvent"]["recorded_at"]]
+            require(len(matches) == 1, "Kutunun fiziksel çıkış kaydı bulunamadı.")
+            item_key, item = matches[0]
+            require(item.get("classification") == "GOOD" and item.get("final_color") == box["color"],
+                    "Kutunun son kalite ve renk kaydı paketlemeye uygun değil.")
+            _route_completed_item_to_work_orders(state, item_key, item, received_at=stamp, now=now)
+        require(order["status"] == "pending_approval", "Paket kapanışı iş emrinin hedefini karşılamıyor.")
+        self._accept_work_order(state, now)
+        run["erpClosure"] = build_packing_closure(order, [box["packingEvent"] for box in boxes])
+
+    @_state_locked
     def start_conveyor_handoff(self, *, request_id: str, order_id: str, order_key: str, operator: str) -> dict[str, Any]:
         state = self.read_state()
         progress = manual_coating_progress(state)
@@ -3133,6 +3163,8 @@ class OeeRuntimeStateManager:
 
         if not progress or (order_id, order_key) != (progress["order_id"], progress["order_key"]):
             raise ValueError("COATING_ORDER_CHANGED")
+        if "bantlama" in state["workOrders"]["ordersById"][order_id].get("stationOrders", {}):
+            raise ValueError("BANTLAMA_TABLET_REQUIRED")
         if not progress["can_record"] or not 0 < quantity <= progress["remaining_qty"]:
             raise ValueError("COATING_QUANTITY_UNAVAILABLE")
 
@@ -3152,6 +3184,9 @@ class OeeRuntimeStateManager:
         state = self.read_state()
         if request_id in state["manualCoatingRecords"]:
             raise ValueError("CUTTING_REQUEST_CONFLICT")
+        order = state["workOrders"]["ordersById"].get(action["order_id"], {})
+        if "bantlama" in order.get("stationOrders", {}):
+            raise ValueError("GIYOTIN_TABLET_REQUIRED")
         progress = manual_coating_progress(state, cutting_enabled=True)
         duplicate = apply_cutting_action(state, progress, request_id, action)
         if not duplicate:
@@ -3897,7 +3932,7 @@ class OeeRuntimeStateManager:
                     raise ValueError("STATION_ORDER_ROUTE_CONFLICT")
                 station_orders = imported_station_orders
             if station_orders:
-                for code, multiplier in (("giyotin", TAPES_PER_BOX), ("kaplama", 1)):
+                for code, multiplier in (("giyotin", TAPES_PER_BOX), ("kaplama", 1), ("bantlama", 1), ("konveyor", 1), ("paketleme", 1)):
                     if code in station_orders and station_orders[code]["target_qty"] != merged["quantity"] * multiplier:
                         raise ValueError("STATION_ORDER_TARGET_MISMATCH")
                 merged["stationOrders"] = station_orders
@@ -4151,8 +4186,13 @@ class OeeRuntimeStateManager:
         stamp = now or datetime.now().astimezone()
         if stamp.tzinfo is None:
             stamp = stamp.astimezone()
-        accepted_text = _pseudo_iso_text(stamp)
         state = self.read_state()
+        result = self._accept_work_order(state, stamp)
+        self.write_state(state)
+        return result
+
+    def _accept_work_order(self, state: dict[str, Any], stamp: datetime) -> dict[str, Any]:
+        accepted_text = _pseudo_iso_text(stamp)
         work_orders = _work_orders_state(state)
         orders = _work_order_orders(state)
         active_order_id = str(work_orders.get("activeOrderId") or "").strip()
@@ -4188,7 +4228,6 @@ class OeeRuntimeStateManager:
             f"{active_order_id} operator onayi ile kapatildi.",
             now=stamp,
         )
-        self.write_state(state)
         return {
             "state": state,
             "summary": state["lastEventSummary"],
@@ -4509,6 +4548,21 @@ class OeeRuntimeStateManager:
         items = state["itemsById"] if isinstance(state.get("itemsById"), dict) else {}
         color = str(parsed.get("color") or "unknown")
         head_key = _head_item_key(state)
+        event_type = parsed["event_type"]
+        work_orders = state["workOrders"]
+        active_order = work_orders["ordersById"].get(work_orders["activeOrderId"])
+        packing_route = has_packing_route(active_order)
+        previous = items.get(item_key) or {}
+        measurement = previous.get("tabletMeasurement")
+        exact_measurement = bool(item_id and measure_id and measurement and
+                                 (item_id, measure_id) == (measurement["item_id"], measurement["measure_id"]))
+
+        if exact_measurement and (event_type == "measurement_decision" or
+                                  (event_type == "queue_enq" and previous.get("queued_at")) or
+                                  (event_type == "pick_released" and measurement.get("released_at"))):
+            return False
+        if packing_route and event_type in {"pick_released", "pickplace_done"} and not exact_measurement:
+            return False
 
         if parsed["event_type"] == "measurement_decision" and item_key:
             item = _prepare_item_for_new_cycle(state, items, item_key, received_at=received_at)
@@ -4523,12 +4577,17 @@ class OeeRuntimeStateManager:
                     "review_required": bool(parsed.get("review_required")),
                 }
             )
+            if packing_route and item_id and measure_id and color in {"red", "yellow", "blue"}:
+                item["tabletMeasurement"] = {"item_id": item_id, "measure_id": measure_id, "color": color,
+                                             "order_key": manual_coating_order_key(active_order),
+                                             "recorded_at": received_at, "at_ms": int(now.timestamp() * 1000)}
             items[item_key] = item
             changed = True
 
         elif parsed["event_type"] == "queue_enq" and item_key:
-            previous = items.get(item_key) or {}
             known_measure = previous.get("measure_id") or ""
+            if packing_route and measurement and (not exact_measurement or color != measurement["color"]):
+                return False
             duplicate_entry = bool(previous.get("queued_at") and (not measure_id or known_measure == measure_id))
             item = _prepare_item_for_new_cycle(state, items, item_key, received_at=received_at)
             item.update(
@@ -4651,6 +4710,11 @@ class OeeRuntimeStateManager:
                 now=now,
             ):
                 changed = True
+            if (exact_measurement and int(now.timestamp() * 1000) >= measurement["at_ms"]
+                and item.get("final_color") == measurement["color"] and item.get("classification") == "GOOD"):
+                measurement["released_at"] = received_at
+                if packing_route and measurement["order_key"] == manual_coating_order_key(active_order):
+                    observe_tablet_exit(state, active_order, measurement)
 
         elif parsed["event_type"] == "pick_return_started":
             resolved_key = item_key or head_key

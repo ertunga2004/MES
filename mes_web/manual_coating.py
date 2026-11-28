@@ -8,9 +8,11 @@ def manual_coating_order_key(order: dict[str, Any]) -> str:
     return order.get("manualCoatingKey") or f"legacy:{order['queuedAt']}"
 
 
-def manual_coating_progress(state: dict[str, Any], *, cutting_enabled: bool = False) -> dict[str, Any] | None:
+def manual_coating_progress(state: dict[str, Any], *, cutting_enabled: bool = False,
+                            order_id: str | None = None) -> dict[str, Any] | None:
     work_orders = state["workOrders"]
-    order_id = work_orders["activeOrderId"]
+    if order_id is None:
+        order_id = work_orders["activeOrderId"]
     order = work_orders["ordersById"].get(order_id)
     if not order:
         return None

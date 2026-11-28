@@ -1,15 +1,23 @@
+import json
 import os
 from pathlib import Path
 import secrets
 import tempfile
 import unittest
 from unittest.mock import patch
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 
 from mes_web import app as app_module
 from mes_web.config import AppConfig
+from mes_web.excel_runtime import ExcelRuntimeSink
+from mes_web.mqtt_runtime import MqttIngestClient
+from mes_web.oee_state import OeeRuntimeStateManager
 from mes_web.station_access import STATION_PORTS
+from mes_web.station_workflow import TAPING_STEPS
 
 
 class StationWorkspaceTests(unittest.TestCase):
@@ -59,6 +67,205 @@ class StationWorkspaceTests(unittest.TestCase):
         response = client.post(f'/api/workspace/tablet/{station}/actions', json={'action': action, 'fields': fields})
         self.assertEqual(response.status_code, expected, response.text)
         return response.json()
+
+    def test_erp_cut_and_taping_tablets_share_the_order_and_excel_trace(self):
+        folder = Path(self.folder.name)
+        workbook_path = folder / 'tablets.xlsx'
+        with patch.dict(os.environ, {'MES_WEB_EXCEL_WORKBOOK_PATH': str(workbook_path)}):
+            sink = ExcelRuntimeSink(AppConfig(excel_flush_interval_sec=0.01))
+            sink.start()
+            self.addCleanup(sink.stop)
+            manager = OeeRuntimeStateManager(folder / 'production.json')
+            manager.import_work_orders([{
+                'order_id': 'TABLET-1', 'quantity': 1, 'product_color': 'blue', 'unit': 'adet',
+                'station_orders': [
+                    {'station_code': 'giyotin', 'station_order_id': 'KES-1', 'target_qty': 2, 'unit': 'adet'},
+                    {'station_code': 'bantlama', 'station_order_id': 'BNT-1', 'target_qty': 1, 'unit': 'adet'},
+                ],
+            }])
+            manager.start_work_order('TABLET-1')
+            service = SimpleNamespace(excel_sink=sink)
+            with patch.object(app_module, 'oee_state_manager', manager), patch.object(app_module, 'runtime_service', service):
+                self.app = app_module.create_app()
+                self.admin = self.actor('admin')
+                giyotin, _ = self.pair('giyotin')
+                bantlama, _ = self.pair('bantlama')
+                cut_board = self.action(giyotin, 'giyotin', 'shift-start', operator='Kesim')['board']
+                tape_board = self.action(bantlama, 'bantlama', 'shift-start', operator='Bantlama')['board']
+                key = cut_board['erpOrder']['key']
+                self.assertEqual(cut_board['erpOrder']['stationOrderId'], 'KES-1')
+                self.assertEqual(tape_board['erpOrder']['stationOrderId'], 'BNT-1')
+                self.assertEqual(cut_board['cut']['blue'], 0)
+                start = dict(orderKey=key, color='blue', box='KUTU-1')
+                cut = dict(orderKey=key, orderId='TABLET-1', color='blue', count=1, length=100,
+                           lot='BANT-1', result='good', shield=True)
+                self.action(giyotin, 'giyotin', 'cut', **cut, requestId='cut-1')
+                self.action(giyotin, 'giyotin', 'cut', **cut, requestId='cut-1')
+                self.action(bantlama, 'bantlama', 'start', 409, **start)
+                self.action(giyotin, 'giyotin', 'cut', **cut, requestId='cut-2')
+                board = bantlama.get('/api/workspace/tablet/bantlama').json()
+                self.assertEqual(board['cut']['blue'], 2)
+                self.action(bantlama, 'bantlama', 'start', **start)
+                box = dict(orderKey=key, activeBoxId='KUTU-1')
+                self.action(bantlama, 'bantlama', 'finish', 409, **box, outcome='good', length=100)
+                for index in range(len(TAPING_STEPS)):
+                    self.action(bantlama, 'bantlama', 'step', **box, index=index, checked=True)
+                board = self.action(bantlama, 'bantlama', 'finish', **box, outcome='good', length=100)['board']
+                self.assertEqual([(row['id'], row['stage']) for row in board['boxes']], [('KUTU-1', 'handoff')])
+                self.action(bantlama, 'bantlama', 'finish', 409, **box, outcome='good', length=100)
+            sink.stop()
+        workbook = load_workbook(workbook_path, read_only=True)
+        try:
+            headers, *values = workbook['1_Olay_Logu'].values
+            rows = [dict(zip(headers, row)) for row in values if row[headers.index('event_uid')]]
+            self.assertEqual([(row['station_order_id'], row['station_code'], row['quantity']) for row in rows],
+                             [('KES-1', 'giyotin', 1), ('KES-1', 'giyotin', 1), ('BNT-1', 'bantlama', 1)])
+            self.assertEqual(rows[-1]['item_id'], 'KUTU-1')
+        finally:
+            workbook.close()
+
+    def test_routed_box_waits_for_exact_release_and_closes_once_in_excel_and_ferp(self):
+        folder = Path(self.folder.name)
+        workbook_path = folder / 'flow.xlsx'
+        pending = folder / 'ferp-pending'
+        self.enterContext(patch.dict(os.environ, {'MES_WEB_EXCEL_WORKBOOK_PATH': str(workbook_path),
+                                                  'MES_WEB_FERP_EXPORT_PENDING_DIR': str(pending)}))
+        config = AppConfig.from_env()
+        manager = OeeRuntimeStateManager(folder / 'flow.json')
+        order_id, box_id = 'PILOT-1', 'KUTU-PILOT-1'
+        stations = ('giyotin', 'bantlama', 'konveyor', 'paketleme')
+        route = [dict(station_code=station, station_order_id=f'PILOT-1-{station.upper()}',
+                      target_qty=2 if station == 'giyotin' else 1, unit='adet') for station in stations]
+        manager.import_work_orders([dict(order_id=order_id, quantity=1, product_color='blue', unit='adet', station_orders=route)])
+        manager.start_work_order(order_id)
+        sink = ExcelRuntimeSink(config)
+        sink.start()
+        self.addCleanup(sink.stop)
+        service = SimpleNamespace(excel_sink=sink)
+        store = self.enterContext(patch.object(app_module, 'store'))
+        mqtt = MqttIngestClient(config, store, excel_sink=sink, oee_state_manager=manager)
+
+        def mega(payload, *, retain=False):
+            mqtt._on_message(None, None, SimpleNamespace(topic=config.topics['logs'], payload=payload, retain=retain))
+
+        def measurement(item, measure, color):
+            return f'MEGA|TCS3200|STATE=MEASURING|ITEM_ID={item}|MEASURE_ID={measure}|FINAL={color}'
+
+        def release(item, measure):
+            return f'MEGA|ROBOT|EVENT=RELEASED|ITEM_ID={item}|MEASURE_ID={measure}'
+
+        with (patch.object(app_module, 'oee_state_manager', manager), patch.object(app_module, 'runtime_service', service),
+              patch.object(app_module, 'config', config)):
+            self.app = app_module.create_app()
+            self.admin = self.actor('admin')
+            tablets = {station: self.pair(station)[0] for station in stations}
+
+            def board(station):
+                response = tablets[station].get(f'/api/workspace/tablet/{station}')
+                self.assertEqual(response.status_code, 200, response.text)
+                return response.json()
+
+            order_key = board('giyotin')['erpOrder']['key']
+
+            def action(station, name, expected=200, **fields):
+                return self.action(tablets[station], station, name, expected, orderKey=order_key, **fields)
+
+            for station in stations:
+                self.assertIn(f'data-station="{station}"', tablets[station].get(f'/operations/{station}').text)
+                action(station, 'shift-start', operator=station)
+            cut = dict(orderId=order_id, color='blue', count=1, length=100, lot='BANT-1', result='good', shield=True)
+            action('giyotin', 'cut', requestId='pilot-cut-1', **cut)
+            action('bantlama', 'start', 409, box=box_id, color='blue')
+            action('giyotin', 'cut', 409, requestId='wrong-color-cut', **{**cut, 'color': 'red'})
+            action('giyotin', 'cut', requestId='pilot-cut-2', **cut)
+            action('giyotin', 'cut', requestId='pilot-cut-2', **cut)
+            action('bantlama', 'start', box=box_id, color='blue')
+            for index in range(len(TAPING_STEPS)):
+                action('bantlama', 'step', activeBoxId=box_id, index=index, checked=True)
+            action('bantlama', 'finish', activeBoxId=box_id, outcome='good', length=100)
+            conveyor = board('konveyor')
+            self.assertEqual(conveyor['erpOrder']['stationOrderId'], 'PILOT-1-KONVEYOR')
+            handed_off, = conveyor['boxes']
+            self.assertEqual((handed_off['id'], handed_off['orderId'], handed_off['stage']), (box_id, order_id, 'handoff'))
+            self.assertNotIn('exitEvent', handed_off)
+
+            pack_fields = dict(box=box_id, size='S', count=1, label='ETK-1', weight=80, protected=True)
+            action('paketleme', 'pack', 409, **pack_fields)
+            action('konveyor', 'match', 409, box=box_id, lineItemId='91', measurement='801')
+            mega(measurement('91', '801', 'RED'))
+            mega(release('91', '801'))
+            action('konveyor', 'match', 409, box=box_id, lineItemId='91', measurement='801')
+            self.assertEqual(board('paketleme')['boxes'][0]['stage'], 'handoff')
+            self.assertEqual(manager.read_state()['workOrders']['ordersById'][order_id]['productionQty'], 0)
+
+            right = measurement('92', '802', 'BLUE')
+            mega(right, retain=True)
+            action('konveyor', 'match', 409, box=box_id, lineItemId='92', measurement='802')
+            mega(right)
+            mega('MEGA|AUTO|QUEUE=ENQ|ITEM_ID=92|MEASURE_ID=802|COLOR=BLUE|TRAVEL_MS=50')
+            self.assertEqual(board('konveyor')['lineMeasurements'][-1], {'item_id': '92', 'measure_id': '802', 'color': 'blue'})
+            match = dict(box=box_id, lineItemId='92', measurement='802')
+            action('konveyor', 'match', **match)
+            action('konveyor', 'match', **match)
+            mega(release('92', '999'))
+            mega('MEGA|ROBOT|EVENT=RELEASED|ITEM_ID=92')
+            mega('MEGA|AUTO|EVENT=PICKPLACE_DONE|ITEM_ID=92|MEASURE_ID=802')
+            action('konveyor', 'exit', 409, box=box_id)
+            action('paketleme', 'pack', 409, **pack_fields)
+            self.assertEqual(board('paketleme')['boxes'][0]['stage'], 'transit')
+
+            mega(release('92', '802'))
+            mega(release('92', '802'))
+            ready, = board('paketleme')['boxes']
+            self.assertEqual((ready['id'], ready['orderId'], ready['stage']), (box_id, order_id, 'exited'))
+            action('paketleme', 'pack', **pack_fields)
+            action('paketleme', 'pack', 409, **pack_fields)
+            action('paketleme', 'seal', 422)
+            self.assertFalse(pending.exists())
+            with patch.object(app_module, 'write_packing_closure', side_effect=OSError('test disk failure')):
+                action('paketleme', 'seal', 503, confirmed=True)
+            self.assertEqual(board('paketleme')['carton']['stage'], 'sealed')
+            self.assertEqual(manager.read_state()['workOrders']['ordersById'][order_id]['status'], 'completed')
+            action('paketleme', 'seal', confirmed=True)
+            action('paketleme', 'seal', confirmed=True)
+            mega(right)
+            mega(release('92', '802'))
+            state = manager.read_state()
+            self.assertEqual(state['workOrders']['ordersById'][order_id]['productionQty'], 1)
+            self.assertEqual(len(state['workOrders']['completionLog']), 1)
+            self.assertEqual(state['workOrders']['inventoryByProduct'], {})
+            self.assertEqual(state['itemsById']['92']['work_order_id'], order_id)
+
+        export_path, = pending.glob('*.json')
+        export = json.loads(export_path.read_text(encoding='utf-8'))
+        self.assertEqual(export['schema'], 'ferp_mes_export.v1')
+        self.assertEqual(export['work_order']['ferp_labels']['lblMMFB0_NUMBER'], order_id)
+        event, = export['station_flow']
+        self.assertEqual((event['item_id'], event['station_order_id'], event['measure_id'], event['operator']),
+                         (box_id, 'PILOT-1-PAKETLEME', '802', 'paketleme'))
+
+        sink.stop()
+        restarted = ExcelRuntimeSink(config)
+        restarted.start()
+        try:
+            restarted.record_work_order_state(state, datetime.now(timezone.utc).isoformat())
+        finally:
+            restarted.stop()
+        workbook = load_workbook(workbook_path, read_only=True)
+        try:
+            headers, *values = workbook['1_Olay_Logu'].values
+            rows = [dict(zip(headers, row)) for row in values if row[headers.index('event_uid')]]
+            self.assertEqual(len(rows), 6)
+            self.assertEqual(len({row['event_uid'] for row in rows}), 6)
+            self.assertEqual({(row['production_order_id'], row['item_id']) for row in rows}, {(order_id, box_id)})
+            self.assertCountEqual([row['event_type_code'] for row in rows],
+                                  ['manual_cut_recorded', 'manual_cut_recorded', 'taping_completed',
+                                   'conveyor_matched', 'conveyor_exit_verified', 'packing_closed'])
+            closed, = [row for row in rows if row['event_type_code'] == 'packing_closed']
+            self.assertEqual(closed['event_uid'], event['event_uid'])
+            self.assertEqual(closed['station_order_id'], event['station_order_id'])
+        finally:
+            workbook.close()
 
     def test_station_lock_and_legacy_control_panel_boundary(self):
         anonymous = self.client()

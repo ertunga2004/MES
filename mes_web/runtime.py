@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import AppConfig
 from .excel_runtime import ExcelRuntimeSink
+from .ferp_export import write_packing_closure
 from .mqtt_runtime import MqttIngestClient
 from .oee_state import OeeRuntimeStateManager
 from .store import DashboardStore, utc_now_text
@@ -113,6 +114,10 @@ class RuntimeService:
         self.store.refresh_oee_runtime_state(self.config.module_id, force=True)
         self.excel_sink.start()
         self.excel_sink.record_work_order_state(current_state, utc_now_text())
+        for run in current_state["cuttingWorkflow"]["tabletRuns"].values():
+            if closure := run.get("erpClosure"):
+                with contextlib.suppress(OSError):
+                    write_packing_closure(closure, self.config.ferp_export_pending_dir)
         self.mqtt_client.start()
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 

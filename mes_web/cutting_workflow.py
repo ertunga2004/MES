@@ -6,7 +6,7 @@ from typing import Any
 TAPES_PER_BOX = 2
 
 def empty_cutting_workflow() -> dict[str, Any]:
-    return {"batches": {}, "receipts": {}, "protocol4": {}}
+    return {"batches": {}, "receipts": {}, "protocol4": {}, "tabletRuns": {}}
 
 
 def cutting_batch(state: dict[str, Any], order_id: str, order_key: str) -> dict[str, Any]:

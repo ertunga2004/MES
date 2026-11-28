@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import queue
 import re
 import shutil
@@ -8,8 +10,9 @@ import threading
 import zipfile
 from copy import copy
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 from .config import AppConfig
@@ -24,12 +27,14 @@ from .parsers import (
     parse_vision_event,
 )
 
+LOG = logging.getLogger(__name__)
 
 EVENT_LOG_COLUMNS = [
     "log_event_id", "event_time_text", "source_id", "source_code", "event_type_id", "event_type_code", "event_summary_tr",
     "item_id", "measure_id", "fault_id", "oee_snapshot_id", "vision_event_id", "line_id", "station_id", "color_id",
     "color_code", "decision_source_id", "decision_source_code", "mega_state_id", "mega_state_code", "queue_depth",
     "review_required", "travel_ms", "notes", "raw_line",
+    "event_uid", "production_order_id", "station_order_id", "station_code", "quantity", "unit", "operator",
 ]
 MEASUREMENT_COLUMNS = [
     "measurement_row_id", "measure_id", "item_id", "measured_at", "measurement_log_event_id", "source_log_file",
@@ -139,6 +144,9 @@ EVENT_TYPE_IDS = {
     "help_requested": 27,
     "help_acknowledged": 28,
     "help_resolved": 29,
+    "giyotin_cut_completed": 30,
+    "manual_cut_recorded": 31,
+    "coating_completed": 32,
 }
 DECISION_SOURCE_IDS = {"CORE_STABLE": 1, "MEDIAN_STABLE": 2, "CORE_VOTE_MATCH": 3, "VISION": 4, "TABLET": 5, "SYSTEM": 6}
 MEGA_STATE_IDS = {"SEARCH": 1, "SEARCHING": 2, "MEASURING": 3, "WAIT_ARM": 4, "PAUSED": 5, "STOPPED": 6, "QUEUE": 7}
@@ -548,6 +556,59 @@ class WorkbookProjector:
             "1_Olay_Logu": [self._event_row(log_event_id=self._next("log_event_id"), received_at=received_at, source_code="system", event_type_code="counts_reset", notes="UI sayac sifirlama islemi", raw_line="SYSTEM|COUNTS|RESET", event_summary_tr="UI uzerinden renk sayaclari sifirlandi")],
             RAW_LOG_SHEET_NAME: [self._raw_row(received_at=received_at, source_topic="local/system", source_code="system", raw_payload="SYSTEM|COUNTS|RESET", parsed_flag=1, event_type_code="counts_reset", notes="local_only")],
         }
+
+    def consume_station_production(
+        self, state: dict[str, Any], seen_event_uids: set[str], workbook_day: date | None
+    ) -> list[dict[str, Any]]:
+        workflow = state.get("cuttingWorkflow") or {}
+        production = []
+        for event_id, record in (workflow.get("protocol4") or {}).get("events", {}).items():
+            if record.get("count") and not record.get("unresolved"):
+                production.append({
+                    "event_uid": f"giyotin:nano:{event_id}", "recorded_at": record.get("recordedAt"),
+                    "production_order_id": record.get("orderId"), "station_order_id": record.get("stationOrderId"),
+                    "station_code": "giyotin", "event_type_code": "giyotin_cut_completed",
+                    "operator": record.get("operator"), "quantity": record["count"], "unit": record.get("unit") or "adet",
+                    "notes": "operator_reconciled" if record.get("resolution") == "completed" else "",
+                })
+        for station, event_type, records in (
+            ("giyotin", "manual_cut_recorded", workflow.get("receipts") or {}),
+            ("kaplama", "coating_completed", state.get("manualCoatingRecords") or {}),
+        ):
+            for request_id, record in records.items():
+                action = record.get("action", record)
+                production.append({
+                    "event_uid": f"{station}:manual:{request_id}", "recorded_at": record.get("recorded_at"),
+                    "production_order_id": action.get("order_id"), "station_order_id": record.get("station_order_id"),
+                    "station_code": station, "event_type_code": event_type,
+                    "operator": action.get("operator"), "quantity": action.get("quantity"),
+                    "unit": record.get("unit") or "adet",
+                })
+
+        summaries = {
+            "giyotin_cut_completed": "Giyotin çevrimi tamamlandı",
+            "manual_cut_recorded": "Manuel kesim kaydedildi",
+            "coating_completed": "Kaplama kaydedildi",
+        }
+        rows = []
+        for event in production:
+            event_uid = _excel_cell_value(event["event_uid"])
+            recorded = _parse_iso_text(event["recorded_at"])
+            if event_uid in seen_event_uids or recorded is None or not event["quantity"]:
+                continue
+            if workbook_day is not None and recorded.astimezone().date() < workbook_day:
+                continue
+            kind = event["event_type_code"]
+            row = self._event_row(
+                log_event_id=self._next("log_event_id"), received_at=event["recorded_at"],
+                source_code="giyotin" if kind == "giyotin_cut_completed" else "tablet",
+                event_type_code=kind, event_summary_tr=summaries[kind],
+            )
+            row.update({key: value for key, value in event.items() if key != "recorded_at"})
+            row["station_id"] = ""  # The physical station code is independent of the legacy conveyor IDs.
+            rows.append(row)
+            seen_event_uids.add(event_uid)
+        return rows
 
     def consume_tablet_log(self, raw_line: str, received_at: str) -> dict[str, list[dict[str, Any]]]:
         rows = {RAW_LOG_SHEET_NAME: [self._raw_row(received_at=received_at, source_topic="sau/iot/mega/konveyor/tablet/log", source_code="tablet", raw_payload=raw_line, parsed_flag=0)]}
@@ -1215,6 +1276,7 @@ class ExcelRuntimeSink:
         from openpyxl.utils import get_column_letter
 
         workbook_path = self.config.excel_workbook_path
+        workbook_day = None if os.getenv("MES_WEB_EXCEL_WORKBOOK_PATH") else datetime.now().astimezone().date()
         workbook = self._open_or_create_workbook(
             workbook_path=workbook_path,
             workbook_factory=Workbook,
@@ -1245,22 +1307,30 @@ class ExcelRuntimeSink:
                     next_id = max(next_id, value + 1)
             counters[id_header] = next_id
         self.projector.prime(counters)
+        event_sheet = workbook["1_Olay_Logu"]
+        event_uid_column = next(cell.column for cell in event_sheet[1] if cell.value == "event_uid")
+        seen_event_uids = {
+            row[0] for row in event_sheet.iter_rows(
+                min_row=2, min_col=event_uid_column, max_col=event_uid_column, values_only=True
+            ) if row[0]
+        }
 
-        dirty = False
-        while True:
-            envelope = self._queue.get()
-            if envelope is None:
-                break
-            batch = [envelope]
-            while len(batch) < self.config.excel_batch_size:
+        dirty = True
+        closing = False
+        save_failed = False
+        while not closing:
+            batch = []
+            timeout = self.config.excel_flush_interval_sec if dirty else None
+            while len(batch) < max(1, self.config.excel_batch_size):
                 try:
-                    next_envelope = self._queue.get(timeout=self.config.excel_flush_interval_sec)
+                    envelope = self._queue.get(timeout=timeout)
                 except queue.Empty:
                     break
-                if next_envelope is None:
-                    self._queue.put(None)
+                if envelope is None:
+                    closing = True
                     break
-                batch.append(next_envelope)
+                batch.append(envelope)
+                timeout = self.config.excel_flush_interval_sec
             for item in batch:
                 if item.kind == "mega_log":
                     rows = self.projector.consume_mega_log(item.payload, item.received_at)
@@ -1287,7 +1357,9 @@ class ExcelRuntimeSink:
                     self._sync_fault_sheet(workbook, item.payload)
                     self._sync_maintenance_sheet(workbook, item.payload)
                     dirty = True
-                    rows = {}
+                    rows = {"1_Olay_Logu": self.projector.consume_station_production(
+                        item.payload, seen_event_uids, workbook_day
+                    )}
                 elif item.kind == "kiosk_event":
                     rows = self.projector.consume_kiosk_event(item.payload, item.received_at)
                 else:
@@ -1303,9 +1375,24 @@ class ExcelRuntimeSink:
                         self._update_auto_filter(sheet, len(headers), target_row, get_column_letter)
                         dirty = True
             if dirty:
-                workbook.save(workbook_path)
-                dirty = False
-        workbook.save(workbook_path)
+                try:
+                    self._save_workbook(workbook, workbook_path)
+                except OSError:
+                    if not save_failed or closing:
+                        LOG.exception("MES Excel workbook could not be saved: %s", workbook_path)
+                    save_failed = True
+                else:
+                    dirty = save_failed = False
+
+    @staticmethod
+    def _save_workbook(workbook: Any, workbook_path: Path) -> None:
+        with NamedTemporaryFile(dir=workbook_path.parent, suffix=".xlsx", delete=False) as handle:
+            pending = Path(handle.name)
+        try:
+            workbook.save(pending)
+            pending.replace(workbook_path)
+        finally:
+            pending.unlink(missing_ok=True)
 
     def _migrate_workbook_layout(self, workbook: Any) -> None:
         if LEGACY_WORK_ORDER_SHEET_NAME in workbook.sheetnames and WORK_ORDER_SHEET_NAME not in workbook.sheetnames:
@@ -1672,7 +1759,11 @@ class ExcelRuntimeSink:
 
     def _write_sheet_row(self, sheet: Any, target_row: int, headers: list[str], row: dict[str, Any]) -> None:
         for col_index, header in enumerate(headers, start=1):
-            sheet.cell(target_row, col_index).value = _excel_cell_value(row.get(header, ""))
+            cell = sheet.cell(target_row, col_index)
+            value = _excel_cell_value(row.get(header, ""))
+            cell.value = value
+            if isinstance(value, str) and value.startswith("=") and header in {"production_order_id", "station_order_id", "station_code", "unit", "operator"}:
+                cell.data_type = "s"
 
     def _ensure_sheet_layout(self, sheet: Any, headers: list[str], workbook: Any | None = None) -> None:
         existing_headers = [sheet.cell(1, idx).value for idx in range(1, max(sheet.max_column, 1) + 1)]

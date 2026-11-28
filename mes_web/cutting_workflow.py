@@ -6,7 +6,7 @@ from typing import Any
 TAPES_PER_BOX = 2
 
 def empty_cutting_workflow() -> dict[str, Any]:
-    return {"batches": {}, "receipts": {}}
+    return {"batches": {}, "receipts": {}, "protocol4": {}}
 
 
 def cutting_batch(state: dict[str, Any], order_id: str, order_key: str) -> dict[str, Any]:
@@ -38,8 +38,11 @@ def apply_cutting_action(state: dict[str, Any], progress: dict[str, Any] | None,
         raise ValueError("CUTTING_QUANTITY_UNAVAILABLE")
     cut_tapes = cutting["cut_tapes"] + action["quantity"]
     workflow["batches"].setdefault(order_id, {})[order_key] = {"cut_tapes": cut_tapes}
+    station_order = cutting.get("station_order") or {}
     workflow["receipts"][request_id] = {
         "action": action, "cut_tapes": cut_tapes,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "station_order_id": station_order.get("station_order_id", ""),
+        "unit": station_order.get("unit", "adet"),
     }
     return False

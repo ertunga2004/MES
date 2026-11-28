@@ -35,6 +35,10 @@ def manual_coating_progress(state: dict[str, Any], *, cutting_enabled: bool = Fa
         "awaiting_handoff": active and complete and order["productionQty"] == 0,
         "can_record": active and unit_supported and completed < target,
     }
+    station_orders = order.get("stationOrders", {})
+    if "kaplama" in station_orders:
+        progress["station_order"] = station_orders["kaplama"]
+
     batch = cutting_batch(state, order_id, order_key)
     if cutting_enabled or "cut_tapes" in batch:
         legacy_blocked = "cut_tapes" not in batch and (bool(batch) or completed > 0)
@@ -48,6 +52,8 @@ def manual_coating_progress(state: dict[str, Any], *, cutting_enabled: bool = Fa
             "order_open": active and unit_supported and target > 0,
             "legacy_blocked": legacy_blocked,
         }
+        if "giyotin" in station_orders:
+            progress["cutting"]["station_order"] = station_orders["giyotin"]
         progress["can_record"] &= not legacy_blocked and available_boxes > 0
         progress["remaining_qty"] = available_boxes
     return progress

@@ -722,9 +722,16 @@ def create_app() -> FastAPI:
     static_dir = Path(config.static_dir)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     app.include_router(create_kiosk_router(static_dir, lambda: (config, oee_state_manager), _require_local_coating))
-    workspace = StationWorkspace(app, static_dir, config)
+
+    def record_physical_station_state(received_at: str) -> None:
+        runtime_service.excel_sink.record_work_order_state(oee_state_manager.read_state(), received_at)
+
+    publish_giyotin = runtime_service.mqtt_client.publish_giyotin if config.giyotin_protocol4_enabled else None
+    workspace = StationWorkspace(app, static_dir, config, oee_state_manager, publish_giyotin, record_physical_station_state)
 
     def sync_work_order_runtime(state: dict[str, Any] | None = None) -> None:
+        if workspace.giyotin is not None:
+            workspace.giyotin.tick()
         runtime_state = state if isinstance(state, dict) else oee_state_manager.read_state()
         runtime_service.excel_sink.record_work_order_state(runtime_state, utc_now_text())
 
@@ -827,6 +834,8 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def on_startup() -> None:
         install_windows_connection_reset_filter()
+        if workspace.giyotin is not None:
+            runtime_service.mqtt_client.giyotin = workspace.giyotin
         await runtime_service.start()
 
     @app.on_event("shutdown")
@@ -879,7 +888,7 @@ def create_app() -> FastAPI:
     async def get_manual_coating(request: Request) -> dict[str, Any]:
         _require_local_coating(request)
         state = oee_state_manager.read_state()
-        progress = manual_coating_progress(state, cutting_enabled=config.cutting_workflow_enabled)
+        progress = manual_coating_progress(state, cutting_enabled=config.cutting_input_enabled)
         status = {"progress": progress}
         if config.conveyor_handoff_enabled:
             status["handoff"] = handoff_view(state, progress)
@@ -925,17 +934,20 @@ def create_app() -> FastAPI:
         try:
             result = oee_state_manager.record_manual_coating(
                 request_id=batch.request_id, order_id=batch.order_id, order_key=batch.order_key,
-                operator=operator, quantity=batch.quantity, cutting_enabled=config.cutting_workflow_enabled,
+                operator=operator, quantity=batch.quantity, cutting_enabled=config.cutting_input_enabled,
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        record_physical_station_state(utc_now_text())
         store.refresh_oee_runtime_state(config.module_id, force=True)
         return result
 
     @app.get("/giyotin")
-    async def cutting_index(request: Request) -> FileResponse:
+    async def cutting_index(request: Request) -> Response:
+        if workspace.giyotin is not None:
+            return workspace.tablet_page(request, "giyotin")
         _require_local_coating(request)
         if not config.cutting_workflow_enabled:
             raise HTTPException(status_code=404, detail="CUTTING_DISABLED")
@@ -943,6 +955,8 @@ def create_app() -> FastAPI:
 
     @app.post("/api/cutting-workflow")
     async def post_cutting_workflow(request: Request, batch: CuttingRequest) -> dict[str, Any]:
+        if workspace.giyotin is not None:
+            raise HTTPException(status_code=409, detail="CUTTING_PROTOCOL4_REQUIRED")
         operator = _local_station_operator(request, batch)
         if not config.cutting_workflow_enabled:
             raise HTTPException(status_code=404, detail="CUTTING_DISABLED")
@@ -957,6 +971,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail="OEE_STATE_WRITE_FAILED") from exc
+        record_physical_station_state(utc_now_text())
         store.refresh_oee_runtime_state(config.module_id, force=True)
         return result
 

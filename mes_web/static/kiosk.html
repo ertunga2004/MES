@@ -3,22 +3,27 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MES Operator Kiosk</title>
-  <link rel="stylesheet" href="/static/kiosk.css">
+  <title>MES Operatör Paneli</title>
+  <link id="kioskStylesheet" rel="stylesheet" href="/static/kiosk.css">
+  <script>
+    if (window.location.protocol === "file:") {
+      document.getElementById("kioskStylesheet").href = "./kiosk.css";
+    }
+  </script>
 </head>
 <body>
   <div class="kiosk-shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">MES Operator Kiosk</p>
-        <h1 id="screenTitle">Hat Ekrani</h1>
+        <p class="eyebrow">MES · GİYOTİN İSTASYONU</p>
+        <h1 id="screenTitle">Operatör Paneli</h1>
       </div>
       <div class="topbar-actions">
         <label class="operator-picker" for="operatorSelect">
-          <span>Operator</span>
+          <span>Operatör</span>
           <select id="operatorSelect"></select>
         </label>
-        <div class="connection-pill" id="connectionState">Baglaniyor</div>
+        <div class="connection-pill" id="connectionState">Bağlanıyor</div>
       </div>
     </header>
 
@@ -26,8 +31,8 @@
       <section class="status-strip card">
         <div class="status-main">
           <div>
-            <p class="section-label">Hat Durumu</p>
-            <h2 id="lineStateText">Veri bekleniyor</h2>
+            <p class="section-label">ÜRETİM HATTI</p>
+            <h2 id="lineStateText">Durum bekleniyor</h2>
             <p id="deviceMetaText" class="muted">-</p>
           </div>
           <div class="metric-grid">
@@ -36,15 +41,15 @@
               <strong id="metricOee">-</strong>
             </div>
             <div class="metric-box">
-              <span>Availability</span>
+                <span>Kullanılabilirlik</span>
               <strong id="metricAvailability">-</strong>
             </div>
             <div class="metric-box">
-              <span>Performance</span>
+                <span>Performans</span>
               <strong id="metricPerformance">-</strong>
             </div>
             <div class="metric-box">
-              <span>Quality</span>
+                <span>Kalite</span>
               <strong id="metricQuality">-</strong>
             </div>
           </div>
@@ -54,19 +59,41 @@
       <section class="primary-panel card">
         <div class="panel-head">
           <div>
-            <p class="section-label">Aktif Is Emri</p>
-            <h2 id="activeOrderTitle">Is emri bekleniyor</h2>
+            <p class="section-label">AKTİF İŞ EMRİ</p>
+            <h2 id="activeOrderTitle">İş emri bekleniyor</h2>
             <p id="activeOrderMeta" class="muted">-</p>
           </div>
-          <button id="secondaryShiftStopButton" class="secondary-button" type="button">Vardiya Bitir</button>
+          <button id="secondaryShiftStopButton" class="secondary-button" type="button">Vardiyayı Bitir</button>
         </div>
 
         <div id="activeOrderContents" class="content-badges"></div>
 
+        <section id="giyotinControlPanel" class="giyotin-control-panel hidden" aria-label="Giyotin reçetesi ve durumu">
+          <div class="giyotin-control-head">
+            <div>
+              <p class="section-label">GİYOTİN REÇETESİ</p>
+              <h3 id="giyotinStateText">İş emri bekleniyor</h3>
+              <p id="giyotinProgressText" class="muted">-</p>
+            </div>
+            <span id="giyotinConnectionState" class="progress-pill">Cihaz bekleniyor</span>
+          </div>
+          <div class="giyotin-settings">
+            <label class="field" for="giyotinCyclesPerBox">
+              <span>Kutu başına kesim</span>
+              <input id="giyotinCyclesPerBox" type="number" min="1" max="20" step="1" value="2">
+            </label>
+            <label class="field" for="giyotinCycleDuration">
+              <span>İniş + çıkış süresi (sn)</span>
+              <input id="giyotinCycleDuration" type="number" min="0.5" max="10" step="0.1" value="2">
+            </label>
+          </div>
+          <p class="muted giyotin-note">İş emri ekrandan onaylandığında bu ürün reçetesi otomatik başlar. İki emniyet butonu çevrimi duraklatır; devam etmek için operatör onayı gerekir.</p>
+        </section>
+
         <div id="maintenancePanel" class="maintenance-panel hidden">
           <div class="maintenance-head">
             <div>
-              <p class="section-label">Planli Bakim</p>
+              <p class="section-label">PLANLI BAKIM</p>
               <h3 id="maintenanceTitle">Checklist</h3>
             </div>
             <div id="maintenanceProgress" class="progress-pill">0 / 0</div>
@@ -78,45 +105,56 @@
           </label>
         </div>
 
-        <div class="primary-actions">
-          <button id="bigActionButton" class="big-action" type="button">Hazirlaniyor</button>
-          <button id="systemStartButton" class="secondary-button" type="button">Sistem Start</button>
-        </div>
       </section>
 
       <section class="critical-panel card">
+        <div class="operator-actions">
+          <div>
+            <p class="section-label">İŞLEM KOMUTLARI</p>
+            <h2>Operasyon</h2>
+          </div>
+          <div class="primary-actions">
+            <button id="bigActionButton" class="big-action" type="button">Hazırlanıyor</button>
+            <button id="systemStartButton" class="secondary-button" type="button">Sistemi Başlat</button>
+          </div>
+          <div id="giyotinActionsPanel" class="giyotin-actions-panel hidden">
+            <p class="section-label">GİYOTİN KOMUTLARI</p>
+            <button id="giyotinPauseButton" class="danger-button" type="button">Durdur</button>
+            <button id="giyotinResumeButton" class="secondary-button" type="button">Onayla ve Devam Et</button>
+          </div>
+        </div>
         <div class="fault-block">
           <div class="fault-head">
             <div>
-              <p class="section-label">Acil Durdur / Ariza</p>
-              <h2 id="faultStateText">Aktif ariza yok</h2>
+              <p class="section-label">ARIZA VE DESTEK</p>
+              <h2 id="faultStateText">Aktif arıza yok</h2>
             </div>
           </div>
           <div class="fault-actions">
-            <button id="helpButton" class="help-button" type="button">Yardim Cagir</button>
-            <button id="faultClearButton" class="secondary-button" type="button">Ariza Bitir</button>
+            <button id="helpButton" class="help-button" type="button">Teknisyen Çağır</button>
+            <button id="faultClearButton" class="secondary-button" type="button">Arızayı Kapat</button>
           </div>
           <label class="field" for="faultSelect">
-            <span>Hazir sebep</span>
+            <span>Arıza nedeni</span>
             <select id="faultSelect"></select>
           </label>
           <div class="field">
             <span>Harici sebep</span>
             <div class="reason-tools">
-              <button id="faultReasonButton" class="secondary-button note-button" type="button">Sebep Yaz</button>
-              <p id="faultReasonPreview" class="reason-preview">Harici sebep yok</p>
+              <button id="faultReasonButton" class="secondary-button note-button" type="button">Neden Ekle</button>
+              <p id="faultReasonPreview" class="reason-preview">Ek açıklama yok</p>
             </div>
           </div>
-          <button id="faultStartButton" class="danger-button" type="button">Ariza Bildir</button>
-          <p id="helpStateText" class="muted">Teknisyen cagrisi yok</p>
+          <button id="faultStartButton" class="danger-button" type="button">Arıza Bildir</button>
+          <p id="helpStateText" class="muted">Açık teknisyen çağrısı yok</p>
         </div>
       </section>
 
       <section class="queue-panel card">
         <div class="panel-head compact">
           <div>
-            <p class="section-label">Is Emri Sirasi</p>
-            <h2>Salt Gorunum</h2>
+            <p class="section-label">İŞ EMRİ KUYRUĞU</p>
+            <h2>Bekleyen işler</h2>
           </div>
         </div>
         <div id="workOrderList" class="work-order-list"></div>
@@ -125,14 +163,18 @@
       <section class="quality-panel card">
         <div class="panel-head compact">
           <div>
-            <p class="section-label">Son 5 Urun</p>
-            <h2>Kalite Duzeltme</h2>
+            <p class="section-label">SON ÜRÜNLER</p>
+            <h2>Kalite düzeltme</h2>
           </div>
         </div>
         <div id="recentItemsList" class="recent-items-list"></div>
       </section>
     </main>
   </div>
-  <script src="/static/kiosk.js" defer></script>
+  <script>
+    const kioskScript = document.createElement("script");
+    kioskScript.src = window.location.protocol === "file:" ? "./kiosk.js" : "/static/kiosk.js";
+    document.body.appendChild(kioskScript);
+  </script>
 </body>
 </html>

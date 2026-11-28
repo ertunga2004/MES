@@ -7,6 +7,9 @@ const state = {
   drafts: {
     faultReasonText: "",
     qualityReasonByItem: {},
+    giyotinOrderId: "",
+    giyotinCyclesPerBox: "2",
+    giyotinCycleDurationSec: "2",
   },
 };
 
@@ -23,6 +26,15 @@ const els = {
   activeOrderTitle: document.getElementById("activeOrderTitle"),
   activeOrderMeta: document.getElementById("activeOrderMeta"),
   activeOrderContents: document.getElementById("activeOrderContents"),
+  giyotinControlPanel: document.getElementById("giyotinControlPanel"),
+  giyotinStateText: document.getElementById("giyotinStateText"),
+  giyotinProgressText: document.getElementById("giyotinProgressText"),
+  giyotinConnectionState: document.getElementById("giyotinConnectionState"),
+  giyotinCyclesPerBox: document.getElementById("giyotinCyclesPerBox"),
+  giyotinCycleDuration: document.getElementById("giyotinCycleDuration"),
+  giyotinPauseButton: document.getElementById("giyotinPauseButton"),
+  giyotinResumeButton: document.getElementById("giyotinResumeButton"),
+  giyotinActionsPanel: document.getElementById("giyotinActionsPanel"),
   maintenancePanel: document.getElementById("maintenancePanel"),
   maintenanceTitle: document.getElementById("maintenanceTitle"),
   maintenanceProgress: document.getElementById("maintenanceProgress"),
@@ -77,6 +89,9 @@ function writeStoredDeviceName(value) {
 
 function setConnectionState(text) {
   els.connectionState.textContent = text;
+  const normalized = String(text || "").toLocaleLowerCase("tr-TR");
+  els.connectionState.classList.toggle("is-online", normalized.includes("canlı") || normalized.includes("canli"));
+  els.connectionState.classList.toggle("is-offline", normalized.includes("koptu") || normalized.includes("hata"));
 }
 
 function pct(value) {
@@ -153,29 +168,29 @@ function shortDateTime(value) {
 function statusLabel(status) {
   const map = {
     active: "Aktif",
-    pending_approval: "Onay Bekliyor",
-    queued: "Sirada",
-    completed: "Tamamlandi",
+    pending_approval: "Onay bekliyor",
+    queued: "Sırada",
+    completed: "Tamamlandı",
   };
   return map[status] || safeText(status, "-");
 }
 
 function operationalLabel(status) {
   const map = {
-    idle_ready: "Vardiya hazir",
-    opening_checklist: "Acilis bakimi bekleniyor",
-    shift_active_running: "Hat calisiyor",
-    manual_fault_active: "Manuel ariza aktif",
-    closing_checklist: "Kapanis bakimi bekleniyor",
+    idle_ready: "Vardiya hazır",
+    opening_checklist: "Açılış bakımı bekleniyor",
+    shift_active_running: "Hat çalışıyor",
+    manual_fault_active: "Manuel arıza aktif",
+    closing_checklist: "Kapanış bakımı bekleniyor",
   };
-  return map[status] || "Veri bekleniyor";
+  return map[status] || "Durum bekleniyor";
 }
 
 function colorLabel(colorCode) {
   const map = {
-    red: "Kirmizi",
+    red: "Kırmızı",
     blue: "Mavi",
-    yellow: "Sari",
+    yellow: "Sarı",
   };
   return map[String(colorCode || "").trim().toLowerCase()] || "Bilinmeyen";
 }
@@ -406,21 +421,28 @@ function renderPrimaryPanel() {
   const bigAction = snapshot.big_action || {};
   const systemStart = snapshot.system_start || {};
   const maintenanceSession = getActiveChecklistSession();
+  const giyotin = snapshot.giyotin || {};
 
   if (activeOrder) {
     els.activeOrderTitle.textContent = `${safeText(activeOrder.order_id)} / ${safeText(activeOrder.stock_name, activeOrder.stock_code)}`;
-    els.activeOrderMeta.textContent = `${statusLabel(activeOrder.status)} | ${activeOrder.completed_qty || 0} / ${activeOrder.qty || 0} | Kalan ${activeOrder.remaining_qty || 0}`;
+    const giyotinProgress = giyotin.job_id === activeOrder.order_id
+      ? ` | Giyotin ${giyotin.completed_count || 0} / ${giyotin.target_count || 0} | ${safeText(giyotin.device_state, "durum bekleniyor")}`
+      : "";
+    els.activeOrderMeta.textContent = `${statusLabel(activeOrder.status)} | ${activeOrder.completed_qty || 0} / ${activeOrder.qty || 0} | Kalan ${activeOrder.remaining_qty || 0}${giyotinProgress}`;
   } else if (queue.length > 0) {
     els.activeOrderTitle.textContent = `${safeText(queue[0].order_id)} hazir bekliyor`;
     els.activeOrderMeta.textContent = `${safeText(queue[0].stock_name, queue[0].stock_code)} | Siradaki is emri`;
   } else {
-    els.activeOrderTitle.textContent = "Is emri bekleniyor";
-    els.activeOrderMeta.textContent = "Ana ekran sirasi burada gorunur";
+    els.activeOrderTitle.textContent = "İş emri bekleniyor";
+    els.activeOrderMeta.textContent = "Aktif üretim emri burada görüntülenir";
   }
 
   renderActiveOrderContents(displayOrder);
+  renderGiyotinPanel(displayOrder, giyotin);
   els.bigActionButton.textContent = safeText(bigAction.label, "Hazirlaniyor");
-  els.bigActionButton.disabled = state.busy || !Boolean(bigAction.enabled);
+  const giyotinDeviceReady = !["offline", "unknown", ""].includes(String(giyotin.device_state || "")) && Boolean(giyotin.nano_ready);
+  els.bigActionButton.disabled = state.busy || !Boolean(bigAction.enabled) ||
+    (bigAction.action === "work_order_start_next" && !activeOrder && !giyotinDeviceReady);
   els.systemStartButton.textContent = safeText(systemStart.label, "Sistem Start");
   els.systemStartButton.disabled = state.busy || !Boolean(systemStart.enabled);
 
@@ -459,6 +481,54 @@ function renderPrimaryPanel() {
   }
 }
 
+function renderGiyotinPanel(order, giyotin) {
+  if (!order || !["active", "queued"].includes(order.status)) {
+    els.giyotinControlPanel.classList.add("hidden");
+    els.giyotinActionsPanel.classList.add("hidden");
+    return;
+  }
+  els.giyotinControlPanel.classList.remove("hidden");
+  const active = order.status === "active";
+  els.giyotinActionsPanel.classList.toggle("hidden", !active);
+  const productCode = String(order.stock_code || "").trim().toUpperCase();
+  if (state.drafts.giyotinOrderId !== productCode) {
+    state.drafts.giyotinOrderId = productCode;
+    const savedRecipe = (giyotin.recipes_by_product || {})[productCode] || {};
+    const currentRecipe = giyotin.job_id === order.order_id ? giyotin : {};
+    state.drafts.giyotinCyclesPerBox = String(currentRecipe.cycles_per_box || savedRecipe.cycles_per_box || 2);
+    state.drafts.giyotinCycleDurationSec = (Number(currentRecipe.cycle_duration_ms || savedRecipe.cycle_duration_ms || 2000) / 1000).toFixed(1);
+  }
+  els.giyotinCyclesPerBox.value = state.drafts.giyotinCyclesPerBox;
+  els.giyotinCycleDuration.value = state.drafts.giyotinCycleDurationSec;
+
+  const stateLabels = {
+    ready: active ? "Reçete onayı bekleniyor" : "İş emri onayında reçete ile başlayacak",
+    running: "Giyotin çevrimi sürüyor",
+    paused: "Duraklatıldı — devam için onay gerekli",
+    complete: "İş emri kesimleri tamamlandı",
+    idle: "İş emri bekleniyor",
+  };
+  const sameJob = giyotin.job_id === order.order_id;
+  const controlState = sameJob ? String(giyotin.control_state || "ready") : "ready";
+  const cutsPerBox = Math.max(1, Number(state.drafts.giyotinCyclesPerBox || giyotin.cycles_per_box || 2));
+  const completedCuts = Number(giyotin.completed_count || 0);
+  const targetCuts = Number(sameJob && giyotin.target_count ? giyotin.target_count : ((order.qty || 0) * cutsPerBox));
+  const completedBoxes = Math.min(Number(order.qty || 0), Math.floor(completedCuts / cutsPerBox));
+  els.giyotinStateText.textContent = stateLabels[controlState] || controlState;
+  els.giyotinProgressText.textContent = `${completedBoxes} / ${order.qty || 0} kutu | ${completedCuts} / ${targetCuts} kesim çevrimi`;
+  const deviceReady = !["offline", "unknown", ""].includes(String(giyotin.device_state || "")) && Boolean(giyotin.nano_ready);
+  els.giyotinConnectionState.textContent = deviceReady
+    ? "Nano hazır"
+    : "Nano / ESP32 bağlantısı bekleniyor";
+  els.giyotinConnectionState.classList.toggle("is-ready", deviceReady);
+  els.giyotinConnectionState.classList.toggle("is-waiting", !deviceReady);
+
+  els.giyotinPauseButton.hidden = !active || !sameJob || controlState !== "running";
+  els.giyotinResumeButton.hidden = !active || !sameJob || controlState !== "paused";
+  els.giyotinPauseButton.disabled = state.busy;
+  els.giyotinResumeButton.disabled = state.busy;
+}
+
 function renderFaultPanel() {
   const snapshot = state.snapshot || {};
   const activeFault = snapshot.active_fault || null;
@@ -466,12 +536,12 @@ function renderFaultPanel() {
   if (activeFault) {
     els.faultStateText.textContent = `${safeText(activeFault.reason, "Ariza")} / ${shortDateTime(activeFault.startedAt)}`;
   } else {
-    els.faultStateText.textContent = "Aktif ariza yok";
+    els.faultStateText.textContent = "Aktif arıza yok";
   }
   if (helpRequest) {
     els.helpStateText.textContent = `Yardim istegi ${safeText(helpRequest.status, "open")} / tekrar ${helpRequest.repeatCount || 1}`;
   } else {
-    els.helpStateText.textContent = "Teknisyen cagrisi yok";
+    els.helpStateText.textContent = "Açık teknisyen çağrısı yok";
   }
   els.faultReasonPreview.textContent = faultReasonText() || "Harici sebep yok";
   els.faultReasonButton.textContent = faultReasonText() ? "Sebebi Duzenle" : "Sebep Yaz";
@@ -678,7 +748,36 @@ async function performAction(callback) {
   }
 }
 
-async function requestWorkOrderStart(orderId = "", transitionReason = "") {
+async function requestWorkOrderStart(orderId = "", transitionReason = "", confirmed = false) {
+  const snapshot = state.snapshot || {};
+  const queue = (snapshot.work_orders || {}).queue || [];
+  const order = orderId
+    ? queue.find((item) => item.order_id === orderId) || (snapshot.work_orders || {}).active_order
+    : queue[0];
+  const productCode = String((order || {}).stock_code || "").trim().toUpperCase();
+  if (productCode && productCode !== state.drafts.giyotinOrderId) {
+    const savedRecipe = (((snapshot.giyotin || {}).recipes_by_product || {})[productCode]) || {};
+    state.drafts.giyotinOrderId = productCode;
+    state.drafts.giyotinCyclesPerBox = String(savedRecipe.cycles_per_box || 2);
+    state.drafts.giyotinCycleDurationSec = (Number(savedRecipe.cycle_duration_ms || 2000) / 1000).toFixed(1);
+    els.giyotinCyclesPerBox.value = state.drafts.giyotinCyclesPerBox;
+    els.giyotinCycleDuration.value = state.drafts.giyotinCycleDurationSec;
+  }
+  const cyclesPerBox = Number(els.giyotinCyclesPerBox.value);
+  const durationSec = Number(els.giyotinCycleDuration.value);
+  if (!Number.isInteger(cyclesPerBox) || cyclesPerBox < 1 || cyclesPerBox > 20 ||
+      !Number.isFinite(durationSec) || durationSec < 0.5 || durationSec > 10) {
+    window.alert("Kesim sayısı 1-20, çevrim süresi 0,5-10 saniye aralığında olmalı.");
+    return false;
+  }
+  if (!order) return false;
+  const totalCuts = Number(order.qty || 0) * cyclesPerBox;
+  if (!confirmed && !window.confirm(
+    `${safeText(order.order_id)} / ${safeText(order.stock_name, order.stock_code)} iş emri onaylansın mı?\n` +
+    `Ürün reçetesi: kutu başına ${cyclesPerBox} kesim, toplam ${totalCuts} kesim çevrimi, çevrim süresi ${durationSec} sn.`
+  )) return false;
+  state.drafts.giyotinCyclesPerBox = String(cyclesPerBox);
+  state.drafts.giyotinCycleDurationSec = String(durationSec);
   try {
     await fetchJson(`/api/modules/${state.moduleId}/kiosk/work-orders/start`, {
       method: "POST",
@@ -686,6 +785,8 @@ async function requestWorkOrderStart(orderId = "", transitionReason = "") {
         ...currentActorPayload(),
         ...(orderId ? { order_id: orderId } : {}),
         ...(transitionReason ? { transition_reason: transitionReason } : {}),
+        cycles_per_box: cyclesPerBox,
+        cycle_duration_ms: Math.round(durationSec * 1000),
       }),
     });
   } catch (error) {
@@ -702,7 +803,7 @@ async function requestWorkOrderStart(orderId = "", transitionReason = "") {
       if (!reason || !reason.trim()) {
         return false;
       }
-      return requestWorkOrderStart(fallbackOrderId, reason.trim());
+      return requestWorkOrderStart(fallbackOrderId, reason.trim(), true);
     }
     throw error;
   }
@@ -755,6 +856,32 @@ async function handleSystemStart() {
     });
     await loadBootstrap();
   });
+}
+
+async function handleGiyotinPause() {
+  await performAction(async () => {
+    await fetchJson(`/api/modules/${state.moduleId}/kiosk/giyotin/pause`, {
+      method: "POST",
+      body: JSON.stringify(currentActorPayload()),
+    });
+    await loadBootstrap();
+  });
+}
+
+async function handleGiyotinResume() {
+  if (!window.confirm("Giyotin duraklatıldığı konumdan devam etsin mi?")) return;
+  await performAction(async () => {
+    await fetchJson(`/api/modules/${state.moduleId}/kiosk/giyotin/resume`, {
+      method: "POST",
+      body: JSON.stringify({ ...currentActorPayload(), operator_ack: true }),
+    });
+    await loadBootstrap();
+  });
+}
+
+function updateGiyotinRecipeDrafts() {
+  state.drafts.giyotinCyclesPerBox = els.giyotinCyclesPerBox.value;
+  state.drafts.giyotinCycleDurationSec = els.giyotinCycleDuration.value;
 }
 
 async function handleShiftStop() {
@@ -873,10 +1000,10 @@ function connectSocket() {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   state.socket = new WebSocket(`${protocol}://${window.location.host}/ws/modules/${encodeURIComponent(state.moduleId)}/kiosk/${encodeURIComponent(state.deviceId)}`);
   state.socket.addEventListener("open", () => {
-    setConnectionState("Canli");
+    setConnectionState("Canlı");
   });
   state.socket.addEventListener("close", () => {
-    setConnectionState("Baglanti koptu");
+    setConnectionState("Bağlantı koptu");
     window.setTimeout(connectSocket, 2000);
   });
   state.socket.addEventListener("message", (event) => {
@@ -893,6 +1020,23 @@ async function init() {
   const parts = window.location.pathname.split("/").filter(Boolean);
   state.deviceId = decodeURIComponent(parts[parts.length - 1] || "");
   if (!state.deviceId) {
+    if (window.location.protocol === "file:") {
+      setConnectionState("Yerel önizleme");
+      els.lineStateText.textContent = "MES sunucusuna bağlı değil";
+      els.deviceMetaText.textContent = "Bu dosya yalnızca arayüz önizlemesidir; iş emri onayı sunucu adresinden yapılır.";
+      els.activeOrderTitle.textContent = "İş emri onayıyla giyotin başlayacak";
+      els.activeOrderMeta.textContent = "Ürün reçetesi iş emriyle eşleşir; varsayılan 2 kesim/kutu ve 2 sn çevrimdir.";
+      els.giyotinControlPanel.classList.remove("hidden");
+      els.giyotinStateText.textContent = "İş emri onayı bekleniyor";
+      els.giyotinProgressText.textContent = "Onaylanan iş emrinin kutu adedi × ürün reçetesi kesim sayısı";
+      els.giyotinConnectionState.textContent = "Sunucu / cihaz bağlı değil";
+      els.giyotinCyclesPerBox.disabled = true;
+      els.giyotinCycleDuration.disabled = true;
+      els.bigActionButton.textContent = "İş emrini sunucuda onaylayın";
+      els.bigActionButton.disabled = true;
+      els.systemStartButton.disabled = true;
+      return;
+    }
     window.alert("DEVICE_ID_REQUIRED");
     return;
   }
@@ -916,6 +1060,10 @@ els.helpButton.addEventListener("click", handleHelpRequest);
 els.faultReasonButton.addEventListener("click", handleFaultReasonEdit);
 els.faultClearButton.addEventListener("click", handleFaultClear);
 els.faultStartButton.addEventListener("click", handleFaultStart);
+els.giyotinPauseButton.addEventListener("click", handleGiyotinPause);
+els.giyotinResumeButton.addEventListener("click", handleGiyotinResume);
+els.giyotinCyclesPerBox.addEventListener("input", updateGiyotinRecipeDrafts);
+els.giyotinCycleDuration.addEventListener("input", updateGiyotinRecipeDrafts);
 els.operatorSelect.addEventListener("change", handleOperatorChange);
 
 window.addEventListener("load", init);

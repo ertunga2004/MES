@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Çalışan İzleme · MES</title>
+  <link rel="stylesheet" href="/static/styles.css?v=at-zeze-tablet-3">
+  <link rel="stylesheet" href="/static/calisan-izleme.css?v=2">
+</head>
+<body>
+  <main class="watch-shell">
+    <header class="watch-header">
+      <div>
+        <h1>Çalışan İzleme</h1>
+        <p class="watch-meta"><span data-watch-date></span><span>Deneme istasyon kayıtları</span></p>
+      </div>
+      <nav class="watch-nav" aria-label="MES sayfaları">
+        <a href="/">MES Kontrol Paneli</a>
+        <a href="/atolye-onizleme" data-watch-designer hidden>Kiosk Tasarımcı</a>
+      </nav>
+    </header>
+    <p class="watch-notice" data-watch-notice role="status">İstasyon kayıtları yükleniyor…</p>
+    <section class="watch-grid" data-watch-grid aria-label="İstasyon özeti"></section>
+    <article class="watch-detail" data-watch-detail hidden aria-labelledby="watch-detail-title"></article>
+  </main>
+  <script type="module" src="/static/calisan-izleme.mjs?v=1"></script>
+</body>
+</html>

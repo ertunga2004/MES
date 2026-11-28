@@ -4969,6 +4969,7 @@ class OeeRuntimeStateManager:
                     "item_id": item.get("item_id") or head_key,
                     "measure_id": item.get("measure_id") or "",
                     "correlation_status": item.get("correlation_status") or "",
+                    "work_order_id": (item.get("work_order_id") or "") if item.get("correlation_status") == "MATCHED" else "",
                     "late_vision_audit_flag": bool(item.get("late_vision_audit_flag")),
                     "decision_applied": bool(item.get("decision_source") == "VISION" and item.get("correlation_status") == "MATCHED"),
                     "review_required": bool(item.get("review_required")),

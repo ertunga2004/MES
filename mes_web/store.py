@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import copy
+import logging
+import sqlite3
 import threading
 import uuid
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from time import monotonic
 from typing import Any, Callable
 
 from .config import AppConfig
 from .conveyor_handoff import handoff_view
 from .manual_coating import manual_coating_progress
 from .oee_state import build_live_snapshot, build_work_order_snapshot, read_runtime_state_file, shift_options
+from .plant_projection import equipment, runtime_projection
+from .telemetry_journal import TelemetryJournal, camera_record
 from .parsers import (
     parse_bridge_status_line,
     parse_mega_event_from_log,
@@ -170,6 +175,10 @@ WORK_ORDER_ACTIVE_STATUSES = {"active", "pending_approval"}
 class DashboardStore:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
+        self.journal = TelemetryJournal(config.telemetry_journal_path)
+        self.started = monotonic()
+        self.journal_error = False
+        self._equipment_states: dict[str, tuple] = {}
         self._lock = threading.RLock()
         self._listeners: list[Callable[[str], None]] = []
         self._oee_state_mtime: float | None = None
@@ -423,6 +432,7 @@ class DashboardStore:
             "vision": self._default_vision_state(),
             "oee": self._default_oee_state(),
             "work_orders": self._default_work_order_state(),
+            "plant": {},
         }
 
     def register_listener(self, listener: Callable[[str], None]) -> None:
@@ -571,6 +581,7 @@ class DashboardStore:
 
         with self._lock:
             module = self._module(module_id)
+            module["plant"] = runtime_projection(payload, datetime.now(timezone.utc))
             oee = module["oee"]
             shift = payload.get("shift") or {}
             summary_text = str(payload.get("lastEventSummary") or oee["last_event_summary"])
@@ -992,7 +1003,39 @@ class DashboardStore:
                 module["mqtt_last_online_at"] = stamp
             else:
                 module["mqtt_last_offline_at"] = stamp
+        self.record_system_event(stamp, 'MQTT broker', 'Bağlantı', 'Bağlantı kuruldu.' if online else 'Bağlantı kesildi.',
+                                 'info' if online else 'error')
         self._notify(self.config.module_id)
+
+    def report_journal_error(self):
+        if not self.journal_error:
+            logging.getLogger(__name__).exception('MES telemetry journal could not be written')
+        self.journal_error = True
+
+    def record_system_event(self, at, device, kind, message, level='info', code=''):
+        try:
+            self.journal.system_event(at, device, kind, message, level, code)
+        except (OSError, sqlite3.Error):
+            self.report_journal_error()
+
+    def observe_equipment(self, module_id, now):
+        snapshot = self.get_dashboard_snapshot(module_id, now=now)
+        rows = equipment(snapshot, now, self.config.heartbeat_timeout_sec)
+        for row in rows:
+            if not row['at'] and not row['detail'] and row['tone'] != 'maintenance':
+                continue
+            current = (row['tone'], row['connection'], row['detail'] if row['tone'] in {'error', 'warn'} else None, row['code'])
+            previous = self._equipment_states.get(row['name'])
+            if current == previous:
+                continue
+            self._equipment_states[row['name']] = current
+            if row['tone'] == 'idle' and (not previous or previous[0] == 'ok') and current[1] == (previous or current)[1]:
+                continue
+            message = row['detail'] if row['tone'] in {'error', 'warn'} else None
+            message = message or {'ok': 'Telemetri alınıyor.', 'maintenance': 'Bakım kaydı aktif.',
+                                  'error': 'Telemetri kesildi veya donanım arıza bildirdi.', 'warn': 'Haberleşme kısıtlı.'}.get(row['tone'], 'Durum güncellendi.')
+            self.record_system_event(utc_now_text(now), row['name'], 'Durum', message,
+                                     row['tone'] if row['tone'] in {'error', 'warn'} else 'info', row['code'] or '')
 
     def _touch_message(self, module_id: str, received_at: str) -> dict[str, Any]:
         module = self._module(module_id)
@@ -1113,6 +1156,9 @@ class DashboardStore:
                     if color in {"red", "yellow", "blue"}:
                         module["counts"][color] += 1
                         self._increment_compare(module, "mega", color, stamp)
+                if event and event['event_type'] == 'pick_command_rejected':
+                    self.record_system_event(stamp, 'Robot kol', 'Komut reddi', 'Robot kol komutu reddedildi.', 'warn',
+                                             event['reject_reason'] if event['reject_reason'] != 'unknown' else '')
         self._notify(module_id)
 
     def apply_heartbeat(self, module_id: str, *, received_at: str | None = None) -> None:
@@ -1197,13 +1243,21 @@ class DashboardStore:
             module["vision"]["heartbeat"]["last_seen_at"] = stamp
         self._notify(module_id)
 
-    def apply_vision_event(self, module_id: str, payload: Any, *, received_at: str | None = None) -> None:
+    def apply_vision_event(self, module_id: str, payload: Any, *, received_at: str | None = None, wire: Any = None) -> None:
         if not self.config.vision_ingest_enabled:
             return
         parsed = parse_vision_event(payload)
         if parsed is None:
             return
         stamp = received_at or utc_now_text()
+        with self._lock:
+            name = self._module(module_id)['vision']['status'].get('raw', {}).get('device_name', '')
+        record = camera_record(payload if wire is None else wire, payload, stamp, str(name or ''))
+        if record:
+            try:
+                self.journal.save_camera(record)
+            except (OSError, sqlite3.Error):
+                self.report_journal_error()
         with self._lock:
             module = self._touch_message(module_id, stamp)
             module["last_vision_ingest_at"] = stamp
@@ -1380,4 +1434,5 @@ class DashboardStore:
                 },
                 "oee": copy.deepcopy(module["oee"]),
                 "work_orders": copy.deepcopy(module["work_orders"]),
+                "plant": copy.deepcopy(module["plant"]),
             }

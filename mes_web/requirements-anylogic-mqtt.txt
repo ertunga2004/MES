@@ -1,0 +1,2 @@
+# Optional MQTT broker used by the standalone, loopback-only AnyLogic integration.
+amqtt>=0.11.3,<0.12

@@ -1,14 +1,18 @@
 """Routes for the station-bound kiosk, staff dashboard and template designer."""
 
 from typing import Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
+from .anylogic_mqtt import AnyLogicMqttClient, mqtt_anylogic_enabled
+from .anylogic_runner import AnyLogicRunner, SimulationError
 from .kiosk_designer import Section, Step, _clean_design, Design
 from .station_access import DESIGNERS, STAFF, STATIONS, STATION_PORTS, WorkspaceAccess, WorkspaceBoundary, listener_station, workspace_url
 from .station_workflow import StationWorkflow, require
+from .station_monitoring import monitoring_snapshot
 
 
 HEADERS = {'Cache-Control': 'no-store', 'Content-Security-Policy': "frame-ancestors 'none'"}
@@ -28,8 +32,16 @@ class StationAction(BaseModel):
     fields: dict[str, Any] = Field(default_factory=dict, max_length=48)
 
 
+class AnyLogicCommand(BaseModel):
+    action: Literal['start', 'pause', 'resume', 'stop', 'reset', 'speed']
+    run_id: UUID | None = None
+    mode: Literal['TEST', 'SUREKLI'] = 'TEST'
+    scenario: str = Field(default='T07', pattern=r'^T(?:0[1-9]|1[0-4])$')
+    speed: Literal[1, 2, 5, 10] | None = None
+
+
 class TemplateCard(BaseModel):
-    kind: Literal['order', 'instructions', 'steps', 'timer', 'progress', 'result', 'status', 'wip', 'downtime', 'actions', 'material', 'before', 'after', 'extra']
+    kind: Literal['order', 'instructions', 'steps', 'stepper', 'timer', 'progress', 'result', 'status', 'wip', 'downtime', 'actions', 'material', 'before', 'after', 'extra']
     size: Literal['small', 'medium', 'large', 'full'] = 'full'
     source: Literal['fixed', 'station', 'order'] = 'fixed'
     visible: bool = True
@@ -82,6 +94,11 @@ class StationWorkspace:
         self.static_dir = static_dir
         self.access = WorkspaceAccess(config.kiosk_design_password)
         self.workflow = StationWorkflow()
+        self.anylogic = runner = (
+            AnyLogicMqttClient(config.root_dir) if mqtt_anylogic_enabled()
+            else AnyLogicRunner(config.root_dir, config.oee_runtime_state_path)
+        )
+        app.state.anylogic = runner
         app.add_middleware(WorkspaceBoundary, access=self.access)
         router = APIRouter()
 
@@ -149,6 +166,39 @@ class StationWorkspace:
                                  'boxes': state['boxes'], 'faults': state['faults'], 'packed': state['packed'],
                                  'stations': {station: self.workflow.station_board(state, station) for station in STATIONS}}, headers=HEADERS)
 
+        @router.get('/api/workspace/monitoring/dashboard')
+        def monitor_dashboard(request: Request):
+            identity = self.access.authorize(request, STAFF)
+            return JSONResponse({'role': identity['role'], **monitoring_snapshot(self.workflow.read())}, headers=HEADERS)
+
+        @router.get('/api/workspace/anylogic')
+        def anylogic_status(request: Request):
+            role = self.access.authorize(request, STAFF)['role']
+            return JSONResponse({**runner.status(), 'can_control': role in DESIGNERS}, headers=HEADERS)
+
+        @router.get('/api/workspace/anylogic/frame')
+        def anylogic_frame(request: Request):
+            self.access.authorize(request, STAFF)
+            return JSONResponse(runner.frame(), headers=HEADERS)
+
+        @router.post('/api/workspace/anylogic/command', dependencies=[Depends(json_write)])
+        def anylogic_command(request: Request, payload: AnyLogicCommand):
+            self.access.authorize(request, DESIGNERS)
+            try:
+                state = runner.command(payload.action, run_id=payload.run_id.hex if payload.run_id else None,
+                                       mode=payload.mode, scenario=payload.scenario, speed=payload.speed)
+            except SimulationError as exc:
+                raise HTTPException(exc.status, str(exc)) from exc
+            return JSONResponse({**state, 'can_control': True}, headers=HEADERS)
+
+        @router.get('/api/workspace/anylogic/{run_id}/report')
+        def anylogic_report(request: Request, run_id: UUID):
+            self.access.authorize(request, STAFF)
+            path = runner.report(run_id)
+            if path is None:
+                raise HTTPException(404, 'Koşuya ait olay raporu bulunamadı.')
+            return FileResponse(path, media_type='text/csv', filename=f'anylogic-{run_id.hex[:8]}.csv', headers=HEADERS)
+
         @router.get('/api/workspace/templates')
         def templates(request: Request):
             self.access.authorize(request, DESIGNERS)
@@ -159,6 +209,8 @@ class StationWorkspace:
             self.access.authorize(request, DESIGNERS)
             require(station in STATIONS, 'İstasyon bulunamadı.', 404)
             require(len({card.kind for card in payload.design.cards}) == len(payload.design.cards), 'Kart türleri benzersiz olmalı.', 422)
+            require(all(card.kind != 'stepper' or (station == 'bantlama' and card.size == 'full' and card.source == 'fixed')
+                        for card in payload.design.cards), 'İş Adımları kartı Bantlama için sabit ve tam genişlikte olmalı.', 422)
             validated = _clean_design(Design(title=payload.design.title, instructions=payload.design.instructions,
                                              timer=payload.design.features.timer, result_options=payload.design.features.result or [],
                                              steps=payload.design.steps, sections=payload.design.sections))
@@ -183,7 +235,8 @@ class StationWorkspace:
             def update(state):
                 row = state['templates'].get(station)
                 require(row and row['revision'] == payload.revision, 'Güncel taslağı kaydedin.')
-                require(row['draft']['steps'], 'Yayınlamak için en az bir adım ekleyin.', 422)
+                require(row['draft']['steps'] or any(card['kind'] == 'stepper' and card['visible'] for card in row['draft']['cards']),
+                        'Yayınlamak için en az bir adım ekleyin.', 422)
                 row['published'] = {'version': row['revision'], 'design': row['draft']}
                 return row
 
@@ -212,7 +265,7 @@ class StationWorkspace:
         if self.access.identity(request)['role'] in {'anonymous', 'invalid'}:
             return RedirectResponse('/mes-oturum', status_code=303, headers=HEADERS)
         self.access.authorize(request, STAFF)
-        return self.html('atolye-istasyon.html', {'title': 'Çalışan İzleme', 'mode': 'monitor', 'station': ''})
+        return self.html('calisan-izleme.html', {})
 
     def designer_redirect(self, request):
         if self.access.identity(request)['role'] in {'anonymous', 'invalid'}:

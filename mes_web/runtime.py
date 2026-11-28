@@ -136,6 +136,7 @@ class RuntimeService:
                 self.config.module_id,
                 now=datetime.now(timezone.utc),
             )
+            self.store.observe_equipment(self.config.module_id, tick_now)
             if tick_changed or fingerprint != self._last_fingerprint:
                 self._last_fingerprint = fingerprint
                 self.hub.notify_change(self.config.module_id)

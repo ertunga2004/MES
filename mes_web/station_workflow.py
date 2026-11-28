@@ -2,6 +2,7 @@
 
 from contextlib import closing
 from copy import deepcopy
+from datetime import datetime, timezone
 import json
 import math
 import os
@@ -13,11 +14,12 @@ import time
 from fastapi import HTTPException
 
 from .station_access import STATIONS
+from .station_monitoring import MONITORED_STATIONS
 
 
 COLORS = {'blue': 'Mavi', 'red': 'Kırmızı', 'yellow': 'Sarı'}
 OUTCOMES = {'good', 'rework', 'scrap', 'allowed'}
-TAPING_STEPS = ['Bant rengini doğrula', 'Kutu kodunu tara', 'Bant uzunluğunu ölç', 'Kalite kontrolünü tamamla']
+TAPING_STEP_COUNT = 5
 STATION_DATA = {
     'bantlama': ('cut', 'used', 'activeBox', 'boxes', 'wip'),
     'giyotin': ('cut', 'used', 'cutLog'),
@@ -104,13 +106,23 @@ def box_at(state, fields, stage):
 
 
 def shift(state, station, action, fields):
+    now = int(time.time() * 1000)
     if action == 'shift-start':
         require(station not in state['shifts'], 'Bu istasyonun vardiyası zaten açık.')
-        state['shifts'][station] = {'operator': text(fields, 'operator', 'Operatör adını', 80), 'startedAt': int(time.time() * 1000)}
+        row = {'operator': text(fields, 'operator', 'Operatör adını', 80), 'startedAt': now}
+        if station in MONITORED_STATIONS:
+            row['observed'] = True
+        state['shifts'][station] = row
         return 'Vardiya başlatıldı.'
     require(station in state['shifts'], 'Açık vardiya bulunamadı.')
     require(station != 'bantlama' or state['activeBox'] is None, 'Vardiya kapanmadan önce açık kutuyu tamamlayın.')
-    del state['shifts'][station]
+    row = state['shifts'].pop(station)
+    if station in MONITORED_STATIONS:
+        state.setdefault('shiftHistory', {}).setdefault(station, []).append({**row, 'endedAt': now})
+    if station == 'tekniker':
+        for fault in state['faults']:
+            if fault.get('intervention', {}).get('active'):
+                end_intervention(fault['intervention'], now)
     return 'Vardiya bitirildi.'
 
 
@@ -118,7 +130,7 @@ def alert(state, station, action, fields):
     description = text(fields, 'description', 'Açıklama')
     identifier = f'ARZ-{15 + len(state["faults"]) - 2:03d}'
     state['faults'].insert(0, {'id': identifier, 'station': STATIONS[station], 'kind': action,
-                               'text': description, 'status': 'open', 'reply': ''})
+                               'text': description, 'status': 'open', 'reply': '', 'reportedAt': int(time.time() * 1000)})
     return f'{identifier} Tekniker ekranına iletildi.'
 
 
@@ -129,11 +141,23 @@ def cutting(state, action, fields):
     length = number(fields, 'length', 'uzunluk ölçümü')
     result = choice(fields, 'result', {'good', 'scrap'}, 'Ölçüm sonucunu')
     confirmed(fields, 'shield', 'Koruyucu kalkan kontrolü')
+    order_id = text(fields, 'orderId', 'İş emrini', 60)
+    request_id = text(fields, 'requestId', 'Kesim kayıt kimliğini', 64)
+    record = dict(color=color, count=count, lot=lot, length=length, result=result, orderId=order_id,
+                  requestId=request_id, source='manual')
+    previous = next((row for row in state['cutLog'] if row.get('requestId') == request_id), None)
+    if previous is not None:
+        require(all(previous.get(key) == value for key, value in record.items()),
+                'Bu kayıt kimliği farklı bir kesim için kullanılmış.')
+        return 'Kesim kaydı daha önce alındı.'
+    require(state['orders'][0]['id'] == order_id, 'Aktif örnek iş emri değişti. Ekranı yenileyin.')
     if result == 'good':
         remaining = state['goals'][color] * 2 - state['cut'][color]
         require(count <= remaining, f'Bu renkte kesim hedefinden {remaining} bant kaldı.')
         state['cut'][color] += count
-    state['cutLog'].insert(0, {'color': color, 'count': count, 'lot': lot, 'length': length, 'result': result})
+    record['recordedAt'] = datetime.now(timezone.utc).isoformat()
+    record['shiftStartedAt'] = state['shifts']['giyotin']['startedAt']
+    state['cutLog'].insert(0, record)
     return 'Kesim kontrolü kaydedildi.'
 
 
@@ -156,6 +180,11 @@ def coating(state, action, fields):
     return 'Kaplama kontrolü kaydedildi.'
 
 
+def taping_steps(box):
+    # Confirmations from the old four-step checklist refer to different tasks.
+    return box['steps'] if len(box['steps']) == TAPING_STEP_COUNT else [False] * TAPING_STEP_COUNT
+
+
 def taping(state, action, fields):
     box = state['activeBox']
     now = int(time.time() * 1000)
@@ -165,35 +194,47 @@ def taping(state, action, fields):
         require(not box and not any(row['id'] == identifier for row in state['boxes']), 'Açık veya yinelenen kutu kaydı var.')
         require(state['cut'][color] - state['used'][color] >= 2, 'Bu renk için iki kesilmiş bant gerekiyor.')
         state['used'][color] += 2
-        state['activeBox'] = {'id': identifier, 'color': color, 'steps': [False] * len(TAPING_STEPS), 'activeMs': 0,
+        state['activeBox'] = {'id': identifier, 'color': color, 'steps': [False] * TAPING_STEP_COUNT, 'activeMs': 0,
                               'since': now, 'paused': False, 'pauseReason': ''}
         return f'{identifier} için bantlama başladı.'
     require(box is not None and box['id'] == fields.get('activeBoxId'), 'Açık kutu değişti. Ekranı yenileyin.')
     if action == 'resume':
         require(box['paused'], 'Duraklatılmış kutu yok.')
+        pause = box.pop('monitorPause', None)
+        if pause:
+            box.setdefault('monitorStops', []).append({**pause, 'end': now})
         box.update(paused=False, since=now, pauseReason='')
         return 'Bantlama devam ediyor.'
     require(not box['paused'], 'Önce bantlamaya devam edin.')
     if action == 'pause':
         reason = text(fields, 'reason', 'Duraklatma nedenini')
+        box.setdefault('monitorRuns', []).append([box['since'], now])
+        box['monitorPause'] = {'start': now, 'reason': reason}
         box.update(activeMs=box['activeMs'] + max(0, now - box['since']), paused=True, pauseReason=reason)
         return 'Bantlama duraklatıldı.'
     if action == 'step':
         index = fields.get('index')
-        value = fields.get('checked')
-        require(type(index) is int and 0 <= index < len(TAPING_STEPS) and type(value) is bool, 'Adım geçersiz.', 422)
-        box['steps'][index] = value
-        return 'Kontrol adımı güncellendi.'
+        require(type(index) is int and 0 <= index < TAPING_STEP_COUNT and fields.get('checked') is True, 'Adım geçersiz.', 422)
+        steps = taping_steps(box)
+        if steps[index]:
+            return 'Adım zaten tamamlandı.'
+        require(index == steps.index(False), 'Önce aktif adımı tamamlayın.')
+        steps[index] = True
+        box['steps'] = steps
+        return 'İş adımı tamamlandı.'
     outcome = choice(fields, 'outcome', {'good', 'rework', 'scrap'}, 'Kontrol sonucunu')
     if outcome == 'good':
-        require(all(box['steps']), 'Sağlam teslim için tüm adımları tamamlayın.')
-        length = number(fields, 'length', 'bant uzunluğu')
+        require(all(taping_steps(box)), 'Sağlam teslim için tüm adımları tamamlayın.')
+        length = number(fields, 'length', 'bant uzunluğu') if fields.get('length') not in (None, '') else None
         reason = ''
     else:
         length = None
         reason = text(fields, 'reason', 'Kalite gerekçesini')
+    taping_result = {'at': now, 'outcome': outcome, 'shiftStartedAt': state['shifts']['bantlama']['startedAt'],
+                     'runs': [*box.get('monitorRuns', []), [box['since'], now]], 'stops': box.get('monitorStops', [])}
     state['boxes'].append(dict(id=box['id'], color=box['color'], stage='handoff' if outcome == 'good' else 'rejected',
-                               outcome=outcome, length=length, reason=reason, completedAt=now if outcome != 'good' else None))
+                               outcome=outcome, length=length, reason=reason, completedAt=now if outcome != 'good' else None,
+                               taping=taping_result))
     state['activeBox'] = None
     return f'{box["id"]} bantlama sonucu kaydedildi.'
 
@@ -220,6 +261,9 @@ def packing(state, action, fields):
     carton = state['carton']
     if action == 'resume':
         require(carton['stage'] == 'parked', 'Ayrılmış koli yok.')
+        pause = carton.pop('monitorPause', None)
+        if pause:
+            state.setdefault('packingStops', []).append({**pause, 'end': int(time.time() * 1000)})
         carton.update(stage='open', reason='')
         return 'Paketlemeye devam ediliyor.'
     require(carton['stage'] == 'open', 'Önce koliyi açın.')
@@ -230,7 +274,8 @@ def packing(state, action, fields):
         return 'Koli kapatıldı.'
     if action == 'park':
         require(not complete, 'Yalnız eksik koli ayrılabilir.')
-        carton.update(stage='parked', reason=text(fields, 'reason', 'Eksik koli nedenini'))
+        reason = text(fields, 'reason', 'Eksik koli nedenini')
+        carton.update(stage='parked', reason=reason, monitorPause={'start': int(time.time() * 1000), 'reason': reason})
         return 'Eksik koli ayrıldı.'
     box = box_at(state, fields, 'exited')
     color = box['color']
@@ -241,8 +286,15 @@ def packing(state, action, fields):
     require(number(fields, 'count', 'kutu sayısı', integer=True) == 1, 'Her kayıtta tek kutu eklenir.', 422)
     confirmed(fields, 'protected', 'Kutu koruması')
     state['packed'][color] += 1
-    box.update(stage='packed', packing=dict(size=size, label=label, weight=weight))
+    box.update(stage='packed', packing=dict(size=size, label=label, weight=weight, recordedAt=int(time.time() * 1000),
+                                           shiftStartedAt=state['shifts']['paketleme']['startedAt']))
     return f'{box["id"]} koliye eklendi.'
+
+
+def end_intervention(intervention, now):
+    active = intervention.pop('active', None)
+    if active:
+        intervention.setdefault('intervals', []).append({**active, 'end': now})
 
 
 def technician(state, action, fields):
@@ -251,6 +303,8 @@ def technician(state, action, fields):
     if action == 'accept':
         require(fault['status'] == 'open', 'Yalnız açık bildirim kabul edilebilir.')
         fault['status'] = 'accepted'
+        now = int(time.time() * 1000)
+        fault['intervention'] = {'acceptedAt': now, 'active': {'start': now, 'shiftStartedAt': state['shifts']['tekniker']['startedAt']}}
         return 'Bildirim kabul edildi.'
     require(fault['status'] == 'accepted', 'Önce bildirimi kabul edin.')
     if action == 'reply':
@@ -264,6 +318,11 @@ def technician(state, action, fields):
     if outcome == 'repaired':
         confirmed(fields, 'tested', 'Test sonucu')
         fault['status'] = 'resolved'
+    now = int(time.time() * 1000)
+    intervention_log = fault.setdefault('intervention', {})
+    end_intervention(intervention_log, now)
+    if outcome == 'repaired':
+        intervention_log['completion'] = {'at': now, 'shiftStartedAt': state['shifts']['tekniker']['startedAt']}
     fault['result'] = dict(category=category, parts=parts, intervention=intervention, downtime=downtime, outcome=outcome)
     return 'Müdahale sonucu kaydedildi.'
 
@@ -388,6 +447,9 @@ class StationWorkflow:
     def station_board(state, station):
         keys = ('revision', 'goals', *STATION_DATA[station])
         view = {key: state[key] for key in keys}
+        if station == 'bantlama' and view['activeBox']:
+            box = view['activeBox']
+            view['activeBox'] = {**box, 'steps': taping_steps(box)}
         view['orders'] = state['orders'][:1]
         view['shift'] = state['shifts'].get(station)
         view['template'] = state['templates'].get(station, {}).get('published')

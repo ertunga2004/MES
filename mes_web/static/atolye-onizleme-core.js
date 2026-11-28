@@ -4,6 +4,8 @@
  * Bu modül canlı veri kullanmaz, MQTT veya fiziksel cihaz komutu göndermez.
  */
 
+import { BANTLAMA_STEPS } from './atolye-tablet-state.mjs?v=4';
+
 // ============================================================
 // Yardımcı fonksiyonlar (kiosk-view.mjs'den uyarlanmış)
 // ============================================================
@@ -71,6 +73,7 @@ export const cardTypes = {
   order: ['İş emri', 1, ['order']],
   instructions: ['Operatör talimatı', 0, ['fixed', 'order']],
   steps: ['Akış / kontrol adımları', 2, ['fixed']],
+  stepper: ['İş Adımları', 3, ['fixed']],
   timer: ['Süre sayacı', 0, ['fixed']],
   progress: ['Üretim sayacı', 0, ['fixed', 'order']],
   result: ['İşin sonucu', 1, ['fixed']],
@@ -138,6 +141,26 @@ export function kioskSteps(steps, values = []) {
   }).join('')}</ol>`;
 }
 
+export function renderStepper(completed, { active = true, paused = false, showButton = false } = {}) {
+  const done = completed === BANTLAMA_STEPS.length;
+  const canAdvance = showButton && active && !paused && !done;
+  const container = showButton ? 'form' : 'div';
+  return `<${container} class="bantlama-stepper"${showButton ? ' data-task="step"' : ''}>
+    <ol class="stepper-steps">${BANTLAMA_STEPS.map((step, index) => {
+      const current = active && index === completed;
+      return `<li class="step-row${current ? ' active' : ''}${index < completed ? ' done' : ''}"${current ? ' aria-current="step"' : ''}>
+        <label>
+          <input type="checkbox" data-taping-step${index < completed ? ' checked' : ''}${canAdvance && current ? '' : ' disabled'}>
+          <span>${index + 1}. ${esc(step)}</span>
+        </label>
+      </li>`;
+    }).join('')}</ol>
+    ${showButton ? `<button class="button primary stepper-advance-btn" type="submit" data-action="stepper-advance"${canAdvance ? '' : ' disabled'}>
+        ${done ? '✓ Tamamlandı' : 'İlerle →'}
+      </button>` : ''}
+  </${container}>`;
+}
+
 export function kioskWork(design, run, controls = false, board = {}) {
   const { timer, progress, result } = design.features;
   const quantity = run?.quantity ?? 0;
@@ -152,6 +175,7 @@ export function kioskWork(design, run, controls = false, board = {}) {
     after: () => text(design.after),
     instructions: () => text(design.instructions),
     steps: () => kioskSteps(design.steps, run?.values),
+    stepper: () => renderStepper(1),
     timer: () => elapsed,
     progress: () => counter,
     result: () => outcome,

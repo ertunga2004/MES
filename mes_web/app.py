@@ -1,12 +1,14 @@
 from __future__ import annotations
 import copy
 import re
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, StrictInt, StrictStr
 
@@ -19,10 +21,12 @@ from .manual_coating import manual_coating_progress
 from .masterdata import load_kiosk_masterdata
 from .oee_state import WorkOrderTransitionReasonRequired, build_work_order_snapshot
 from .parsers import normalize_color
+from .plant_projection import equipment
 from .runtime import RuntimeService, SnapshotHub
 from .store import DashboardStore, parse_iso_text, utc_now_text
 from .station_access import DESIGNERS, listener_station, workspace_url
 from .station_workspace import StationWorkspace
+from .telemetry_journal import LOCAL_TIME, filter_query
 from .windows_asyncio import install_windows_connection_reset_filter
 
 
@@ -827,10 +831,13 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def on_startup() -> None:
         install_windows_connection_reset_filter()
+        if hasattr(workspace.anylogic, "start"):
+            workspace.anylogic.start()
         await runtime_service.start()
 
     @app.on_event("shutdown")
     async def on_shutdown() -> None:
+        workspace.anylogic.close()
         await runtime_service.stop()
 
     @app.get("/health")
@@ -1012,6 +1019,61 @@ def create_app() -> FastAPI:
             return store.get_dashboard_snapshot(module_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="MODULE_NOT_FOUND") from exc
+
+    @app.get('/api/modules/{module_id}/system-status')
+    def system_diagnostics(module_id: str):
+        _ensure_module(module_id)
+        now = datetime.now(timezone.utc)
+        snapshot = store.get_dashboard_snapshot(module_id, now=now)
+        devices = equipment(snapshot, now, config.heartbeat_timeout_sec)
+        events = []
+        database = 'online'
+        try:
+            events = store.journal.system_events()
+        except (sqlite3.Error, OSError):
+            database = 'error'
+        return JSONResponse({'server': 'online', 'database': database, 'journal_error': store.journal_error,
+                             'uptime_seconds': int(monotonic() - store.started), 'connection': snapshot['connection'],
+                             'devices': devices, 'events': events, 'fault': snapshot['oee']['fault']},
+                            headers={'Cache-Control': 'no-store'})
+
+    @app.get('/api/modules/{module_id}/camera-records')
+    def camera_records(module_id: str, request: Request, page: int = Query(1, ge=1), limit: int = Query(25, ge=1, le=100)):
+        _ensure_module(module_id)
+        try:
+            data = store.journal.camera_page(request.query_params, page=page, limit=limit, today=datetime.now(LOCAL_TIME).date().isoformat())
+        except ValueError as exc:
+            raise HTTPException(422, 'Tarih, saat ve sonuç filtrelerini kontrol edin.') from exc
+        except (sqlite3.Error, OSError) as exc:
+            raise HTTPException(503, 'Kamera kayıt deposuna ulaşılamıyor.') from exc
+        return JSONResponse({**data, 'ingest_enabled': config.vision_ingest_enabled}, headers={'Cache-Control': 'no-store'})
+
+    @app.get('/api/modules/{module_id}/camera-records/export')
+    def export_camera_records(module_id: str, request: Request):
+        _ensure_module(module_id)
+        try:
+            filters = filter_query(request.query_params)
+        except ValueError as exc:
+            raise HTTPException(422, 'Tarih, saat ve sonuç filtrelerini kontrol edin.') from exc
+        try:
+            # Verify access before starting the download response.
+            with store.journal.connection() as conn:
+                conn.execute('SELECT 1 FROM camera_records LIMIT 1').fetchone()
+        except (sqlite3.Error, OSError) as exc:
+            raise HTTPException(503, 'Kamera kayıt deposuna ulaşılamıyor.') from exc
+        return StreamingResponse(store.journal.camera_csv(filters), media_type='text/csv',
+                                 headers={'Content-Disposition': 'attachment; filename="kamera-kayitlari.csv"', 'Cache-Control': 'no-store'})
+
+    @app.get('/api/modules/{module_id}/camera-records/{record_id}')
+    def camera_record_detail(module_id: str, record_id: str):
+        _ensure_module(module_id)
+        try:
+            row = store.journal.camera_detail(record_id)
+        except (sqlite3.Error, OSError) as exc:
+            raise HTTPException(503, 'Kamera kayıt deposuna ulaşılamıyor.') from exc
+        if row is None:
+            raise HTTPException(404, 'Kamera kaydı bulunamadı.')
+        return JSONResponse(row, headers={'Cache-Control': 'no-store'})
 
     @app.get("/api/modules/{module_id}/kiosk/bootstrap")
     async def get_kiosk_bootstrap(module_id: str, device_id: str) -> dict[str, Any]:

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import sqlite3
 from typing import TYPE_CHECKING, Any
 
 from .config import AppConfig
 from .oee_state import OeeRuntimeStateManager
+from .parsers import parse_mega_event_from_log
 from .store import DashboardStore, utc_now_text
 
 if TYPE_CHECKING:
@@ -31,6 +33,23 @@ class MqttIngestClient:
         if self.excel_sink is None or self.oee_state_manager is None:
             return
         self.excel_sink.record_work_order_state(self.oee_state_manager.read_state(), received_at)
+
+    def _link_camera_output(self, payload):
+        parsed = parse_mega_event_from_log(payload)
+        if not parsed or parsed['event_type'] not in {'pick_released', 'pickplace_done'}:
+            return
+        item_id, measure_id = parsed['item_id'], parsed['measure_id']
+        if not item_id or not measure_id:
+            return
+        items = self.oee_state_manager.read_state().get('itemsById', {})
+        matching = [row for row in items.values() if row.get('item_id') == item_id and row.get('measure_id') == measure_id and row.get('completed_at')]
+        if len(matching) == 1:
+            item = matching[0]
+            try:
+                self.store.journal.link_camera(item_id, measure_id, item.get('work_order_id'), item.get('classification'),
+                                               item.get('detected_at') or item.get('queued_at'), item['completed_at'])
+            except (OSError, sqlite3.Error):
+                self.store.report_journal_error()
 
     def start(self) -> bool:
         try:
@@ -114,6 +133,7 @@ class MqttIngestClient:
             if self.oee_state_manager is not None and self.oee_state_manager.apply_mega_log(payload, stamp):
                 self.store.refresh_oee_runtime_state(module_id, force=True)
                 self._record_work_order_state(stamp)
+                self._link_camera_output(payload)
             return
         if topic == topics["heartbeat"]:
             self.store.apply_heartbeat(module_id, received_at=stamp)
@@ -151,7 +171,7 @@ class MqttIngestClient:
                 else {"changed": False, "publish_command": None, "item_id": "", "payload": payload}
             )
             vision_payload = vision_result.get("payload") if isinstance(vision_result, dict) else payload
-            self.store.apply_vision_event(module_id, vision_payload, received_at=stamp)
+            self.store.apply_vision_event(module_id, vision_payload, received_at=stamp, wire=payload)
             if self.excel_sink is not None and self.config.vision_ingest_enabled:
                 self.excel_sink.record_vision_event(vision_payload, stamp)
             if isinstance(vision_result, dict) and vision_result.get("changed"):

@@ -2,6 +2,8 @@
 
 `mes_web/`, konveyor hattinin aktif web katmanidir. Bu klasor; MQTT ingest, dashboard snapshot, operator kiosk UI, teknisyen cagri UI, vardiya kontrollu OEE runtime state ve workbook kaydini tek yerde toplar.
 
+**Dijital İkiz** ekranında örnek simülasyon 20× hıza kadar oynatılır ve analizler senaryo zamanıyla ilerler. **Fiziksel hat · MES** görünümü mevcut dashboard akışından vardiya OEE’sini ve MEGA durum/ürün olaylarını okur. Enerji sayacı aynı MQTT kökünün `/logs` kanalına `{"type":"performance-telemetry","energyKwh":4.72}` biçiminde birikimli kWh okuması gönderebilir. Ekran, ürün başına duruşta bekleme süresini yalnız bant durumu bütün ürün geçişi boyunca gözlenmişse hesaplar.
+
 ## Ana Sorumluluklar
 
 - MQTT topiclerini dinlemek
@@ -328,3 +330,75 @@ Admin, Kiosk Tasarımcı’dan bir istasyon için kod oluşturur. Tablette MES s
 Dağıtımda HTTPS kullanılır. `admin` için `MES_WEB_WORKSPACE_ADMIN_PASSWORD`, `sef` için `MES_WEB_WORKSPACE_SUPERVISOR_PASSWORD`, `muhendis` için mevcut `MES_WEB_KIOSK_DESIGN_PASSWORD` kullanılır. `MES_WEB_WORKSPACE_SESSION_SECRET` yeniden başlatmalar arasında oturum imzasını korur. `MES_WEB_WORKSPACE_STATE_PATH` ayrı bir SQLite dosyasını işaret ederse şablonlar ve örnek istasyon kayıtları yeniden başlatmalarda saklanır. Eşleştirme kodu, üretildiği sunucu sürecinde kullanılır.
 
 Yeni istasyon yüzeyleri ayrı örnek veri üzerinde çalışır. İzleme sayfası ortak örnek durumu üç saniye arayla okur. OEE değeri örnek göstergedir. Kaplama ve Bantlama, örnek akışları göstermek için ayrı ekranlarla sunulur.
+
+### Sistem Durumu ve Kamera Kayıtları
+
+Kamera geçmişi ve sistem bağlantı olayları, OEE çalışma durumu dosyasının yanındaki `*.telemetry.sqlite3` dosyasına yazılır. Yerel önizleme kendi deneme klasöründeki depoyu kullanır. Kamera tablosu MQTT `/vision/events` kanalındaki çizgi geçişlerini ve açıkça bildirilen okuma hatalarını kaydeder. Takip başlangıcı ve kaybı kamera okuması sayılmaz. Okuma ayrıntısında ham mesaj, doğrulanmış eşleşme ve varsa ürün bilgisi bulunur. Günlük özet ve tarih/saat filtreleri Türkiye saatini kullanır.
+
+### AnyLogic senaryoları
+
+AnyLogic sekmesi `Excel_Test_Konveyor` modelinin yerel dışa aktarımıyla çalışır. Excel testi T01–T14 arasındaki kutu dizisini ve kamera sürelerini kullanır. Sentetik sürekli akış seçildiğinde model, Excel’den aldığı renk ve kamera sürelerine göre örnek giriş üretir. Modelin Excel testi renk depolarında biter. Her koşunun giriş ayarları, model kimliği ve CSV olay raporu yerel çalışma durumu klasöründeki `anylogic-runs` altında saklanır.
+
+Kurulu **AnyLogic 8.9 Professional** ve referans modelle yerel dışa aktarım hazırlamak için proje kökünde `python -B -m mes_web.prepare_anylogic <Excel_Test_Konveyor.alp>` çalıştırın. `AnyLogic_Test_Plani.xlsx` referans modelle aynı klasörde bulunur. Hazırlayıcı `.local/anylogic` altında kopya ve Java köprüsü oluşturur. [AnyLogic Java dışa aktarım belgesi](https://anylogic.help/anylogic/running/export-java-application.html)
+
+#### Masaüstü AnyLogic ve MQTT
+
+Referans modelin ve Excel planının bulunduğu klasörden **MQTT kopyasını** hazırlayın. Hazırlayıcı orijinal dosyayı okur ve MQTT kopyasını ayrı bir derleme çalışma alanında dışa aktarır.
+
+```powershell
+python -B -m mes_web.prepare_anylogic 'C:/model/Excel_Test_Konveyor.alp' --mqtt
+python -B -m pip install --target .local/mqtt-broker -r mes_web/requirements-anylogic-mqtt.txt
+```
+
+Her komutu proje kökünde ayrı terminalde çalıştırın. İlk ikisi açıkken MES'i başlatın.
+
+1. Broker için `$env:PYTHONPATH = (Resolve-Path .local/mqtt-broker).Path` ve ardından `python -B -m mes_web.anylogic_broker` çalıştırın. Aynı bilgisayarda bir MQTT broker'ınız varsa onun yerel portunu kullanabilirsiniz.
+2. Çalıştırıcı için `python -B -m mes_web.anylogic_gateway` çalıştırın.
+3. Normal MES kurulumunda PowerShell'de `$env:MES_ANYLOGIC_MQTT_ENABLED = '1'` ayarını yapıp `python -B -m mes_web` çalıştırın. Bu bilgisayardaki izole önizleme için `python -B .local/start-preview.py --port 18880 --anylogic-mqtt` kullanılabilir. MQTT ayarı kapalıyken AnyLogic'in mevcut yerel çalıştırıcısı kullanılır.
+
+**Masaüstünden başlatma.** AnyLogic Professional'da **File → Open model** ile `.local/anylogic-mqtt/runtime/model/Excel_Test_Konveyor.alp` dosyasını açın. **Projects → Simulation → Run (F5)** ile başlatın. Aynı adlı referans model açıksa kendi çalışmalarınızı kaydettikten sonra o modeli kapatın veya kopyayı ayrı bir çalışma alanıyla açın. Örneğin AnyLogic'in komut satırında `-data <ayrı-çalışma-alanı> <kopyanın-tam-yolu>` kullanabilirsiniz. Masaüstü kopyası ek Java kodu eklemenizi gerektirmez. Masaüstü varsayılanları `.local/anylogic-mqtt/desktop/uretim_modu.txt` ve `senaryo.txt` dosyalarındadır. Başlangıçta **SUREKLI** ve **T07** kullanılır.
+
+**MES'ten izleme ve kontrol.** **MES veri kaynağı → AnyLogic simülasyonu → Dijital İkiz** yolunda başlatma, duraklatma, devam, durdurma ve sıfırlama düğmeleri vardır. Başlatma, **AnyLogic** sekmesindeki mod, senaryo ve hız seçimini kullanır. Masaüstünde açık bir MQTT koşusu varsa MES onu izler ve komutları aynı koşuya iletir. Motor kapalıysa MES, aynı modelin yerel Java dışa aktarımını başlatır. **Durdur** son görüntüyü korur. **Sıfırla** açık koşuyu kapatıp ekranı yeni koşuya hazırlar. CSV raporları `.local/anylogic-mqtt/anylogic-runs` altında bulunur.
+
+| Ayar | Yerel varsayılan |
+| --- | --- |
+| `MES_ANYLOGIC_MQTT_HOST` | `127.0.0.1` |
+| `MES_ANYLOGIC_MQTT_PORT` | `18883` |
+| `MES_ANYLOGIC_MQTT_TOPIC` | `at-zeze/anylogic/v1` |
+
+Broker, köprü ve MES aynı portu kullanır. Broker yalnız bu bilgisayarda dinler. MES ve köprü aynı konu kökünü kullanır.
+
+| MQTT konusu | Yön | İçerik |
+| --- | --- | --- |
+| `at-zeze/anylogic/v1/command` | MES → köprü | Komut, koşu kimliği, istek kimliği, zaman, senaryo ve hız. QoS 1. |
+| `at-zeze/anylogic/v1/ack` | Köprü → MES | Aynı istek kimliğiyle sonuç, motor durumu ve varsa hata. QoS 1. |
+| `at-zeze/anylogic/v1/telemetry` | Köprü → MES | Köprü sıra numarası, koşu durumu, sayaçlar, robot ve kutu konumları, son model olayları. QoS 0. |
+
+Mesajlar `schema: 1` alanlı JSON'dur. Başlatma ve kontrol komutları süre ve koşu kimliğiyle doğrulanır. Yeniden gelen aynı istek kimliği, önceden alınan sonucu döndürür. Broker yeniden bağlandığında güncel tam kare tekrar gelir. Canlı kare son 512 model olayını taşır. Daha eski olaylar koşunun CSV'sindedir. Telemetri dört saniye kesilirse MES köprü bağlantı kaybı gösterir. Fiziksel MQTT alıcısı ve üretim kayıtları ayrı akıştadır.
+
+| AnyLogic ölçümü | MES bölümü |
+| --- | --- |
+| `bant_kesme` ve `kutu_kaplama` çıkış sayaçları | Operasyon → İstasyon çıkışları |
+| Kamera, konveyör, robot, ara depo ve renk depoları | Operasyon, OEE, Dijital İkiz |
+| `DEPOLANDI` olayındaki planlanan girişten depoya süre | OEE → Son üretim hareketleri |
+| `BANT_DURDU` olayındaki neden | OEE → Arıza ve duruşlar |
+
+Modelde kaplama ve kesme simülasyon blokları vardır. Bantlama ve paketleme iş emirleri, tekniker kayıtları, gerçek vardiya, kalite kararı ve ideal çevrim için model verisi bulunmadığından bu alanlar boş gösterilir. Fiziksel tablet kayıtları için ilgili donanım kaynağı kullanılır.
+
+**Uygulama dosyaları**
+
+- `prepare_anylogic.py` ve `anylogic_assets/desktop-mqtt.java.txt` masaüstü modelini ve dışa aktarımı hazırlar.
+- `anylogic_mqtt.py`, `anylogic_gateway.py`, `anylogic_runner.py` ve `anylogic_broker.py` simülasyon telemetrisi, komut onayı, süreç yönetimi ve yerel broker'ı sağlar.
+- `station_workspace.py` ve `app.py` mevcut AnyLogic API'sini seçilen çalıştırıcıya bağlar.
+- `static/index.html`, `static/simulation-mes.mjs`, `static/anylogic-panel.mjs`, `static/anylogic-panel.css` ve `static/app.js` Dijital İkiz kontrollerini, bağlantı durumlarını ve istasyon verilerini gösterir.
+
+
+### Giyotin loglarının MES’e bağlanması
+
+Giyotin tabletinin kesim formu deneme iş emrine operatör girişi yazar. Aynı `requestId` ile aynı kayıt yeniden gelirse kesilen bant adedi bir kez artar. Kayda `manual` kaynağı ve MES kayıt zamanı eklenir. Eski ve örnek kayıtlar için kaynak ve zaman geriye dönük atanmaz.
+
+Zehra’dan ilk örnek için bir bıçaksız test oturumunun değiştirilmemiş seri veya MQTT logunu ve gözlem notunu alın. Normal çevrim, cihaz açılışı veya yeniden başlatma, bağlantı kesilip geri gelmesi ve varsa tekrar iletilen olay aynı örnekte görülebilir. Gözlem notuna beklenen başarılı çevrim adedini, cihaz ve yazılım sürümünü, saat dilimini ve her sayacın birimini ekleyin. MQTT kullanıldıysa konu adını ve ham mesajı birlikte saklayın.
+
+1. İlk karşılaştırmayı çevrimdışı bir örnek iş emrinde yapın. Cihaz ve oturum kimliği, tekil olay veya sıra numarası, cihaz zamanı ve MES’in alım zamanı, olay türü, miktar ve birim eşlemelerini ham kayıttan çıkarın. İş emri, renk ve kalite alanları cihazda yoksa doğrulandıkları MES veya operatör kaydını belirtin. Çevrim kaydı tek başına uygun bant miktarını kanıtlamaz.
+2. Aynı dosyayı iki kez oynatın. İkinci oynatımda çıktı ve WIP değişmemeli. Sayaç sıfırlanmasını, sıra boşluklarını ve emri belirlenemeyen olayları mutabakat için kaydedin.
+3. Eşleme doğrulanınca adaptörü aktif iş emri, tekrar koruması ve bant tüketimini yöneten MES kesim akışına bağlayın. Tablet de aynı MES kaydını okumalı. Tabletin deneme SQLite verisi fiziksel olay alıcısı olarak kullanılmaz. İlk entegrasyon testinde iki uygun bant bir kutuluk bant ihtiyacını karşılar, konveyör ve paket sayaçları kendi olaylarıyla ilerler.

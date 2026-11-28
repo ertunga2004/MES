@@ -114,6 +114,10 @@ class AppConfig:
         return self.logs_dir / "oee_runtime_state.json"
 
     @property
+    def telemetry_journal_path(self) -> Path:
+        return self.oee_runtime_state_path.with_suffix('.telemetry.sqlite3')
+
+    @property
     def work_orders_dir(self) -> Path:
         raw = os.getenv("MES_WEB_WORK_ORDERS_DIR")
         if raw:

@@ -1,3 +1,6 @@
+import { analyze, liveKpis, physicalLog, WINDOW_MS } from "./digital-twin/analytics.mjs?v=1";
+import { createAnalysisView, elapsedLabel } from "./digital-twin/analysis-view.mjs?v=1";
+
 const scenarioLabels = {
   normal_run: "Normal",
   planned_pause: "Planlı Duruş",
@@ -19,9 +22,17 @@ const percent = new Intl.NumberFormat("tr-TR", { style: "percent" });
 const metrics = panel.querySelectorAll("[data-twin-value]");
 const telemetryStatus = panel.querySelector("[data-twin-status]");
 const selector = panel.querySelector("#digital-twin-scenario");
+const source = panel.querySelector("#digital-twin-source");
+source.value = document.body.dataset.mesSource === "anylogic" ? "anylogic" : "demo";
+const lineLabel = panel.querySelector("[data-twin-line]");
 const initialScenario = normalRun ?? scenarios[0];
+const updateAnalysis = createAnalysisView(panel);
+let dashboard, dashboardReceivedAt, live, model;
+let previousSource = "demo";
+let anyLogicPacket;
+const sampleStride = 2000;
 
-panel.querySelector("[data-twin-line]").textContent = sourceBasis.line;
+lineLabel.textContent = source.value === "anylogic" ? "AnyLogic konveyör modeli" : sourceBasis.line;
 selector.replaceChildren(...scenarios.map(({ id }) => new Option(scenarioLabels[id] ?? id, id)));
 selector.value = initialScenario.id;
 
@@ -44,9 +55,88 @@ function showSample(sample) {
   }
 }
 
-function elapsedLabel(ms) {
-  const seconds = Math.floor(ms / 1000);
-  return [Math.floor(seconds / 60), seconds % 60].map((part) => String(part).padStart(2, "0")).join(":");
+export function acceptDashboardSnapshot(snapshot) {
+  dashboard = snapshot;
+  dashboardReceivedAt = Date.now();
+  if (source.value === "live" && !panel.classList.contains("hidden")) updateLive();
+}
+
+export function setAnyLogicMode(active) {
+  if (active === (source.value === "anylogic")) return;
+  if (active) {
+    previousSource = source.value;
+    source.value = "anylogic";
+  } else {
+    source.value = previousSource;
+    anyLogicPacket = undefined;
+  }
+  source.dispatchEvent(new Event("change"));
+}
+
+export function acceptAnyLogicFrame(packet) {
+  if (source.value !== "anylogic") return;
+  anyLogicPacket = packet;
+  model?.applyAnyLogic(packet);
+}
+
+const modelColors = { kirmizi: "red", mavi: "blue", sari: "yellow", red: "red", blue: "blue", yellow: "yellow" };
+
+function mapModelPoint([x, y, z], { start, end }) {
+  const scale = 9.6 / (end[0] - start[0]);
+  return [5.55 - (x - start[0]) * scale, 1.47 + (z - start[2]) * scale, (y - start[1]) * scale];
+}
+
+function updateLive() {
+  const now = Date.now();
+  const stamp = Date.parse(dashboard?.timestamps?.snapshot_at);
+  const connected = dashboard?.connection?.mqtt?.connected && now - dashboardReceivedAt <= 15000;
+  if (Number.isFinite(stamp) && connected && live.lastStamp !== stamp) {
+    const reconnected = live.connected === false && live.lastStamp != null;
+    if (reconnected) live.events.push({at:live.lastStamp, kind:"gap"});
+    const since = Math.max(live.start, Date.parse(dashboard.connection.mqtt.last_online_at) || 0, stamp - WINDOW_MS);
+    const logs = [...(dashboard.recent_logs ?? [])].reverse();
+    const additions = [];
+    for (const log of logs) {
+      const logAt = Date.parse(log.received_at);
+      if (!log.id || live.seen.has(log.id) || !Number.isFinite(logAt) || logAt < since || logAt > stamp) continue;
+      live.seen.set(log.id, logAt);
+      for (const event of physicalLog(log)) {
+        if (event.kind !== "energy") additions.push(event);
+        else if (!live.meter || event.at >= live.meter.at) live.meter = event;
+      }
+    }
+    live.events.push(...additions);
+    live.events = live.events.filter(event => event.at >= stamp - WINDOW_MS - 15000).sort((a,b) => a.at - b.at);
+    model?.applyLive(additions, stamp - live.start);
+    for (const [id, at] of live.seen) if (at < stamp - WINDOW_MS) live.seen.delete(id);
+    live.kpis = liveKpis(dashboard);
+    const values = { at:stamp, ...live.kpis };
+    for (const event of additions) if (event.kind === "released") live.released.add(event.id);
+    if (Number.isFinite(live.kpis.oee)) values.count = dashboard.oee.production?.total;
+    else if (live.released.size) values.count = live.released.size;
+    if (stamp - (live.history.at(-1)?.at ?? -Infinity) < sampleStride) live.history.pop();
+    live.history.push(values);
+    live.history = live.history.filter(row => row.at >= stamp - WINDOW_MS);
+    live.lastStamp = stamp;
+  }
+  live.connected = Boolean(connected);
+  const end = live.lastStamp ?? live.start;
+  const start = Math.max(live.start, end - WINDOW_MS);
+  const data = analyze(live.events, start, end);
+  const heartbeat = dashboard?.connection?.mega_heartbeat?.state === "online";
+  const beltStatus = dashboard?.system_status?.conveyor_state;
+  telemetryStatus.textContent = connected ? heartbeat ? `Cihaz bağlı · ${beltStatus === "run" ? "Konveyör çalışıyor" : beltStatus === "stop" ? "Konveyör duruyor" : "Bant durumu bekleniyor"}`
+    : "Broker bağlı · cihaz verisi bekleniyor" : "Fiziksel hat bağlantısı bekleniyor";
+  for (const metric of metrics) {
+    const value = dashboard?.counts?.total;
+    metric.textContent = connected && heartbeat && metric.dataset.twinValue === "count" && Number.isFinite(value)
+      ? number.format(value) : "—";
+  }
+  updateAnalysis({...data, ...live.kpis, energyKwh:live.meter?.value}, live.history, {
+    demo:false, start, end, stale:!connected || !heartbeat, energyAt:live.meter?.at,
+    source:connected ? "MES telemetrisi · vardiya OEE’si, ekipman olayları ve varsa enerji sayacı"
+      : "Fiziksel hat için MES’in MQTT üzerinden cihaz verisi alması gerekiyor.",
+  });
 }
 
 async function mountModel() {
@@ -77,6 +167,8 @@ async function mountModel() {
   const playback = panel.querySelector(".digital-twin-playback");
   const play = panel.querySelector("[data-twin-play]");
   const pause = panel.querySelector("[data-twin-pause]");
+  const restart = panel.querySelector("[data-twin-restart]");
+  const timeline = panel.querySelector("#digital-twin-timeline");
   const speed = panel.querySelector("#digital-twin-speed");
   const playbackStatus = panel.querySelector("[data-twin-playback-status]");
   const time = panel.querySelector("[data-twin-time]");
@@ -85,6 +177,12 @@ async function mountModel() {
   const cameraHint = "Sürükle: döndür · sağ tuş: kaydır · tekerlek: yakınlaş";
   let rangeStart;
   let rangeEnd;
+  let scenario;
+  let history = [];
+  let lastAnalysisAt = -Infinity;
+  let livePosition = 0;
+  let simulationRun, simulationSeq;
+  let simulationDisconnected = false;
   let rendering = false;
   let firstView = true;
 
@@ -98,15 +196,44 @@ async function mountModel() {
   function updateTime() {
     const next = `${elapsedLabel(replay.position - rangeStart)} / ${elapsedLabel(rangeEnd - rangeStart)}`;
     if (time.textContent !== next) time.textContent = next;
+    timeline.value = Math.round(replay.position - rangeStart);
   }
 
-  function selectScenario(scenario) {
-    rangeStart = Date.parse(samples[scenario.from].timestamp) - replay.start;
-    rangeEnd = Date.parse(samples[scenario.to].timestamp) - replay.start;
-    replay.seek(rangeStart);
+  function drawDemo(force = false) {
+    const at = replay.position;
+    if (!force && performance.now() - lastAnalysisAt < 140) return;
+    lastAnalysisAt = performance.now();
+    const planned = scenario.id === "planned_pause";
+    const options = {demo:true, planned, idealCycleMs:8000};
+    const values = analyze(controller.events, rangeStart, at, options);
+    for (let sample = (history.at(-1)?.at ?? rangeStart - sampleStride) + sampleStride; sample <= at; sample += sampleStride) {
+      history.push({at:sample, ...analyze(controller.events, rangeStart, sample, options)});
+    }
+    const points = history.at(-1)?.at === at ? history : [...history, {at, ...values}];
+    updateAnalysis(values, points, {
+      demo:true, start:rangeStart, end:at, planned,
+      source:"Örnek simülasyon · her 8. ürün ilk geçişte başarısız kabul edilir. Enerji, ekipman durumuna bağlı tahmindir.",
+    });
+  }
+
+  function seek(position, status) {
+    setPlayback(false, status);
+    replay.seek(position);
+    displayedSample = undefined;
     showSample(controller.lineSample);
     updateTime();
-    setPlayback(false, "Hazır");
+    history = [];
+    drawDemo(true);
+  }
+
+  function selectScenario(next) {
+    scenario = next;
+    rangeStart = Date.parse(samples[scenario.from].timestamp) - replay.start;
+    rangeEnd = Date.parse(samples[scenario.to].timestamp) - replay.start;
+    timeline.max = rangeEnd - rangeStart;
+    controller.pauses = recording.pauses;
+    controller.conveyorPauses = recording.conveyorPauses;
+    seek(rangeStart, "Hazır");
   }
 
   function draw() {
@@ -117,7 +244,11 @@ async function mountModel() {
       controller.update(replay.position, step / 1000);
       showSample(controller.lineSample);
       updateTime();
-      if (replay.position >= rangeEnd) setPlayback(false, "Senaryo tamamlandı");
+      const finished = replay.position >= rangeEnd;
+      if (finished) setPlayback(false, "Senaryo tamamlandı");
+      drawDemo(finished);
+    } else if (source.value === "live") {
+      controller.update(livePosition, engine.getDeltaTime() / 1000);
     }
     factory.scene.render();
   }
@@ -133,18 +264,22 @@ async function mountModel() {
         firstView = false;
       }
       engine.runRenderLoop(draw);
+      if (source.value === "demo") drawDemo(true);
     } else {
       engine.stopRenderLoop(draw);
       if (replay.playing) setPlayback(false, "Duraklatıldı");
     }
   }
 
-  selector.addEventListener("change", () => selectScenario(scenarios.find(({ id }) => id === selector.value)));
+  const selected = () => scenarios.find(({ id }) => id === selector.value) ?? initialScenario;
+  selector.addEventListener("change", () => selectScenario(selected()));
   play.addEventListener("click", () => {
-    if (replay.position >= rangeEnd) selectScenario(scenarios.find(({ id }) => id === selector.value));
+    if (replay.position >= rangeEnd) selectScenario(selected());
     setPlayback(true, "Oynatılıyor");
   });
-  pause.addEventListener("click", () => setPlayback(false, "Duraklatıldı"));
+  pause.addEventListener("click", () => { setPlayback(false, "Duraklatıldı"); drawDemo(true); });
+  restart.addEventListener("click", () => seek(rangeStart, "Hazır"));
+  timeline.addEventListener("input", () => seek(rangeStart + Number(timeline.value), "Duraklatıldı"));
 
   for (const button of viewButtons) {
     button.addEventListener("click", () => {
@@ -159,15 +294,96 @@ async function mountModel() {
     }
   });
 
-  selectScenario(initialScenario);
   diagram.hidden = true;
   views.hidden = false;
   selector.disabled = false;
   playback.disabled = false;
   time.parentElement.hidden = false;
-  sceneStatus.textContent = cameraHint;
+  model = {
+    demo() { selectScenario(selected()); sceneStatus.textContent = cameraHint; },
+    live() {
+      setPlayback(false, "Hazır");
+      controller.reset();
+      controller.pauses = [];
+      controller.conveyorPauses = undefined;
+      livePosition = 0;
+      sceneStatus.textContent = "Sahne, gözlenen cihaz olaylarıyla güncellenir.";
+    },
+    applyLive(events, at) {
+      for (const event of events) {
+        if (!["departure", "queue", "arrived", "pick", "drop", "released", "returned", "belt-state"].includes(event.kind)) continue;
+        controller.apply(event, Math.max(livePosition, event.at - live.start));
+      }
+      livePosition = Math.max(livePosition, at);
+    },
+    anylogic() {
+      setPlayback(false, "Hazır");
+      controller.reset();
+      simulationRun = simulationSeq = undefined;
+      simulationDisconnected = false;
+      sceneStatus.textContent = "Sahne AnyLogic modelini bekliyor.";
+      if (anyLogicPacket) this.applyAnyLogic(anyLogicPacket);
+    },
+    applyAnyLogic({ run, frame, detail }) {
+      if (detail) {
+        simulationDisconnected = true;
+        sceneStatus.textContent = "AnyLogic bağlantısı kesildi. Son alınan kare gösteriliyor.";
+        return;
+      }
+      if (run?.id !== simulationRun) {
+        controller.reset();
+        simulationRun = run?.id;
+        simulationSeq = undefined;
+        sceneStatus.textContent = "Sahne AnyLogic modelini bekliyor.";
+      }
+      if (!frame?.layout || !frame.robot || !Array.isArray(frame.products)) {
+        if (simulationDisconnected) sceneStatus.textContent = "Sahne AnyLogic modelini bekliyor.";
+        simulationDisconnected = false;
+        return;
+      }
+      if (simulationSeq == null || simulationDisconnected) sceneStatus.textContent = cameraHint;
+      simulationDisconnected = false;
+      if (!(frame.seq > (simulationSeq ?? -1))) return;
+      simulationSeq = frame.seq;
+      const { layout, robot } = frame;
+      factory.setLiveLayout(layout, mapModelPoint);
+      const joints = robot.links.map(point => mapModelPoint(point.map((value, index) => value + layout.robotBase[index]), layout));
+      const base = mapModelPoint(layout.robotBase, layout);
+      factory.setLiveRobot([[base[0], 0, base[2]], base, ...joints]);
+      const seen = new Set();
+      let coatingIndex = 0;
+      let bufferIndex = 0;
+      for (const product of frame.products) {
+        const color = modelColors[product.color] || "unknown";
+        // Once stored, the inventory mesh shows the box in its actual depot slot.
+        if (product.phase === "placed") continue;
+        const mesh = factory.product(product.id, color);
+        let point;
+        if (product.phase === "buffer" || product.phase === "coating") {
+          const inBuffer = product.phase === "buffer";
+          const index = inBuffer ? (product.bufferIndex >= 0 ? product.bufferIndex : bufferIndex++) : coatingIndex++;
+          point = [3.9 - (index % 6) * 0.58, 0.2, (inBuffer ? 1.6 : 3.5) + Math.floor(index / 6) * 0.32];
+        } else {
+          point = mapModelPoint(product.phase === "robot" ? robot.tool : product.position, layout);
+        }
+        mesh.scaling.set(0.5 / 0.32, 0.256 / 0.28, 0.2 / 0.32);
+        mesh.position.set(...point);
+        controller.items.set(product.id, { mesh });
+        seen.add(product.id);
+      }
+      for (const id of controller.items.keys()) if (!seen.has(id)) controller.remove(id);
+      for (const color of ["red", "blue", "yellow"]) {
+        const stock = frame.inventory?.[color];
+        if (stock) factory.setPalletCount(color, stock.count, stock.capacity);
+      }
+    },
+  };
+  model[source.value]();
 
-  const observer = new ResizeObserver(syncRendering);
+  const observer = new ResizeObserver(() => {
+    syncRendering();
+    if (source.value === "demo" && rangeStart != null && rendering) drawDemo(true);
+  });
   observer.observe(canvas);
   document.addEventListener("visibilitychange", syncRendering);
   window.addEventListener("pagehide", (event) => {
@@ -179,7 +395,30 @@ async function mountModel() {
   syncRendering();
 }
 
-showSample(samples[initialScenario.from]);
+source.addEventListener("change", () => {
+  const isLive = source.value === "live";
+  const isAnyLogic = source.value === "anylogic";
+  panel.querySelector("[data-twin-demo-controls]").hidden = source.value !== "demo";
+  panel.querySelector("[data-twin-source-badge]").textContent = isLive ? "FİZİKSEL HAT" : "ÖRNEK VERİ";
+  panel.querySelector("[data-twin-source-badge]").classList.toggle("is-live", isLive);
+  lineLabel.textContent = isAnyLogic ? "AnyLogic konveyör modeli" : sourceBasis.line;
+  if (isLive) {
+    live = {start:Date.now(), events:[], history:[], seen:new Map(), kpis:{}, released:new Set()};
+    model?.live();
+    updateLive();
+  } else if (isAnyLogic) {
+    telemetryStatus.textContent = "";
+    model?.anylogic();
+  } else {
+    model?.demo();
+  }
+});
+const liveTimer = setInterval(() => {
+  if (source.value === "live" && !panel.classList.contains("hidden") && !document.hidden) updateLive();
+}, 1000);
+window.addEventListener("pagehide", event => { if (!event.persisted) clearInterval(liveTimer); });
+
+if (source.value === "demo") showSample(samples[initialScenario.from]);
 try {
   await mountModel();
 } catch (error) {

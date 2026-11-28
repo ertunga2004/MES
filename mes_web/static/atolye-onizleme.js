@@ -4,12 +4,12 @@
  * Bu modül canlı veri kullanmaz, MQTT veya fiziksel cihaz komutu göndermez.
  */
 
-import { KioskRenderer } from './atolye-onizleme-core.js';
+import { KioskRenderer } from './atolye-onizleme-core.js?v=5';
 import {
   SAMPLE_KIOSK_DESIGN,
   TEMPLATES
 } from './atolye-onizleme-data.js';
-import { STATIONS_LIST } from './atolye-tablet-state.mjs';
+import { STATIONS_LIST } from './atolye-tablet-state.mjs?v=4';
 
 // ============================================================
 // Yardımcı fonksiyonlar
@@ -92,6 +92,9 @@ function loadKiosk(slug) {
   if (slug !== 'bantlama') {
     Object.assign(base, { title: `${station.name} kontrol listesi`, instructions: '', before: '', after: '', steps: [], sections: [], cards: [] });
     base.features = { timer: false, progress: null, result: null };
+  } else {
+    base.cards = base.cards.map(card => card.kind === 'steps' ? KioskRenderer.makeCard('stepper') : card);
+    base.steps = [];
   }
   loadDesign({ ...base, ...structuredClone(row?.draft ?? {}), station: slug, slug });
   hideTemplateSelector();
@@ -226,7 +229,9 @@ function renderEditor(design) {
       <div class="kiosk-design-details">
         <label>Kart ekle
           <select name="new-card-kind">
-            ${Object.entries(KioskRenderer.cardTypes).filter(([k]) => !design.cards.some(c => c.kind === k)).map(([k, v]) => `<option value="${k}">${esc(v[0])}</option>`).join('')}
+            ${Object.entries(KioskRenderer.cardTypes)
+              .filter(([kind]) => (kind !== 'stepper' || design.station === 'bantlama') && !design.cards.some(card => card.kind === kind))
+              .map(([kind, [title]]) => `<option value="${kind}">${esc(title)}</option>`).join('')}
           </select>
         </label>
         <button type="button" class="button" data-action="add-card">Kart ekle</button>

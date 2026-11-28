@@ -469,6 +469,7 @@ def main(argv: list[str] | None = None) -> int:
 
             for event in events:
                 event_payload = dict(event)
+                event_payload['device_name'] = active_config.device_name
                 event_payload.setdefault("observed_at", str(event.get("timestamp") or timestamp_iso))
                 event_payload["published_at"] = clock.iso_now()
                 mqtt_client.publish_json("events", event_payload)
